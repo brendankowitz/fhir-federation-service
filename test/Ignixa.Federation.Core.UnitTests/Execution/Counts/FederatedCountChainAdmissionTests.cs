@@ -16,6 +16,12 @@ public sealed class FederatedCountChainAdmissionTests
 {
     private const string DistributedForward = "distributed forward";
 
+    private const string PlannedCountShape = "count:Observation?@Observation.subject:Patient";
+
+    private const ReferencePathOperations AllOperations = ReferencePathOperations.NativeForward | ReferencePathOperations.NativeReverse
+        | ReferencePathOperations.DistributedForward | ReferencePathOperations.DistributedReverse
+        | ReferencePathOperations.IncludeExtraction | ReferencePathOperations.RevIncludeSearch;
+
     private readonly FakeShardClient _client = new();
 
     public static TheoryData<string> Chains => [DistributedForward, "distributed reverse", "passthrough forward", "passthrough reverse"];
@@ -77,6 +83,116 @@ public sealed class FederatedCountChainAdmissionTests
             (await counting).ShouldBe(5);
         }
     }
+
+    [Theory]
+    [MemberData(nameof(Chains))]
+    public async Task HopEvidenceMissingFromTheExecutorsCapabilitiesIsRefusedEvenWhenTheCountShapeIsCertified(string chain)
+    {
+        (QueryPlan plan, string shape, IReadOnlyDictionary<int, string> replacements) = PlanBeforeTheChange(chain);
+        SearchCapabilities capabilities = CertifiedWith(shape);
+
+        await ShouldRefuse(plan, capabilities, replacements);
+    }
+
+    [Theory]
+    [MemberData(nameof(Chains))]
+    public async Task HopOperationNoLongerCertifiedIsRefused(string chain)
+    {
+        (QueryPlan plan, string shape, IReadOnlyDictionary<int, string> replacements) = PlanBeforeTheChange(chain);
+        ReferencePathOperations required = chain switch
+        {
+            DistributedForward => ReferencePathOperations.DistributedForward,
+            "distributed reverse" => ReferencePathOperations.DistributedReverse,
+            "passthrough forward" => ReferencePathOperations.NativeForward,
+            _ => ReferencePathOperations.NativeReverse,
+        };
+        SearchCapabilities capabilities = CertifiedWith(shape, SubjectHop(AllOperations & ~required));
+
+        await ShouldRefuse(plan, capabilities, replacements);
+    }
+
+    [Fact]
+    public async Task ReferenceRewriteWhosePlannedCountShapeIsNoLongerCertifiedIsRefused()
+    {
+        (QueryPlan plan, string shape, IReadOnlyDictionary<int, string> replacements) = PlanBeforeTheChange(DistributedForward);
+        SearchCapabilities capabilities = CertifiedWith(shape, SubjectHop(forwardShapes: ["Observation?@Observation.subject:Patient"]));
+
+        await ShouldRefuse(plan, capabilities, replacements);
+    }
+
+    /// <summary>
+    /// The resolved references were emitted in the planned forms, so a reference rewrite needs them unchanged; the other
+    /// chains send no reference values, so their forms are not evidence they rely on.
+    /// </summary>
+    [Theory]
+    [MemberData(nameof(Chains))]
+    public async Task ChangedReferenceFormsRefuseOnlyAReferenceRewrite(string chain)
+    {
+        (QueryPlan plan, string shape, IReadOnlyDictionary<int, string> replacements) = PlanBeforeTheChange(chain);
+        SearchCapabilities capabilities = CertifiedWith(shape, SubjectHop(ownSideForms: ReferenceSearchForms.CanonicalAbsolute));
+
+        if (chain == DistributedForward)
+        {
+            await ShouldRefuse(plan, capabilities, replacements);
+        }
+        else
+        {
+            (await Count(plan, capabilities, replacements)).ShouldBe(5);
+        }
+    }
+
+    [Theory]
+    [MemberData(nameof(Chains))]
+    public async Task EquivalentButSeparatelyBuiltEvidenceCounts(string chain)
+    {
+        (QueryPlan plan, string shape, IReadOnlyDictionary<int, string> replacements) = PlanBeforeTheChange(chain);
+        SearchCapabilities capabilities = CertifiedWith(shape, SubjectHop());
+
+        (await Count(plan, capabilities, replacements)).ShouldBe(5);
+        _client.Calls.Count.ShouldBe(2);
+    }
+
+    private async Task ShouldRefuse(QueryPlan plan, SearchCapabilities capabilities, IReadOnlyDictionary<int, string> replacements)
+    {
+        await Should.ThrowAsync<ExactCountNotCertifiedException>(() => Count(plan, capabilities, replacements));
+        _client.Calls.ShouldBeEmpty();
+    }
+
+    /// <summary>Counts on east (2) and west (3) of the default registry, the registry the plan was made under.</summary>
+    private Task<int?> Count(QueryPlan plan, SearchCapabilities capabilities, IReadOnlyDictionary<int, string> replacements)
+    {
+        _client.Answer(East, 2);
+        _client.Answer(West, 3);
+        ShardCountTarget[] targets = [.. capabilities.Registry.Shards.Select(s => ShardCountTarget.Search(s.Id, ShardSearchMethod.Get, replacements))];
+        return Executor(_client, capabilities).ExecuteAsync(plan, targets, 2, Token);
+    }
+
+    /// <summary>
+    /// East and west of the default registry, same ids and version as the plan's, each certifying <paramref name="shape"/>
+    /// exact and only the given <paramref name="paths"/>; new objects, never the planner's.
+    /// </summary>
+    private static SearchCapabilities CertifiedWith(string shape, params ReferencePathCertification[] paths)
+    {
+        ShardRegistry registry = Registry();
+        SearchCertification certification = Certification(exactCountShapes: [shape], paths: paths);
+        return new SearchCapabilities(registry, registry.Shards.Select(s => new ShardSearchCapability(s.Id, AllResources, certification)));
+    }
+
+    /// <summary>
+    /// The subject hop as the plan saw it unless overridden. Revinclude search is always kept, so forms and coverage stay
+    /// valid; forward shapes are kept only while distributed forward is proven.
+    /// </summary>
+    private static ReferencePathCertification SubjectHop(
+        ReferencePathOperations operations = AllOperations,
+        ReferenceSearchForms ownSideForms = ReferenceSearchForms.Relative | ReferenceSearchForms.CanonicalAbsolute,
+        string[]? forwardShapes = null) => new(
+        ObservationSubjectPatient,
+        operations,
+        ownSideForms,
+        ReferenceSearchForms.CanonicalAbsolute | ReferenceSearchForms.LinkBaseAliases,
+        Registry().Version,
+        operations.HasFlag(ReferencePathOperations.DistributedForward) ? forwardShapes ?? [PlannedCountShape] : [],
+        StandaloneShape(ObservationSubjectPatient));
 
     /// <summary>Plans a count of <paramref name="chain"/> on east and west under the default registry.</summary>
     private static (QueryPlan Plan, string Shape, IReadOnlyDictionary<int, string> Replacements) PlanBeforeTheChange(string chain)

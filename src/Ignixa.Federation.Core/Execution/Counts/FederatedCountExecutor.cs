@@ -1,5 +1,6 @@
 using System.Collections.Frozen;
 using System.Runtime.ExceptionServices;
+using Ignixa.Federation.Core.Configuration;
 using Ignixa.Federation.Core.Search;
 using Ignixa.Federation.Core.Shards;
 
@@ -17,6 +18,8 @@ namespace Ignixa.Federation.Core.Execution.Counts;
 /// </remarks>
 public sealed class FederatedCountExecutor
 {
+    private const string CountShapePrefix = "count:";
+
     private static readonly ParameterOccurrence SummaryCount = new("_summary", "count");
 
     private readonly IShardClient _client;
@@ -75,8 +78,11 @@ public sealed class FederatedCountExecutor
     /// registered shard; or a target's replacements do not match the occurrences the plan replaces.
     /// </exception>
     /// <exception cref="ExactCountNotCertifiedException">
-    /// Not every shard searches the plan's type or certifies its count shape exact; or a chain's hop was not certified
-    /// for exactly the registered shards or, for a reference rewrite, for the current registry version.
+    /// Not every shard searches the plan's type or certifies its count shape exact; or a chain's hop is not certified by
+    /// these capabilities as the plan certified it: the operation the planner required (native or distributed, forward or
+    /// reverse) is no longer certified on every shard, the certified shards differ from the plan's, or, for a reference
+    /// rewrite, a shard's coverage is not attested for the current registry version or its emitted forms, coverage or
+    /// planned count shapes differ from the plan's.
     /// </exception>
     /// <exception cref="FetchBudgetExhaustedException">The count needs more calls than <paramref name="callBudget"/>.</exception>
     /// <exception cref="ShardFailureException">
@@ -115,7 +121,7 @@ public sealed class FederatedCountExecutor
     {
         if (!_capabilities.Searches(plan.Type)
             || !_capabilities.EveryShard(c => c.ExactCountShapes.Contains(plan.CountShape))
-            || !plan.Occurrences.All(HopCertifiedOnTheRegistry))
+            || !plan.Occurrences.All(HopStillCertified))
         {
             throw new ExactCountNotCertifiedException();
         }
@@ -165,24 +171,60 @@ public sealed class FederatedCountExecutor
     }
 
     /// <summary>
-    /// Whether a chain the shards receive is certified on exactly this registry's shards, as the planner proved against
-    /// its own registry (design spec §7.5). A shard added since then never had its hop proven, and a reference rewrite
-    /// is proven only for the registry version its emitted forms were attested against, as
-    /// <see cref="SearchCapabilities.CertifiedPath"/> requires. Removed occurrences, such as includes, reach no shard.
+    /// Whether a chain the shards receive is still certified by the executor's capabilities exactly as the planner proved
+    /// it (design spec §7.5). The plan's hop evidence came from the planner's capabilities, which may since have changed,
+    /// so it is rechecked here rather than trusted: the operation the planner required must be certified now, on exactly
+    /// the shards the plan certified, under <see cref="SearchCapabilities.CertifiedPath"/>'s rules (every current shard
+    /// and, for a reference rewrite, coverage attested for the current registry version). A reference rewrite also sends
+    /// resolved references in the planned forms and was proven for its count search, so each shard must still attest the
+    /// same forms and coverage and every planned count shape. Removed occurrences, such as includes, reach no shard.
     /// </summary>
-    private bool HopCertifiedOnTheRegistry(PlannedOccurrence occurrence)
+    private bool HopStillCertified(PlannedOccurrence occurrence)
     {
         if (occurrence is not { Kind: OccurrenceKind.ForwardChain or OccurrenceKind.ReverseChain, Action: not OccurrenceAction.Remove, Hop: { } hop })
         {
             return true;
         }
 
-        ShardRegistry registry = _capabilities.Registry;
-        bool rewritesReferences = occurrence is { Kind: OccurrenceKind.ForwardChain, Action: OccurrenceAction.Replace };
-        return hop.Certifications.Count == registry.Shards.Count
-            && registry.Shards.All(shard => hop.Certifications.TryGetValue(shard.Id, out ReferencePathCertification? certification)
-                && (!rewritesReferences || string.Equals(certification.CoveredRegistryVersion, registry.Version, StringComparison.Ordinal)));
+        // Mirrors the planner: a passthrough hop is kept and joined natively, a distributed one is replaced.
+        bool forward = occurrence.Kind == OccurrenceKind.ForwardChain;
+        ReferencePathOperations? required = (hop.Mode, occurrence.Action) switch
+        {
+            (ChainResolutionMode.Passthrough, OccurrenceAction.Keep) => forward ? ReferencePathOperations.NativeForward : ReferencePathOperations.NativeReverse,
+            (ChainResolutionMode.Distributed, OccurrenceAction.Replace) => forward ? ReferencePathOperations.DistributedForward : ReferencePathOperations.DistributedReverse,
+            _ => null,
+        };
+        if (required is not { } operation
+            || _capabilities.CertifiedPath(hop.Path, operation) is not { } current
+            || current.Count != hop.Certifications.Count)
+        {
+            return false;
+        }
+
+        foreach ((ShardId shard, ReferencePathCertification now) in current)
+        {
+            if (!hop.Certifications.TryGetValue(shard, out ReferencePathCertification? planned)
+                || (operation == ReferencePathOperations.DistributedForward && !StillEmitsAsPlanned(planned, now)))
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
+
+    /// <summary>
+    /// Whether <paramref name="current"/> still proves what a reference rewrite planned under <paramref name="planned"/>
+    /// relied on. The planner proved its exact <c>count:</c> shape was among the planned shapes; keeping every planned
+    /// count shape carries that proof over without re-deriving the shape.
+    /// </summary>
+    private static bool StillEmitsAsPlanned(ReferencePathCertification planned, ReferencePathCertification current) =>
+        planned.OwnSideForms == current.OwnSideForms
+        && planned.ForeignForms == current.ForeignForms
+        && string.Equals(planned.CoveredRegistryVersion, current.CoveredRegistryVersion, StringComparison.Ordinal)
+        && planned.ForwardSearchShapes
+            .Where(shape => shape.StartsWith(CountShapePrefix, StringComparison.Ordinal))
+            .All(current.ForwardSearchShapes.Contains);
 
     /// <summary>Runs every request, at most <see cref="_maxParallelCounts"/> at once, and sums the totals once all have ended.</summary>
     private async Task<long> SumAsync(ShardSearchRequest[] requests, CancellationToken caller)
