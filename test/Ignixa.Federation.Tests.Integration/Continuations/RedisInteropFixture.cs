@@ -1,6 +1,8 @@
 using System.Globalization;
 using System.Net;
+using System.Net.Sockets;
 using StackExchange.Redis;
+using StackExchange.Redis.Configuration;
 
 namespace Ignixa.Federation.Tests.Integration.Continuations;
 
@@ -9,8 +11,9 @@ namespace Ignixa.Federation.Tests.Integration.Continuations;
 /// <see cref="RedisContinuationCacheInteropTests"/>. The opt-in is the pair <see cref="PortVariable"/> and
 /// <see cref="PasswordVariable"/>, supplied to the test process only by the launcher of that Redis process. With
 /// neither variable, the interop tests are skipped (not passed). With one, or with values that fail validation or
-/// identity checks, they fail closed. It connects to 127.0.0.1 only, never resolves a host name, and never reports the
-/// port, the password, or a client exception (which can name the endpoint).
+/// identity checks, they fail closed. Every connection, including inspection and reconnects, dials only the numerical
+/// 127.0.0.1 endpoint on the given port, whatever endpoints the client learns; it never resolves a host name, and never
+/// reports the port, the password, or a client exception (which can name the endpoint).
 /// </summary>
 public sealed class RedisInteropFixture : IAsyncLifetime
 {
@@ -111,9 +114,11 @@ public sealed class RedisInteropFixture : IAsyncLifetime
         return null!;
     }
 
-    private static async Task<ConnectionMultiplexer> ConnectAsync(int port, string password, bool allowAdmin, RedisProtocol protocol)
-    {
-        var options = new ConfigurationOptions
+    private static Task<ConnectionMultiplexer> ConnectAsync(int port, string password, bool allowAdmin, RedisProtocol protocol) =>
+        ConnectionMultiplexer.ConnectAsync(ConnectionOptions(port, password, allowAdmin, protocol));
+
+    internal static ConfigurationOptions ConnectionOptions(int port, string password, bool allowAdmin, RedisProtocol protocol) =>
+        new()
         {
             EndPoints = { new IPEndPoint(IPAddress.Loopback, port) },
             Password = password,
@@ -127,8 +132,25 @@ public sealed class RedisInteropFixture : IAsyncLifetime
             TieBreaker = string.Empty,
             ConfigurationChannel = string.Empty,
             ClientName = "ignixa-federation-interop-tests",
+            Tunnel = new LoopbackEndpointGuard(port),
         };
-        return await ConnectionMultiplexer.ConnectAsync(options);
+
+    // Every physical connection the client opens (initial, learned from topology or redirects, interactive or
+    // subscription, and every reconnect) first asks the tunnel which endpoint to dial, before creating a socket. Only
+    // the exact numerical 127.0.0.1 endpoint and port is dialed; for anything else no socket is created, and the
+    // connection fails at the authentication hook, which the client records as a connection failure.
+    private sealed class LoopbackEndpointGuard(int port) : Tunnel
+    {
+        public override ValueTask<EndPoint?> GetSocketConnectEndpointAsync(EndPoint endpoint, CancellationToken cancellationToken) =>
+            new(endpoint is IPEndPoint { AddressFamily: AddressFamily.InterNetwork } ip && ip.Address.Equals(IPAddress.Loopback) && ip.Port == port
+                ? new IPEndPoint(IPAddress.Loopback, port)
+                : null);
+
+        public override ValueTask<Stream?> BeforeAuthenticateAsync(
+            EndPoint endpoint, ConnectionType connectionType, Socket? socket, CancellationToken cancellationToken) =>
+            socket is null
+                ? throw new InvalidOperationException("Refused a Redis endpoint other than the interop fixture's loopback endpoint.")
+                : default;
     }
 
     // The identity checks: a standalone primary at least MinimumVersion, listening on the port it was given, with an

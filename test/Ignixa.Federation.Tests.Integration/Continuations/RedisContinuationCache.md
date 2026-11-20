@@ -91,7 +91,8 @@ Consequences:
 ## Running the interop tests
 
 The interop tests read two variables from the test process environment: `FEDERATION_TEST_REDIS_PORT` and
-`FEDERATION_TEST_REDIS_PASSWORD`. They connect only to `127.0.0.1`.
+`FEDERATION_TEST_REDIS_PASSWORD`. Every fixture connection dials only the numerical IPv4 `127.0.0.1` endpoint on
+that port; see "Endpoint containment".
 
 - Neither variable set: every interop test is reported as skipped with "No real Redis behaviour was validated".
   A skipped test is not evidence.
@@ -103,6 +104,32 @@ The interop tests read two variables from the test process environment: `FEDERAT
   adapter's Redis 7.0 minimum. Use a freshly launched, disposable process for each run.
 
 A real validation run reports 16 interop tests succeeded and 0 skipped. Never commit or log the variable values.
+
+## Endpoint containment
+
+The client's seed list is not an allowlist. StackExchange.Redis 2.13.23 can learn further endpoints from server
+topology or redirects while connecting, before the fixture's identity checks run, and it reconnects on its own.
+Every fixture connection, inspector and adapter, RESP2 and RESP3, therefore carries a `Tunnel` guard.
+`PhysicalConnection.BeginConnectAsync` asks the tunnel which endpoint to dial before it creates any socket. The
+guard returns the fixture's own `127.0.0.1:port` only for an `IPEndPoint` that is IPv4 `127.0.0.1` on exactly that
+port. For anything else it returns no endpoint, so no socket is created. That includes other ports,
+other loopback addresses, IPv6 and IPv4-mapped aliases, and unresolved host names. The connection then fails in
+`BeforeAuthenticateAsync`, inside the client's own failure handling, with a fixed message that names no endpoint.
+The identity, version, empty-keyspace and protocol checks still run after connecting.
+
+`RedisInteropFixtureTests` runs in the regular test run and needs no Redis process:
+
+- Tested offline: for every combination of protocol and admin mode, the fixture's options dial only the allowed
+  endpoint and refuse the aliases above. The authentication hook fails a refused endpoint and passes an allowed
+  socket through.
+- Tested with listeners the test owns on loopback, which never answer: a multiplexer built from the fixture's
+  options, seeded with refused endpoints on a decoy port, connects only to the allowed listener. Decoys listen on
+  IPv4 and IPv6 loopback. After its connections are dropped, it dials the allowed listener again, and neither decoy
+  ever accepts a connection. Without the guard this test fails because the decoy port is dialed.
+- Inferred from the pinned client source, not tested: endpoints learned from cluster topology or `MOVED`/`ASK`
+  redirects, and reconnects of a specific bridge, take the same `BeginConnectAsync` path as seeds. A refused
+  endpoint is then recorded as a connection failure rather than left pending. The tests show that nothing outside
+  the allowed endpoint is dialed, but not how the client reports the refusal.
 
 ## Topology limits
 
@@ -118,3 +145,6 @@ A real validation run reports 16 interop tests succeeded and 0 skipped. Never co
   0 skipped. With the equality guards weakened from `<=` to `<`, 4 failed: the three exact-millisecond tests and
   write refusal at Redis now. The committed source has the guards.
 - The coordinator's exact-head run is the authoritative record of real interop for this change.
+- With the endpoint guard (R53), `RedisInteropFixtureTests` failed 3 of 3 without the guard and passed 3 of 3 with
+  it, including 5 consecutive repeat runs. A disposable implementer run through the same Redis 7.4.12 fixture still
+  reported 16 interop tests succeeded and 0 skipped.
