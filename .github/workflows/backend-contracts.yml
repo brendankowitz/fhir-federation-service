@@ -27,7 +27,7 @@ jobs:
   reference-search:
     name: Reference search (Microsoft FHIR Server R4 on SQL)
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 60
     steps:
       - name: Check out
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
@@ -43,7 +43,7 @@ jobs:
         run: >-
           dotnet run --project test/Ignixa.Federation.Tests.BackendContracts/Ignixa.Federation.Tests.BackendContracts.csproj
           --configuration Release -- --show-live-output on --progress off --fail-skips on
-          --filter-class '*EvidenceTests' --minimum-expected-tests 265
+          --filter-class '*EvidenceTests' --minimum-expected-tests 214
 
       - name: Run live Docker contracts
         run: >-

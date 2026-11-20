@@ -53,9 +53,9 @@ It does not require the server to preserve that spelling on read-back.
 ## Patient count witness (`_count=0`)
 
 A second, separate witness records whether the backend reports an exact filtered `total` for a
-`_count=0` Patient search. It starts its own backend (a second fixture) and seeds three Patients. The two
-fixtures run separately: the count collection disables parallelization, so the two SQL backends never
-run at the same time.
+`_count=0` Patient search. It starts its own backend (a second fixture) and seeds three Patients. Overall the
+live suite has three isolated, serial SQL/FHIR fixtures (reference, count and Patient.given). Each collection
+disables parallelization, so no two SQL backends ever run at the same time.
 
 | Patient | `gender` |
 | --- | --- |
@@ -90,7 +90,8 @@ the sanitized report, the request construction, the seed shape, and the generali
 A third witness records how the backend handles the same `_id` sent twice. The two sent occurrences are
 one plain spelling and one raw-escaped spelling that decode to the same name and value:
 `_id=count-female-1` and `%5Fid=%63ount-female-1`. It reuses the seeded count backend through a shared
-collection fixture, so no third SQL start occurs. Four live cases, each independent:
+collection fixture, so it adds no SQL/FHIR start of its own; the suite has three isolated serial fixtures overall
+(reference, count and Patient.given). Four live cases, each independent:
 
 | Method | Shape | Controls (after the pair) | Match contract |
 | --- | --- | --- | --- |
@@ -125,7 +126,7 @@ the actual request target and form body sent by the client.
 A fourth witness records how the backend handles `Patient.given` string search: a default match, a second
 value, the AND of a repeated parameter, the OR of a comma list, and `:exact`. It has its own disposable seed
 and its own live fixture and collection (`PatientGivenBackendFixture`, `LiveGivenBackendDefinition`), so it
-adds one more SQL start and the count, exact-id and reference seeds are unchanged. The six seeded Patients are
+is the third isolated serial SQL/FHIR fixture; the count, exact-id and reference seeds are unchanged. The six seeded Patients are
 synthetic, each with one `name.given` list:
 
 | id | given |
@@ -165,12 +166,21 @@ Each case is a contract on two things, reported apart:
   that decodes the same is accepted.
 
 Reports print reserved ids and the expected pairs only, plus a count of unexpected pairs, never the response
-body or a server link. Offline tests (`PatientGivenEvidenceTests`, no Docker) cover the pinned matrix, the seed,
-readiness, the parser, wrong multisets, broken echoes and the request wire shape.
+body or a server link. Offline tests (`PatientGivenEvidenceTests`, no Docker) are few and data-driven: seed
+isolation and readiness; the expected result; wrong match multisets (each AND conjunct alone, each OR branch
+lost, `:exact` treated as a prefix or case-insensitive, a duplicate, a partial page) that fail despite a correct
+echo; wrong echoes (dropped, replaced, collapsed, merged, split, added or unexpected pairs) that fail despite a
+correct match; decoded-equivalent echo spellings that pass; responses that cannot be accounted for; sanitized
+reports; and the literal GET and POST wire for AND, OR and `:exact`. Mutating the `GivenEvidence` conjunction
+to OR is rejected by both the wrong-match and the wrong-echo controls.
 
-The Ignixa R4 host reference run (Microsoft FHIR Server for Azure, 1.0.0) historically matched and echoed all six
-shapes in GET and POST. That native run is a separate reference for the literal cases only; it is not a result of
-this harness and not a substitute for the Linux Docker run. No live outcome of this witness is recorded yet.
+Historical reference only: a separate native Windows LocalDB run of the Microsoft FHIR Server (the "west"
+build, not Ignixa) reported `FHIR Server for Azure` / `1.0.0` in its metadata. It sent the six shapes with
+`_count=20` and no `_total=accurate`, and every required selected pair was present in `Bundle.self`. That echo
+check is one-sided (it does not rule out extra pairs), and only the independent match multiset proves that
+a selection was effectively applied. That run is not this harness, not the pinned
+`r4-fhir-server:5.2.84` image and not a Linux Docker run, so it is not evidence for this suite. No live
+outcome of this witness is recorded yet.
 
 ## Run it
 
@@ -179,15 +189,16 @@ The harness uses `/var/run/docker.sock` on Linux and the Docker Desktop Linux en
 Run the same two commands as CI from the repository root:
 
 ```text
-dotnet run --project test/Ignixa.Federation.Tests.BackendContracts/Ignixa.Federation.Tests.BackendContracts.csproj --configuration Release -- --show-live-output on --progress off --fail-skips on --filter-class '*EvidenceTests' --minimum-expected-tests 265
-dotnet run --project test/Ignixa.Federation.Tests.BackendContracts/Ignixa.Federation.Tests.BackendContracts.csproj --configuration Release --no-build -- --show-live-output on --progress off --fail-skips on --filter-class '*ContractTests' --minimum-expected-tests 25
+dotnet run --project test/Ignixa.Federation.Tests.BackendContracts/Ignixa.Federation.Tests.BackendContracts.csproj --configuration Release -- --show-live-output on --progress off --fail-skips on --filter-class '*EvidenceTests' --minimum-expected-tests 214dotnet run --project test/Ignixa.Federation.Tests.BackendContracts/Ignixa.Federation.Tests.BackendContracts.csproj --configuration Release --no-build -- --show-live-output on --progress off --fail-skips on --filter-class '*ContractTests' --minimum-expected-tests 25
 ```
 
-The first command builds the project and runs the 265 offline tests. The second runs the twenty-five live cases
+The first command builds the project and runs the 214 offline tests. The second runs the twenty-five live cases
 (three reference, six count, four repeated `_id`, twelve Patient.given) using that build. The separate filters and minimum test counts prevent
 offline tests from satisfying the live gate. Failed or skipped cases make their command exit non-zero.
 
-The first live run can take several minutes to pull images and initialize the SQL schema.
+The first live run can take several minutes to pull images and initialize the SQL schema. Each of the three
+serial fixtures has a 12-minute startup budget, so the CI job has a 60-minute ceiling: 36 minutes of startup
+plus the bounded requests, teardown and build.
 
 The project is intentionally outside the main solution; use the standalone commands above.
 
@@ -240,7 +251,7 @@ base and can include foreign references, so it is not an exact-local query.
 
 - Local (Windows, no Docker engine): the project builds with the .NET 11.0.100 SDK. The offline tests pass.
   The twenty-five live cases (three reference, six count, four repeated `_id`, twelve Patient.given) run and fail
-  with `[prerequisite]`, as they should without Docker: the offline run is 265 passed, 0 failed, 0 skipped,
+  with `[prerequisite]`, as they should without Docker: the offline run is 214 passed, 0 failed, 0 skipped,
   and the live run is 25 total, 0 passed, 25 failed, 0 skipped.
 - Pending Docker or CI: startup, port binding, match sets, the Patient count totals, the repeated
   `_id` match and echo outcomes, and the Patient.given match and echo outcomes have not been verified against a
