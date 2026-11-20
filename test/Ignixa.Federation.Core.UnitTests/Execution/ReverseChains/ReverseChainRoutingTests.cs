@@ -12,6 +12,23 @@ namespace Ignixa.Federation.Core.UnitTests.Execution.ReverseChains;
 public sealed class ReverseChainRoutingTests
 {
     [Theory]
+    [InlineData("%5Fid=d%75p", ShardSearchMethod.Get)]
+    [InlineData("name=Jo+Ann&%6Eame=Jo%20Ann", ShardSearchMethod.Get)]
+    [InlineData("name=Jo+Ann&name=Jo%2BAnn", ShardSearchMethod.PostSearch)]
+    public async Task TransportComparesFormDecodedPairsWithoutChangingTheWireText(string kept, ShardSearchMethod method)
+    {
+        var fixture = new ReverseChainFixture();
+        fixture.Client.OnSearch(East, Page(null, Obs("witness", "Patient/dup")));
+        fixture.Client.OnSearch(West, Page(null));
+
+        var result = await fixture.ResolveAsync(fixture.Plan(Has + "=1&" + kept));
+        var target = result.Targets.ShouldHaveSingleItem();
+        target.Replacements.ShouldHaveSingleItem().ShouldBe(KeyValuePair.Create(0, "dup"));
+        QueryRewriter.Render(target.Request(5).Parameters).ShouldBe("_id=dup&" + kept);
+        target.Method.ShouldBe(method);
+    }
+
+    [Theory]
     [InlineData(Has + "=1&" + Has + "=2", "_id=a&_id=a", ShardSearchMethod.Get)]
     [InlineData(Has + "=1&_id=a", "_id=a&_id=a", ShardSearchMethod.Get)]
     [InlineData(Has + "=1", "_id=a", ShardSearchMethod.PostSearch)]
