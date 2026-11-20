@@ -83,9 +83,11 @@ internal sealed class FetchScheduler : IAsyncDisposable
     }
 
     /// <summary>
-    /// Gets a stream's first page for the frontier: the speculative result when a speculative call started it, otherwise a
-    /// needed call with the queued request, or with <paramref name="remaining"/> when the stream was never queued. Reaching a
-    /// speculatively started stream frees its window slot for the next queued fetch.
+    /// Gets a stream's first page for the frontier. A speculative call that already started the stream supplies its result,
+    /// and the request it sent. Any other stream, queued or never queued, gets a needed call with a fresh request for
+    /// <paramref name="remaining"/> (within the backend's maximum), so it never over-fetches what the page still needs;
+    /// the queued request built at trigger time is dropped unsent. Reaching a speculatively started stream frees its
+    /// window slot for the next queued fetch.
     /// </summary>
     /// <returns>The page, and the request whose response it is.</returns>
     public async Task<(ShardPage Page, ShardSearchRequest Sent)> FirstPageAsync(ShardStream stream, int remaining)
@@ -108,7 +110,7 @@ internal sealed class FetchScheduler : IAsyncDisposable
             }
         }
 
-        ShardSearchRequest sent = fetch?.Request ?? stream.FirstPage(remaining);
+        ShardSearchRequest sent = speculative ? fetch!.Request : stream.FirstPage(remaining);
         Task<ShardPage> completed = speculative
             ? await fetch!.Outcome
             : await CallAsync(sent, null, _caller);

@@ -68,6 +68,24 @@ public sealed class UnsortedPageExecutorBudgetTests
 
     [Theory]
     [MemberData(nameof(Iterations))]
+    public async Task QueuedFetchTheBudgetBlocked_IsSentByTheFrontierWithTheCountStillNeeded(int iteration)
+    {
+        _ = iteration;
+        var client = new FakeShardClient();
+        client.OnSearch(0, Fixture.Page(null, Fixture.Entries(0, "a")));
+        client.OnSearch(1, Fixture.Page(null, Fixture.Entries(1, "b", "c")));
+        client.Serve(2, ["d", "e", "f"]);
+
+        UnsortedPage page = await Fixture.Executor(client, Fixture.Registry(3), 4).ExecuteAsync(Fixture.Streams(3), 5, null, 3, Token);
+
+        page.Ids().ShouldBe([.. Fixture.Ids(0, "a"), .. Fixture.Ids(1, "b", "c"), .. Fixture.Ids(2, "d", "e")]);
+        client.Calls.Select(c => c.ToString()).Order().ShouldBe(["search s0 count=5", "search s1 count=4", "search s2 count=2"]);
+        page.Next.ShouldNotBeNull().Cursor.ShouldNotBeNull().Shard.ShouldBe(Fixture.Shard(2));
+        page.Fetches.ShouldBe(3);
+    }
+
+    [Theory]
+    [MemberData(nameof(Iterations))]
     public async Task Speculation_NeverSpendsTheFrontiersLastCall(int iteration)
     {
         _ = iteration;
