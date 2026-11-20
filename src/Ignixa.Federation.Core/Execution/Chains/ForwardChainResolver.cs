@@ -297,8 +297,9 @@ public sealed class ForwardChainResolver
             var keys = new HashSet<ResourceKey>();
             foreach (ShardStream stream in streams)
             {
+                // Every cursor redeemed for this stream stays in the set, so Validate fails a page naming any of them again:
+                // that bounds a cursor cycle by its length without a separate cycle detector.
                 var redeemed = new HashSet<ShardCursor>();
-                CursorCycleState cycle = CursorCycleState.Initial;
                 (ShardPage page, _) = await scheduler.FirstPageAsync(stream, int.MaxValue);
                 while (true)
                 {
@@ -320,7 +321,6 @@ public sealed class ForwardChainResolver
                         break;
                     }
 
-                    cycle = stream.Follow(cycle, next);
                     redeemed.Add(next);
                     page = await scheduler.ContinueAsync(next);
                 }
