@@ -55,6 +55,20 @@ public sealed class ReverseChainTransportAdmissionTests
     }
 
     [Fact]
+    public async Task AnInvalidRequestReportedByTheHostPredicatePropagatesUnchangedRatherThanAsTooCostly()
+    {
+        ReverseChainFixture fixture = Scripted(westOwnsB: true);
+        var invalid = new ArgumentException("invalid request");
+
+        var exception = await Should.ThrowAsync<ArgumentException>(
+            Resolve(fixture, Has + "=1", r => r.Shard == East ? true : throw invalid));
+
+        exception.ShouldBeSameAs(invalid);
+        _measured.Select(r => r.Shard).ShouldBe([East, West]);
+        fixture.Client.Calls.Select(c => c.Search!.Type).ShouldBe([Observation, Observation]);
+    }
+
+    [Fact]
     public async Task RawDuplicateIdsOnAPostCapableMicrosoftShardAreMeasuredAsTheGetThatPreservesThem()
     {
         var result = await Resolve(Scripted(), TwoClauses + "&_total=accurate", _ => true);
