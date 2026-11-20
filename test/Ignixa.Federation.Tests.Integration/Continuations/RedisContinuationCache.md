@@ -122,14 +122,22 @@ The identity, version, empty-keyspace and protocol checks still run after connec
 - Tested offline: for every combination of protocol and admin mode, the fixture's options dial only the allowed
   endpoint and refuse the aliases above. The authentication hook fails a refused endpoint and passes an allowed
   socket through.
-- Tested with listeners the test owns on loopback, which never answer: a multiplexer built from the fixture's
-  options, seeded with refused endpoints on a decoy port, connects only to the allowed listener. Decoys listen on
-  IPv4 and IPv6 loopback. After its connections are dropped, it dials the allowed listener again, and neither decoy
-  ever accepts a connection. Without the guard this test fails because the decoy port is dialed.
+- Tested live, against listeners the test owns: one test uses an IPv4 loopback decoy, and one uses an IPv6 loopback
+  decoy when the host can bind it. Each listener is bound to its own ephemeral port, held exclusively on Windows,
+  never answers, and stays open until after the multiplexer is disposed.
+  - The live options name only the exact numerical endpoints of the allowed listener and the decoy: no host names,
+    unbound addresses or ports, mapped forms, or remote addresses. So even without the guard, no dial can reach a
+    target the test does not own. The aliases listed above are checked offline only.
+  - The client's own counter shows it attempted the decoy at least twice, its first attempt and a retry, and the
+    decoy accepted no connection.
+  - After the test closes the allowed listener's connections, the client dials it again.
+  - No connection ever completes a handshake, so a repeated dial is a connect retry, not an authenticated
+    reconnect, and no topology is learned.
+  - If IPv6 loopback cannot be bound, the IPv6 test is reported as skipped. Any other bind failure fails the test.
 - Inferred from the pinned client source, not tested: endpoints learned from cluster topology or `MOVED`/`ASK`
-  redirects, and reconnects of a specific bridge, take the same `BeginConnectAsync` path as seeds. A refused
-  endpoint is then recorded as a connection failure rather than left pending. The tests show that nothing outside
-  the allowed endpoint is dialed, but not how the client reports the refusal.
+  redirects, and reconnects after an authenticated connection drops, take the same per-bridge `BeginConnectAsync`
+  path as a seed's attempts. A refused endpoint is recorded as a connection failure rather than left pending. The
+  tests show that the decoy is attempted and never dialed, but not how the client reports the refusal.
 
 ## Topology limits
 
@@ -148,3 +156,8 @@ The identity, version, empty-keyspace and protocol checks still run after connec
 - With the endpoint guard (R53), `RedisInteropFixtureTests` failed 3 of 3 without the guard and passed 3 of 3 with
   it, including 5 consecutive repeat runs. A disposable implementer run through the same Redis 7.4.12 fixture still
   reported 16 interop tests succeeded and 0 skipped.
+- R53 fix round 1 supersedes that control, whose live seeds included host names and unbound endpoints. The live
+  tests now name only owned listener endpoints. With a compiled guard-absent control,
+  `RedisInteropFixtureTests` failed 4 of 4: the two offline tests because the options had no guard, and both live
+  tests because the decoy was dialed, over IPv4 and over IPv6. With the guard, it passed 4 of 4 in 6 consecutive
+  runs, with the IPv6 decoy active and not skipped.

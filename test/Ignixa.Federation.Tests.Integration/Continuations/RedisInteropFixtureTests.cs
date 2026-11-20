@@ -7,10 +7,10 @@ using StackExchange.Redis;
 namespace Ignixa.Federation.Tests.Integration.Continuations;
 
 /// <summary>
-/// The containment of <see cref="RedisInteropFixture"/>'s connections: whatever endpoints a multiplexer built from the
-/// fixture's options learns, from its seed, from server topology, or on reconnect, it dials only the one numerical
-/// IPv4 <c>127.0.0.1</c> endpoint and port the fixture was given. No process and no external target: the checks use
-/// the options' own dial hook offline, and listeners this test owns on loopback.
+/// The containment of <see cref="RedisInteropFixture"/>'s connections: whatever endpoint a multiplexer built from the
+/// fixture's options attempts, it dials only the one numerical IPv4 <c>127.0.0.1</c> endpoint and port the fixture was
+/// given. No process and no external target: every candidate alias is checked offline against the options' own dial
+/// hook, and the live checks name only the exact endpoints of listeners this test has bound and owns.
 /// </summary>
 public sealed class RedisInteropFixtureTests
 {
@@ -61,37 +61,62 @@ public sealed class RedisInteropFixtureTests
     }
 
     [Fact]
-    public async Task AMultiplexerFromFixtureOptions_DialsOnlyItsEndpoint_IncludingOnReconnect()
+    public async Task AMultiplexerFromFixtureOptions_NeverDialsAnIPv4LoopbackDecoy()
     {
-        // The allowed listener stands in for Redis but never answers, so the client keeps reconnecting to it. The
-        // decoys listen on another loopback port, over IPv4 and IPv6, where any dial to a refused alias would land.
-        await using var allowed = CountingListener.Start(IPAddress.Loopback, 0)!;
-        await using var decoy = CountingListener.Start(IPAddress.Loopback, 0)!;
-        await using CountingListener? decoyV6 = CountingListener.Start(IPAddress.IPv6Loopback, decoy.Port);
+        await using CountingListener decoy = CountingListener.Start(IPAddress.Loopback);
+        await AssertDialsOnlyTheAllowedListener(decoy);
+    }
+
+    [Fact]
+    public async Task AMultiplexerFromFixtureOptions_NeverDialsAnIPv6LoopbackDecoy()
+    {
+        await using CountingListener? decoy = CountingListener.TryStartOnIPv6Loopback();
+        if (decoy is null)
+        {
+            Assert.Skip("IPv6 loopback cannot be bound on this host, so its live dial check did not run. "
+                + "The offline check still refuses IPv6 and IPv4-mapped endpoints.");
+        }
+
+        await AssertDialsOnlyTheAllowedListener(decoy);
+    }
+
+    // The live options name exactly two numerical endpoints, the allowed listener and the decoy, both bound and owned by
+    // this test until after the multiplexer is disposed. So even with the guard missing, no dial can reach anything the
+    // test does not own: never a host name, an unbound address or port, or a remote address. Neither listener ever
+    // answers, so no connection completes a handshake. Every repeated dial is the client's connect retry, not an
+    // authenticated reconnect, and no topology is ever learned.
+    private static async Task AssertDialsOnlyTheAllowedListener(CountingListener decoy)
+    {
+        await using CountingListener allowed = CountingListener.Start(IPAddress.Loopback);
 
         ConfigurationOptions options = RedisInteropFixture.ConnectionOptions(allowed.Port, Password, allowAdmin: true, RedisProtocol.Resp2);
         options.AbortOnConnectFail = false;
         options.ConnectTimeout = 1000;
+        options.EndPoints.Add(decoy.EndPoint);
+        options.EndPoints.ShouldBe([allowed.EndPoint, decoy.EndPoint], ignoreOrder: true);
 
-        // Extra seeds take the same connect path as endpoints learned from topology or redirects.
-        foreach ((_, EndPoint endpoint) in Disallowed(allowed.Port, decoy.Port).Where(d => d.Endpoint is DnsEndPoint || ((IPEndPoint)d.Endpoint).Port == decoy.Port))
+        await using (ConnectionMultiplexer multiplexer = await ConnectionMultiplexer.ConnectAsync(options))
         {
-            options.EndPoints.Add(endpoint);
-        }
+            IServer allowedServer = multiplexer.GetServer(allowed.EndPoint);
+            IServer decoyServer = multiplexer.GetServer(decoy.EndPoint);
 
-        {
-            await using ConnectionMultiplexer multiplexer = await ConnectionMultiplexer.ConnectAsync(options);
+            // The client counts a connection attempt before asking the tunnel what to dial; the listener counts dials.
+            await WaitUntil(() => decoy.Accepted > 0 || Attempts(decoyServer) >= 2, "The client never attempted the decoy twice.");
+            decoy.Accepted.ShouldBe(0, "A fixture connection dialed the decoy.");
             await WaitUntil(() => allowed.Accepted > 0, "The client never dialed the allowed endpoint.");
 
+            // After the test closes the allowed listener's half-open connections, the client dials it again, through the
+            // per-bridge connect path a reconnect also takes.
             int initial = allowed.Accepted;
             allowed.DropAll();
-            await WaitUntil(() => allowed.Accepted > initial, "The client never reconnected to the allowed endpoint.");
+            await WaitUntil(() => allowed.Accepted > initial, "The client never dialed the allowed endpoint again.");
+            allowedServer.IsConnected.ShouldBeFalse("A never-answering listener completed a handshake.");
         }
 
-        decoy.Accepted.ShouldBe(0, "A fixture connection dialed another loopback port.");
-        (decoyV6?.Accepted ?? 0).ShouldBe(0, "A fixture connection dialed an IPv6 loopback alias.");
+        decoy.Accepted.ShouldBe(0, "A fixture connection dialed the decoy.");
     }
 
+    private static long Attempts(IServer server) => server.GetCounters().Interactive.SocketCount;
     // Endpoints the fixture must never dial, given the allowed port and another loopback port.
     private static IEnumerable<(string Label, EndPoint Endpoint)> Disallowed(int allowedPort, int otherPort) =>
     [
@@ -132,22 +157,49 @@ public sealed class RedisInteropFixtureTests
             _accepting = AcceptAsync();
         }
 
-        public int Port => ((IPEndPoint)_listener.LocalEndpoint).Port;
+        // The numerical endpoint the listener is bound to.
+        public IPEndPoint EndPoint => (IPEndPoint)_listener.LocalEndpoint;
+
+        public int Port => EndPoint.Port;
 
         public int Accepted => Volatile.Read(ref _accepted);
 
-        // Null when the address cannot be bound here, as IPv6 loopback can be on some hosts.
-        public static CountingListener? Start(IPAddress address, int port)
+        // On an ephemeral port of the given address, held exclusively on Windows so no other socket can share it.
+        public static CountingListener Start(IPAddress address)
         {
-            var listener = new TcpListener(address, port);
+            var listener = new TcpListener(address, 0);
             try
             {
+                if (OperatingSystem.IsWindows())
+                {
+                    listener.ExclusiveAddressUse = true;
+                }
+
                 listener.Start();
-                return new CountingListener(listener);
             }
-            catch (SocketException)
+            catch
             {
                 listener.Dispose();
+                throw;
+            }
+
+            return new CountingListener(listener);
+        }
+
+        // Null only when the host has no IPv6 loopback to bind; any other bind failure fails the test.
+        public static CountingListener? TryStartOnIPv6Loopback()
+        {
+            if (!Socket.OSSupportsIPv6)
+            {
+                return null;
+            }
+
+            try
+            {
+                return Start(IPAddress.IPv6Loopback);
+            }
+            catch (SocketException exception) when (exception.SocketErrorCode is SocketError.AddressFamilyNotSupported or SocketError.AddressNotAvailable)
+            {
                 return null;
             }
         }
