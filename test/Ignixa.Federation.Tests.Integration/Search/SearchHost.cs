@@ -75,10 +75,27 @@ internal sealed class SearchHost : IDisposable
 
                 services.Configure<JwtBearerOptions>(
                     FederationCallerAuthentication.SchemeName,
-                    options => options.BackchannelHttpHandler = setup.IdentityProvider);
+                    options =>
+                    {
+                        options.BackchannelHttpHandler = setup.IdentityProvider;
+                        setup.ConfigureJwtBearer?.Invoke(options);
+                    });
+                setup.ConfigureServices?.Invoke(services);
             });
         });
         Client = _factory.CreateClient(new WebApplicationFactoryClientOptions { AllowAutoRedirect = false });
+        if (setup.WaitForReadiness)
+        {
+            try
+            {
+                WaitForReadinessAsync().GetAwaiter().GetResult();
+            }
+            catch
+            {
+                Dispose();
+                throw;
+            }
+        }
     }
 
     public ScriptedShards Shards { get; }
@@ -86,6 +103,25 @@ internal sealed class SearchHost : IDisposable
     public SyntheticIdentityProvider IdentityProvider { get; }
 
     public HttpClient Client { get; }
+
+    public IServiceProvider Services => _factory.Services;
+
+    public async Task WaitForReadinessAsync()
+    {
+        using var guard = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        guard.CancelAfter(TimeSpan.FromSeconds(15));
+        do
+        {
+            using HttpResponseMessage response = await Client.GetAsync(new Uri("/health/ready", UriKind.Relative), guard.Token).ConfigureAwait(false);
+            if (response.IsSuccessStatusCode)
+            {
+                return;
+            }
+
+            await Task.Delay(TimeSpan.FromMilliseconds(10), guard.Token).ConfigureAwait(false);
+        }
+        while (true);
+    }
 
     public static SearchHost Start(Action<SearchHostSetup>? configure = null)
     {
@@ -175,6 +211,12 @@ internal sealed class SearchHostSetup
     public ScriptedShards Shards { get; set; } = new();
 
     public SyntheticIdentityProvider IdentityProvider { get; set; } = new();
+
+    public Action<JwtBearerOptions>? ConfigureJwtBearer { get; set; }
+
+    public Action<IServiceCollection>? ConfigureServices { get; set; }
+
+    public bool WaitForReadiness { get; set; } = true;
 
     /// <summary>Gets or sets a shared Data Protection provider; when unset the host gets its own isolated key ring.</summary>
     public IDataProtectionProvider? Protection { get; set; }

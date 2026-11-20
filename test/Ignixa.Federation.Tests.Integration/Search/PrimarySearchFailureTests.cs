@@ -346,6 +346,25 @@ public sealed class PrimarySearchFailureTests
     }
 
     [Fact]
+    public async Task ExpiredBudgetTakesPrecedenceOverColdSigningReadiness()
+    {
+        var time = new DeadlineArmingTimeProvider(TimeSpan.FromSeconds(17), expireWhenArmed: true);
+        using var host = SearchHost.Start(setup =>
+        {
+            setup.Time = time;
+            setup.Settings["Federation:Timeouts:Request"] = "00:00:17";
+            setup.WaitForReadiness = false;
+            setup.IdentityProvider.BeforeResponse = (_, _, cancellation) => Task.Delay(Timeout.Infinite, cancellation);
+        });
+
+        SearchResult result = await host.GetAsync("/Patient?name=Orchid");
+
+        result.StatusCode.ShouldBe(HttpStatusCode.GatewayTimeout);
+        result.IssueCode.ShouldBe("timeout");
+        host.Shards.Calls.ShouldBeEmpty();
+    }
+
+    [Fact]
     public async Task RequestDeadline_BoundsASlowAuthenticatedBody_WithoutAnyShardCall()
     {
         // The request deadline starts at entry: a caller that sends half a form and stalls is answered 504 when the deadline

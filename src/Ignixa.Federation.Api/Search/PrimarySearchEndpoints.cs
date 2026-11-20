@@ -1,6 +1,10 @@
 using Ignixa.Federation.Api.Authentication;
+using Ignixa.Federation.Api.Budgets;
+using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.DataProtection;
+using Microsoft.AspNetCore.Http.Features;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Options;
 
 namespace Ignixa.Federation.Api.Search;
 
@@ -14,6 +18,7 @@ internal static class PrimarySearchEndpoints
 {
     /// <summary>The Data Protection application discriminator; instances that share a key ring and this name redeem each other's tokens.</summary>
     private const string ApplicationName = "Ignixa.Federation";
+    private const string SigningUnavailable = "Caller signing configuration is not ready.";
 
     /// <summary>Registers the search services when the host is configured for search.</summary>
     /// <param name="builder">The application builder.</param>
@@ -30,9 +35,32 @@ internal static class PrimarySearchEndpoints
         builder.Services.AddAuthentication().AddFederationCallerJwtBearer(settings.Authority, settings.Issuer, settings.Audience);
         builder.Services.AddDataProtection().SetApplicationName(ApplicationName);
         builder.Services.TryAddSingleton(TimeProvider.System);
+        builder.Services.AddSingleton(services => new SigningConfiguration(
+            settings.Authority,
+            settings.Issuer,
+            services.GetRequiredService<TimeProvider>(),
+            () => services.GetRequiredService<IOptionsMonitor<JwtBearerOptions>>()
+                .Get(FederationCallerAuthentication.SchemeName).BackchannelHttpHandler,
+            services.GetRequiredService<ILogger<SigningConfiguration>>()));
+        builder.Services.AddHostedService(services => services.GetRequiredService<SigningConfiguration>());
+        builder.Services.AddHealthChecks().AddCheck<SigningConfiguration>(SigningConfiguration.HealthCheckName, tags: ["ready"]);
+        builder.Services.AddOptions<JwtBearerOptions>(FederationCallerAuthentication.SchemeName)
+            .Configure<SigningConfiguration>((options, signing) => options.ConfigurationManager = signing);
+        // The handler logs token validation exceptions from the library. Keep detailed token data out of host logs.
+        builder.Logging.AddFilter(typeof(JwtBearerHandler).FullName, LogLevel.None);
         builder.Services.AddSingleton(settings);
         builder.Services.AddSingleton(services => PrimarySearch.Create(services, settings));
         return builder;
+    }
+
+    /// <summary>Starts the single search budget after routing but before the explicit authentication middleware.</summary>
+    public static void UsePrimarySearchBudget(this WebApplication app)
+    {
+        var search = app.Services.GetRequiredService<PrimarySearch>();
+        var signing = app.Services.GetRequiredService<SigningConfiguration>();
+        app.Use((http, next) => http.GetEndpoint()?.Metadata.GetMetadata<SearchEndpoint>() is null
+            ? next(http)
+            : ServeWithBudgetAsync(http, next, search, signing));
     }
 
     /// <summary>Maps <c>GET [type]</c> and <c>POST [type]/_search</c>; builds the search now when it is configured.</summary>
@@ -43,13 +71,48 @@ internal static class PrimarySearchEndpoints
     {
         PrimarySearch? search = app.Services.GetService<SearchHostSettings>() is null ? null : app.Services.GetRequiredService<PrimarySearch>();
         string route = "/{type:" + ResourceTypeRouteConstraint.Name + "}";
-        app.MapGet(route, (HttpContext http, string type) => Serve(search, http, type, post: false));
-        app.MapPost(route + "/_search", (HttpContext http, string type) => Serve(search, http, type, post: true));
+        app.MapGet(route, (HttpContext http, string type) => Serve(search, http, type, post: false)).WithMetadata(SearchEndpoint.Marker);
+        app.MapPost(route + "/_search", (HttpContext http, string type) => Serve(search, http, type, post: true)).WithMetadata(SearchEndpoint.Marker);
         return app;
+    }
+
+    private static async Task ServeWithBudgetAsync(HttpContext http, RequestDelegate next, PrimarySearch search, SigningConfiguration signing)
+    {
+        using RequestBudget budget = search.StartBudget(http.RequestAborted);
+        if (signing.FreshPublicationTimestamp is not { } publishedAt)
+        {
+            IResult result = SearchOutcome.Unavailable(SigningUnavailable);
+            try
+            {
+                budget.Checkpoint();
+            }
+            catch (RequestDeadlineExceededException)
+            {
+                result = SearchOutcome.TimedOut();
+            }
+
+            await result.ExecuteAsync(http);
+            return;
+        }
+
+        http.Features.Set(new SearchRequest(budget, signing, publishedAt));
+        await next(http);
     }
 
     private static Task<IResult> Serve(PrimarySearch? search, HttpContext http, string type, bool post) =>
         search is null
             ? Task.FromResult(SearchOutcome.Unavailable("Search is not configured on this host."))
-            : search.SearchAsync(http, type, post);
+            : search.SearchAsync(http, type, post, http.Features.GetRequiredFeature<SearchRequest>());
+
+    private sealed class SearchEndpoint
+    {
+        public static SearchEndpoint Marker { get; } = new();
+    }
+
+    /// <summary>Per-search feature holding the budget and the pre-authentication signing freshness bound.</summary>
+    internal sealed record SearchRequest(RequestBudget Budget, SigningConfiguration Signing, long SigningPublishedAt)
+    {
+        // A refresh completing concurrently must not extend an in-flight authentication's freshness bound.
+        public IResult? CheckSigning() => Signing.IsFresh(SigningPublishedAt) ? null : SearchOutcome.Unavailable(SigningUnavailable);
+    }
 }

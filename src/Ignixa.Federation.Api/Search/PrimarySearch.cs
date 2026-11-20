@@ -42,9 +42,8 @@ namespace Ignixa.Federation.Api.Search;
 /// limits, or an inline token, is 503, never a truncated or partial page.
 /// </para>
 /// <para>
-/// <b>Failure.</b> One <see cref="RequestBudget"/> spans endpoint processing (body read, planning, shard work and
-/// materializing the page). ASP.NET authentication middleware can authenticate before endpoint entry; this budget
-/// cannot bound cold signing-metadata discovery or rollover. Every failure is a whole-request <c>OperationOutcome</c>
+/// <b>Failure.</b> One <see cref="RequestBudget"/> spans authentication, body read, planning, shard work and
+/// materializing the page. Discovery runs separately from requests. Every failure is a whole-request <c>OperationOutcome</c>
 /// with fixed text that names no query value, token or backend detail; a failing shard is named only by its alias.
 /// Caller cancellation propagates.
 /// </para>
@@ -103,6 +102,10 @@ internal sealed class PrimarySearch
             .ToFrozenDictionary(s => s.Id.Value, s => _registry.ComputeVersion([s.Id]), StringComparer.Ordinal);
     }
 
+    /// <summary>Creates the budget owned by the search middleware for this request.</summary>
+    public RequestBudget StartBudget(CancellationToken caller) =>
+        new(_limits, _timeouts, _registry.Shards.Count, _time, caller);
+
     /// <summary>Builds the search from the registered view, transport and the <c>Federation</c> configuration.</summary>
     /// <param name="services">The application services.</param>
     /// <param name="settings">The validated host settings.</param>
@@ -154,20 +157,19 @@ internal sealed class PrimarySearch
     /// <param name="http">The request.</param>
     /// <param name="route">The route's resource type, already accepted by <see cref="ResourceTypeRouteConstraint"/>.</param>
     /// <param name="post">Whether the request is <c>POST [type]/_search</c>.</param>
+    /// <param name="request">The budget and signing freshness bound established before authentication.</param>
     /// <returns>The searchset page or the refusal.</returns>
     /// <exception cref="OperationCanceledException">The caller aborted the request.</exception>
-    public async Task<IResult> SearchAsync(HttpContext http, string route, bool post)
+    public async Task<IResult> SearchAsync(HttpContext http, string route, bool post, PrimarySearchEndpoints.SearchRequest request)
     {
         ResourceType type = ResourceType.Parse(route);
 
-        // One budget from endpoint entry: it bounds the body read and planning as well as the shard work, and its
-        // classification (caller cancellation, deadline, cost) is the one boundary every failure passes through.
-        using var budget = new RequestBudget(_limits, _timeouts, _registry.Shards.Count, _time, http.RequestAborted);
+        RequestBudget budget = request.Budget;
         try
         {
             try
             {
-                IResult result = await ServeAsync(http, type, post, budget);
+                IResult result = await ServeAsync(http, type, post, request);
                 budget.Checkpoint();
                 return result;
             }
@@ -186,7 +188,7 @@ internal sealed class PrimarySearch
         catch (RequestDeadlineExceededException)
         {
             http.Response.Headers.Remove(HeaderNames.WWWAuthenticate);
-            return SearchOutcome.Error(StatusCodes.Status504GatewayTimeout, "timeout", "The search did not complete in time.");
+            return SearchOutcome.TimedOut();
         }
         catch (ShardFailureException ex)
         {
@@ -201,11 +203,17 @@ internal sealed class PrimarySearch
         }
     }
 
-    private async Task<IResult> ServeAsync(HttpContext http, ResourceType type, bool post, RequestBudget budget)
+    private async Task<IResult> ServeAsync(HttpContext http, ResourceType type, bool post, PrimarySearchEndpoints.SearchRequest request)
     {
         // Authenticate and authorise before reading any body or query semantics.
         AuthenticateResult authentication = await http.AuthenticateAsync(Scheme);
+        RequestBudget budget = request.Budget;
         budget.Checkpoint();
+        if (request.CheckSigning() is { } unavailable)
+        {
+            return unavailable;
+        }
+
         CallerAccess access = CallerAccess.Evaluate(authentication, Scheme, _settings.RoleGrants);
         if (access.FailureStatusCode == StatusCodes.Status401Unauthorized)
         {

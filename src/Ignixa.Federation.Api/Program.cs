@@ -9,11 +9,23 @@ builder.AddPrimarySearch();
 
 WebApplication app = builder.Build();
 
-// Liveness runs no checks: the process answering is the signal.
-app.MapHealthChecks("/health/live", new HealthCheckOptions { Predicate = _ => false });
+var live = new HealthCheckOptions { Predicate = _ => false };
+var ready = new HealthCheckOptions { Predicate = c => c.Tags.Contains("ready") };
+if (app.Services.GetService<SearchHostSettings>() is not null)
+{
+    // Health must not enter bearer authentication, even when the probe sends a bearer token.
+    app.UseHealthChecks("/health/live", live);
+    app.UseHealthChecks("/health/ready", ready);
 
-// Readiness runs only checks tagged "ready" (shard checks register with this tag).
-app.MapHealthChecks("/health/ready", new HealthCheckOptions { Predicate = c => c.Tags.Contains("ready") });
+    app.UseRouting();
+    app.UsePrimarySearchBudget();
+    app.UseAuthentication();
+}
+else
+{
+    app.MapHealthChecks("/health/live", live);
+    app.MapHealthChecks("/health/ready", ready);
+}
 
 app.MapPrimarySearch();
 

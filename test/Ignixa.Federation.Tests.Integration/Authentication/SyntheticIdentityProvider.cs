@@ -23,12 +23,20 @@ internal sealed class SyntheticIdentityProvider : HttpMessageHandler
     public static readonly Uri Authority = new(TrustedIssuer);
 
     private const string KeyId = "synthetic-key-1";
+    private const string ReplacementKeyId = "synthetic-key-2";
 
     public static readonly Uri MetadataAddress = new($"{TrustedIssuer}/.well-known/openid-configuration");
 
     private readonly RSA _trustedKey = RSA.Create(2048);
+    private readonly Lazy<RSA> _replacementKey = new(() => RSA.Create(2048));
+    private readonly object _keyGate = new();
 
     private readonly ConcurrentQueue<Uri> _requests = new();
+    private volatile bool _rotated;
+
+    public Func<Uri, HttpResponseMessage, CancellationToken, Task>? BeforeResponse { get; set; }
+
+    public void Rotate() => _rotated = true;
 
     /// <summary>Gets or sets the issuer that the discovery document advertises; the tests use it to separate it from the pinned issuer.</summary>
     public string AdvertisedIssuer { get; set; } = TrustedIssuer;
@@ -88,10 +96,17 @@ internal sealed class SyntheticIdentityProvider : HttpMessageHandler
         }
 
         using RSA? untrustedSigner = request.UntrustedSigner ? RSA.Create(2048) : null;
+        bool rotated = _rotated;
 
-        return new JsonWebTokenHandler().CreateToken(
-            payload.ToJsonString(),
-            new SigningCredentials(new RsaSecurityKey(untrustedSigner ?? _trustedKey) { KeyId = KeyId }, SecurityAlgorithms.RsaSha256));
+        lock (_keyGate)
+        {
+            return new JsonWebTokenHandler().CreateToken(
+                payload.ToJsonString(),
+                new SigningCredentials(
+                    new RsaSecurityKey(untrustedSigner ?? (rotated ? _replacementKey.Value : _trustedKey))
+                    { KeyId = rotated ? ReplacementKeyId : KeyId },
+                    SecurityAlgorithms.RsaSha256));
+        }
     }
 
     /// <summary>Builds a token whose header declares no signature algorithm and carries no signature.</summary>
@@ -106,7 +121,7 @@ internal sealed class SyntheticIdentityProvider : HttpMessageHandler
     }
 
     /// <inheritdoc />
-    protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+    protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
     {
         Uri address = request.RequestUri!;
         _requests.Enqueue(address);
@@ -119,7 +134,20 @@ internal sealed class SyntheticIdentityProvider : HttpMessageHandler
             ? new HttpResponseMessage(HttpStatusCode.NotFound)
             : new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(body, Encoding.UTF8, "application/json") };
 
-        return Task.FromResult(response);
+        try
+        {
+            if (BeforeResponse is { } beforeResponse)
+            {
+                await beforeResponse(address, response, cancellationToken);
+            }
+
+            return response;
+        }
+        catch
+        {
+            response.Dispose();
+            throw;
+        }
     }
 
     /// <inheritdoc />
@@ -128,6 +156,10 @@ internal sealed class SyntheticIdentityProvider : HttpMessageHandler
         if (disposing)
         {
             _trustedKey.Dispose();
+            if (_replacementKey.IsValueCreated)
+            {
+                _replacementKey.Value.Dispose();
+            }
         }
 
         base.Dispose(disposing);
@@ -147,7 +179,12 @@ internal sealed class SyntheticIdentityProvider : HttpMessageHandler
 
     private string JwksDocument()
     {
-        RSAParameters parameters = _trustedKey.ExportParameters(includePrivateParameters: false);
+        bool rotated = _rotated;
+        RSAParameters parameters;
+        lock (_keyGate)
+        {
+            parameters = (rotated ? _replacementKey.Value : _trustedKey).ExportParameters(includePrivateParameters: false);
+        }
 
         return JsonSerializer.Serialize(new
         {
@@ -158,7 +195,7 @@ internal sealed class SyntheticIdentityProvider : HttpMessageHandler
                     kty = "RSA",
                     use = "sig",
                     alg = "RS256",
-                    kid = KeyId,
+                    kid = rotated ? ReplacementKeyId : KeyId,
                     n = Base64UrlEncoder.Encode(parameters.Modulus),
                     e = Base64UrlEncoder.Encode(parameters.Exponent),
                 },

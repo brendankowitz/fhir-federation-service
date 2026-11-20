@@ -25,6 +25,9 @@ internal static class SearchOutcome
 
     public static IResult Unavailable(string diagnostics) => Error(StatusCodes.Status503ServiceUnavailable, "transient", diagnostics);
 
+    public static IResult TimedOut() =>
+        Error(StatusCodes.Status504GatewayTimeout, "timeout", "The search did not complete in time.");
+
     /// <summary>Builds an error response.</summary>
     /// <param name="statusCode">The HTTP status code.</param>
     /// <param name="code">The FHIR issue type code.</param>
