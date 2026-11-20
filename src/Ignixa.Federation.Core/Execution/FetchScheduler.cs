@@ -203,7 +203,8 @@ internal sealed class FetchScheduler : IAsyncDisposable
         Task<ShardPage> call = InvokeAsync(request, cursor, cancellationToken);
         await ((Task)call).ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
 
-        // Reading the exception marks a failure as observed, so a discarded one never reaches UnobservedTaskException.
+        // The SuppressThrowing await marks a failure as observed, so a discarded one never reaches UnobservedTaskException;
+        // reading Exception keeps that guarantee explicit.
         _ = call.Exception;
         return call;
     }
