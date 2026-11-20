@@ -50,7 +50,10 @@ public enum SearchFailureCode
     /// <summary>Not every shard certifies AND repetition for the parameter's type.</summary>
     UnsupportedRepetition,
 
-    /// <summary>Not every shard certifies comma-separated OR alternatives for the parameter's type.</summary>
+    /// <summary>
+    /// The compiler splits the value differently, or not every shard certifies the required comma-separated OR
+    /// alternatives. A distributed chain also needs that proof for its generated reference or id list.
+    /// </summary>
     UnsupportedAlternatives,
 
     /// <summary>The chain is deeper than one hop, has an unusable terminal, or its path is not certified on every shard.</summary>

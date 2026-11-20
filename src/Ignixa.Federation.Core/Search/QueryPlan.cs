@@ -52,7 +52,12 @@ public sealed class QueryPlan
     public string CountShape { get; }
 
     /// <summary>Builds backend search parameters after all rewrites for one shard have been resolved.</summary>
-    /// <param name="decodedReplacements">One nonempty decoded value for each Replace ordinal. For an empty match set, the executor skips that shard rather than building a request.</param>
+    /// <param name="decodedReplacements">
+    /// One nonempty value for each Replace ordinal, percent-decoded but in FHIR search syntax: the caller joins a generated
+    /// OR list with unescaped commas and must FHIR-escape each component first (<c>\,</c>, <c>\|</c>, <c>\$</c>, <c>\\</c>),
+    /// because the value is only percent-encoded here. For an empty match set, the executor skips that shard rather than
+    /// building a request.
+    /// </param>
     /// <returns>Backend predicates in original order, plus the certified sort when requested. The executor adds pagination and count controls.</returns>
     /// <exception cref="ArgumentException">A replacement is missing, empty, or supplied for an occurrence that is not replaced.</exception>
     public IReadOnlyList<ParameterOccurrence> BuildBackendParameters(IReadOnlyDictionary<int, string> decodedReplacements)
