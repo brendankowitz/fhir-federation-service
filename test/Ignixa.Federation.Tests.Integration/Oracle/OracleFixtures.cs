@@ -50,7 +50,7 @@ internal static class OracleUrl
 /// </summary>
 internal sealed record OracleBases
 {
-    /// <exception cref="ArgumentException">A base is not an absolute http(s) URL with a host and no userinfo, query or fragment.</exception>
+    /// <exception cref="ArgumentException">A base is not an absolute http(s) URL with a host and no userinfo, query, fragment, percent-escape or dot segment.</exception>
     public OracleBases(IReadOnlyDictionary<string, string> shards, string? oracle)
     {
         Shards = shards.ToDictionary(shard => shard.Key, shard => Canonical($"shard '{shard.Key}'", shard.Value, nameof(shards)), StringComparer.Ordinal);
@@ -64,14 +64,24 @@ internal sealed record OracleBases
     private static string Canonical(string registration, string baseUrl, string paramName)
     {
         var canonical = OracleUrl.Canonicalize(baseUrl);
-        if (canonical is null || canonical.IndexOfAny(['?', '#']) >= 0)
+        if (canonical is null
+            || canonical.IndexOfAny(['?', '#']) >= 0
+            || baseUrl.Contains('%')
+            || HasDotSegment(canonical))
         {
             throw new ArgumentException(
-                $"The {registration} base '{baseUrl}' must be an absolute http(s) URL with a host and no userinfo, query or fragment.",
+                $"The {registration} base '{baseUrl}' must be an absolute http(s) URL with a host and no userinfo, query, fragment, percent-escape or dot segment.",
                 paramName);
         }
 
         return canonical.TrimEnd('/') + "/";
+    }
+
+    private static bool HasDotSegment(string canonicalBase)
+    {
+        var authorityStart = canonicalBase.IndexOf("://", StringComparison.Ordinal) + "://".Length;
+        var pathStart = canonicalBase.IndexOf('/', authorityStart);
+        return pathStart >= 0 && canonicalBase[pathStart..].Split('/').Any(segment => segment is "." or "..");
     }
 }
 

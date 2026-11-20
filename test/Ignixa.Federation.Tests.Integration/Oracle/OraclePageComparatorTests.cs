@@ -431,6 +431,22 @@ public sealed class OraclePageComparatorTests
             .Message.ShouldContain("http://127.0.0.1:5101/fhir/ (east, oracle)");
     }
 
+    [Theory]
+    [InlineData("https://east.example/fh%69r/")]
+    [InlineData("https://east.example/temporary/../fhir/")]
+    public void Bind_RejectsSpellingEquivalentBasesWithAmbiguousPathSegments(string westBase)
+    {
+        var shards = new Dictionary<string, string>
+        {
+            ["east"] = "https://east.example/fhir/",
+            ["west"] = westBase,
+        };
+
+        var message = Should.Throw<ArgumentException>(() => new OracleBases(shards, oracle: null)).Message;
+
+        message.ShouldContain(westBase);
+    }
+
     [Fact]
     public void Bind_KeepsBasesDistinctByPortPathAndPathCase_AndStoresCanonicalSpelling()
     {
@@ -449,8 +465,10 @@ public sealed class OraclePageComparatorTests
     [InlineData("west", "https://user@east.example/fhir/")]
     [InlineData("west", "https://east.example/fhir/?tenant=1")]
     [InlineData("west", "https://east.example/fhir/#top")]
+    [InlineData("west", "https://east.example/./fhir/")]
+    [InlineData("oracle", "https://oracle.example/fh%69r/")]
     [InlineData("oracle", "urn:uuid:3f2a1c9e-0000-4000-8000-000000000001")]
-    public void Bind_RejectsBaseThatIsNotAnAbsoluteHttpUrl(string registration, string badBase)
+    public void Bind_RejectsInvalidBaseUrl(string registration, string badBase)
     {
         var shards = new Dictionary<string, string> { ["east"] = East, ["west"] = West };
         string? oracle = OracleUrl;
