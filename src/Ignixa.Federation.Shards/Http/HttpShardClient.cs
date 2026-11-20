@@ -255,6 +255,10 @@ public sealed class HttpShardClient : IShardClient, IDisposable
     /// <summary>Releases the connection pool. The client must not be used afterwards.</summary>
     public void Dispose() => _invoker.Dispose();
 
+    // Whether this client was built for this very descriptor; the refresh registration uses it so that a client composed
+    // for another shard can never publish evidence under this one. It has no effect on any exchange.
+    internal bool IsFor(ShardDescriptor shard) => ReferenceEquals(_shard, shard);
+
     /// <summary>
     /// Fetches this shard's advertisement: a single <c>GET {base}/metadata</c> with the same credential, deadline, size
     /// limit, metering and no-redirect rules as a search, with its own <c>metadata</c> span.
