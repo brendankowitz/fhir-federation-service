@@ -46,4 +46,11 @@ public enum ShardCallFailure
 
     /// <summary>A qualified current-resource read got HTTP 410: the shard says the resource was deleted. Never set for a search.</summary>
     ResourceGone,
+
+    /// <summary>
+    /// The shard's circuit breaker is open after repeated transport faults, timeouts or transient statuses, so nothing was
+    /// sent to the backend and nothing was metered. The call may succeed once the break period has passed. Never set for
+    /// <see cref="HttpShardClient.GetCapabilitiesAsync"/>, which bypasses the breaker (design spec §8).
+    /// </summary>
+    CircuitOpen,
 }

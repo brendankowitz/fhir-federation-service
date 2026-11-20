@@ -9,8 +9,11 @@ namespace Ignixa.Federation.Shards.Http;
 /// <remarks>
 /// <para>Calls happen on the caller's asynchronous flow, so an implementation can attribute them to an ambient request
 /// scope. The per-call byte and time limits are enforced by the client whether or not a meter is present.</para>
-/// <para>What is counted is what the client itself does: one logical send attempt per call, and the response body bytes
-/// it consumes. A body over the limit is consumed to one byte past it, and that byte is counted; a rejected body is never
+/// <para>What is counted is what the client itself does: one logical send attempt per exchange, so a retried GET is two
+/// sends, and the response body bytes it consumes. The client builds every request so the
+/// runtime does not silently re-send it on a connection closed before any response, because such a re-send would be an
+/// unmetered send. A
+/// body over the limit is consumed to one byte past it, and that byte is counted; a rejected body is never
 /// drained. Headers, TLS records, handshakes and connection-pool activity are not counted.</para>
 /// <para>Exceptions propagate unchanged, so a meter can stop a call that would exceed a budget: throwing from
 /// <see cref="RecordSend"/> prevents the send, and throwing from <see cref="RecordResponseBytes"/> stops the body read.

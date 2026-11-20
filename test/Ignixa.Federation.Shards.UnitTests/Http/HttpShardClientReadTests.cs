@@ -173,13 +173,15 @@ public sealed class HttpShardClientReadTests
 
     [Theory]
     [MemberData(nameof(RefusedStatuses))]
-    public async Task NonOkStatus_IsClassifiedWithoutReadingItsBodyOrRetrying(int status, ShardCallFailure expected)
+    public async Task NonOkStatus_IsClassifiedWithoutReadingItsBody_AndOnlyATransientOneIsRetriedOnce(int status, ShardCallFailure expected)
     {
         await using var shard = ShardHarness.Start();
         ScriptedResponse refusal = status == 302
             ? ScriptedResponse.Redirect(shard.Server.BaseUrl + "/Patient/p1?moved=1")
             : ScriptedResponse.Status(status, SecretBody);
-        shard.Server.Respond(refusal, ScriptedResponse.Json("{\"resourceType\":\"Patient\",\"id\":\"p1\"}"));
+        bool transient = status is 500 or 503;
+        // A wrongly retried definitive refusal would find a good answer and the call would not throw.
+        shard.Server.Respond(refusal, transient ? refusal : ScriptedResponse.Json("{\"resourceType\":\"Patient\",\"id\":\"p1\"}"));
 
         ShardCallException failure = await Should.ThrowAsync<ShardCallException>(() => shard.Client.ReadAsync(Key(shard, "p1"), Ct));
 
@@ -193,8 +195,9 @@ public sealed class HttpShardClientReadTests
         failure.Message.ShouldNotContain("internal detail");
         failure.Message.ShouldNotContain("127.0.0.1");
         failure.Message.ShouldNotContain("p1");
-        shard.Server.Requests.ShouldHaveSingleItem();
-        shard.Meter.Sends.Count.ShouldBe(1);
+        int attempts = transient ? 2 : 1;
+        shard.Server.Requests.Count.ShouldBe(attempts);
+        shard.Meter.Sends.Count.ShouldBe(attempts);
         shard.Meter.Bytes.ShouldBe(0);
     }
 

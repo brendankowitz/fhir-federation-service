@@ -33,12 +33,18 @@ public sealed class ShardCallException : Exception
     {
     }
 
-    internal ShardCallException(ShardDescriptor shard, ShardCallFailure failure, string reason, int? statusCode = null)
+    internal ShardCallException(
+        ShardDescriptor shard,
+        ShardCallFailure failure,
+        string reason,
+        int? statusCode = null,
+        ShardFault fault = ShardFault.Answered)
         : base(Describe(shard, failure, reason, statusCode))
     {
         Shard = shard.Id;
         Failure = failure;
         StatusCode = statusCode;
+        Fault = fault;
     }
 
     /// <summary>Gets the shard whose call failed; <see langword="null"/> only for an exception made by a standard constructor.</summary>
@@ -49,6 +55,12 @@ public sealed class ShardCallException : Exception
 
     /// <summary>Gets the HTTP status the backend answered with, or <see langword="null"/> when no status decided the failure.</summary>
     public int? StatusCode { get; }
+
+    /// <summary>
+    /// Gets what <see cref="HttpShardClient"/> observed about the backend's health; it decides retry and the circuit breaker.
+    /// An exception made by a public constructor observed nothing, so it is <see cref="ShardFault.None"/>.
+    /// </summary>
+    internal ShardFault Fault { get; }
 
     private static string Describe(ShardDescriptor shard, ShardCallFailure failure, string reason, int? statusCode)
     {

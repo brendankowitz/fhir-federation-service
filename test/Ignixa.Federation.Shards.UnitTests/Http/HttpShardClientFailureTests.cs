@@ -29,7 +29,8 @@ public sealed class HttpShardClientFailureTests
     public async Task NonOkStatus_IsClassifiedWithoutLeakingTheExchange(int status, ShardCallFailure expected)
     {
         await using var shard = ShardHarness.Start();
-        shard.Server.Respond(ScriptedResponse.Status(status, SecretBody));
+        // 500 and 503 are retried once, so the same refusal is scripted for the second attempt.
+        shard.Server.Respond(ScriptedResponse.Status(status, SecretBody), ScriptedResponse.Status(status, SecretBody));
 
         ShardCallException failure = await Should.ThrowAsync<ShardCallException>(() => shard.Client.SearchAsync(shard.SarahRequest(), Ct));
 
@@ -349,7 +350,7 @@ public sealed class HttpShardClientFailureTests
     public async Task Meter_CountsTheSendOfAFailedCall()
     {
         await using var shard = ShardHarness.Start();
-        shard.Server.Respond(ScriptedResponse.Status(503, SecretBody));
+        shard.Server.Respond(ScriptedResponse.Status(400, SecretBody));
 
         await Should.ThrowAsync<ShardCallException>(() => shard.Client.SearchAsync(shard.SarahRequest(), Ct));
 

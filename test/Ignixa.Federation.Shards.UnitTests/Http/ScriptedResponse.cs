@@ -38,17 +38,30 @@ internal sealed class ScriptedResponse
     /// <summary>Gets whether the server keeps the connection open for another request after this response.</summary>
     public bool KeepsAlive { get; private init; }
 
+    /// <summary>Gets whether the server closes the connection without sending any response bytes.</summary>
+    public bool HangsUp { get; private init; }
+
+    /// <summary>Gets whether the head declares one byte more than the body sent, and the server then closes the connection.</summary>
+    public bool TruncatesBody { get; private init; }
+
     public static ScriptedResponse Json(string json, Func<CancellationToken, Task>? beforeHead = null, string? contentLocation = null) =>
         new(200, Encoding.UTF8.GetBytes(json), "application/fhir+json") { BeforeHead = beforeHead, ContentLocation = contentLocation };
 
     /// <summary>A 200 answer with exactly these body bytes, which need not be valid UTF-8.</summary>
     public static ScriptedResponse Bytes(byte[] body) => new(200, body, "application/fhir+json");
 
-    public static ScriptedResponse Status(int status, string body = "") => new(status, Encoding.UTF8.GetBytes(body), "text/plain");
+    public static ScriptedResponse Status(int status, string body = "", Func<CancellationToken, Task>? beforeHead = null) =>
+        new(status, Encoding.UTF8.GetBytes(body), "text/plain") { BeforeHead = beforeHead };
 
     public static ScriptedResponse Redirect(string location) => new(302, [], null) { Location = location };
 
     public static ScriptedResponse Stall() => new(200, [], null) { StallsBeforeHead = true };
+
+    /// <summary>The server records the request, then closes the connection without answering.</summary>
+    public static ScriptedResponse Hangup() => new(200, [], null) { HangsUp = true };
+
+    /// <summary>Declares a length one byte longer than the body sent, then closes, so the body ends prematurely.</summary>
+    public ScriptedResponse TruncatingBody() => new(StatusCode, Body, ContentType) { TruncatesBody = true };
 
     public ScriptedResponse WithoutContentLength() => new(StatusCode, Body, ContentType) { DeclaresLength = false, Location = Location };
 
@@ -79,7 +92,7 @@ internal sealed class ScriptedResponse
 
         if (DeclaresLength)
         {
-            head.Append("Content-Length: ").Append(Body.Length + (StallsAfterBody ? 1 : 0)).Append("\r\n");
+            head.Append("Content-Length: ").Append(Body.Length + (StallsAfterBody || TruncatesBody ? 1 : 0)).Append("\r\n");
         }
 
         head.Append(KeepsAlive ? "\r\n" : "Connection: close\r\n\r\n");

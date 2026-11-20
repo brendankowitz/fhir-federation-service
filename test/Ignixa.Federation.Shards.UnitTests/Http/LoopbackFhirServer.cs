@@ -172,6 +172,11 @@ internal sealed class LoopbackFhirServer : IAsyncDisposable
             await beforeHead(_stopping.Token);
         }
 
+        if (response.HangsUp)
+        {
+            return;
+        }
+
         if (response.StallsBeforeHead)
         {
             await Task.Delay(Timeout.Infinite, _stopping.Token);
