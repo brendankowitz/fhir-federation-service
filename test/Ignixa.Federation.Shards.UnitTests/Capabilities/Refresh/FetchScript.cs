@@ -75,7 +75,7 @@ internal static class Watchdog
         }
     }
 
-    /// <summary>Lets already-runnable work run, so a test can show that something did not happen.</summary>
+    /// <summary>Gives scheduled continuations an opportunity to run before a negative observation.</summary>
     public static async Task SettleAsync()
     {
         for (int i = 0; i < 100; i++)

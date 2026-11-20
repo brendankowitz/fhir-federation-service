@@ -6,7 +6,7 @@ namespace Ignixa.Federation.Shards.Capabilities.Refresh;
 /// What the refresher knows about one shard's advertisement. Advertised is not certified: this reports neither readiness
 /// nor that the shard behaves as it advertises.
 /// </summary>
-/// <remarks>Immutable. Completeness and degradation are independent facts about the same entry.</remarks>
+/// <remarks>Immutable. Missing evidence and retained evidence after a failed refresh are distinct states.</remarks>
 public sealed class ShardCapabilityEntry
 {
     internal ShardCapabilityEntry(ShardCapabilityEvidence? evidence, ShardCallFailure? failure)
@@ -19,8 +19,8 @@ public sealed class ShardCapabilityEntry
     public ShardCapabilityEvidence? Evidence { get; }
 
     /// <summary>
-    /// Gets why the latest fetch failed, or <see langword="null"/> when it has not failed since the last success. Only the
-    /// classification is kept, never the exception, so nothing from the wire is retained.
+    /// Gets why the latest fetch failed, or <see langword="null"/> when it has not run or succeeded. Only the failure
+    /// classification is kept, never the exception or error body.
     /// </summary>
     public ShardCallFailure? Failure { get; }
 

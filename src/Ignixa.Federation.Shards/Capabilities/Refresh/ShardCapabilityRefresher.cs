@@ -5,8 +5,7 @@ using Ignixa.Federation.Shards.Http;
 namespace Ignixa.Federation.Shards.Capabilities.Refresh;
 
 /// <summary>
-/// Keeps every registered shard's advertisement fresh (design spec §9.1): one sweep at startup, then one every
-/// ten-minute tick, and publishes the result as immutable snapshots.
+/// Refreshes registered shard advertisements on startup and on a ten-minute schedule (design spec §9.1).
 /// </summary>
 /// <remarks>
 /// <para>One loop writes; any thread reads <see cref="Current"/> without locking. Fetches run one at a time, in registry
@@ -50,7 +49,7 @@ public sealed class ShardCapabilityRefresher
 
     /// <summary>Runs sweeps until <paramref name="stoppingToken"/> is cancelled.</summary>
     /// <param name="stoppingToken">Stops the loop, including a fetch in progress.</param>
-    /// <returns>A task that completes normally on cancellation, with no failure recorded and no late result published.</returns>
+    /// <returns>A task that completes normally on shutdown. Results are discarded when cancellation is observed before publication.</returns>
     /// <exception cref="InvalidOperationException">The loop is already running on this instance.</exception>
     /// <exception cref="Exception">A programming error from the fetch seam is rethrown, never recorded as a shard failure.</exception>
     public async Task RunAsync(CancellationToken stoppingToken)
@@ -97,7 +96,7 @@ public sealed class ShardCapabilityRefresher
                 entry = new ShardCapabilityEntry(Current.Shards[shard.Id].Evidence, e.Failure);
             }
 
-            // A fetch that ignored the token must not publish after the loop was told to stop.
+            // Check again in case the fetch completed despite cancellation.
             stoppingToken.ThrowIfCancellationRequested();
             Volatile.Write(ref _current, Current.With(shard.Id, entry));
         }
