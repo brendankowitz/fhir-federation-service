@@ -13,7 +13,7 @@ namespace Ignixa.Federation.Core.Execution.Chains;
 /// (design spec §7.5). Each distributed chain searches its target on every shard for the planned terminal, keeps the
 /// distinct physical keys found, and replaces the chain with one reference list per shard, spelled in the forms that shard
 /// certified for own and foreign keys; a key with no certified spelling refuses the plan rather than drop out of the list.
-/// A passthrough chain is sent unchanged.
+/// A passthrough forward chain is sent unchanged; a reverse chain is refused in either mode, after authorization.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -160,7 +160,7 @@ public sealed class ForwardChainResolver
         }
 
         int pageSize = plan.PageSize!.Value; // Refuse rejected a count-only plan.
-        // With distributed reverse chains refused, the replaced occurrences are exactly the distributed forward chains.
+        // With reverse chains refused, the replaced occurrences are exactly the distributed forward chains.
         PlannedOccurrence[] chains = [.. plan.Occurrences.Where(o => o.ReplacementKey is not null)];
         foreach (PlannedOccurrence chain in chains)
         {
@@ -250,7 +250,7 @@ public sealed class ForwardChainResolver
         {
             ForwardChainRefusalReason? unsupported = planned switch
             {
-                { Kind: OccurrenceKind.ReverseChain, Hop.Mode: ChainResolutionMode.Distributed } => ForwardChainRefusalReason.ReverseChain,
+                { Kind: OccurrenceKind.ReverseChain } => ForwardChainRefusalReason.ReverseChain,
                 { Kind: OccurrenceKind.Include } => ForwardChainRefusalReason.Include,
                 { Kind: OccurrenceKind.RevInclude } => ForwardChainRefusalReason.RevInclude,
                 { Kind: OccurrenceKind.Sort } => ForwardChainRefusalReason.Sort,

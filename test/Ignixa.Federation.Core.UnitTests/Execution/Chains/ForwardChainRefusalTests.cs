@@ -74,22 +74,24 @@ public sealed class ForwardChainRefusalTests
         client.Calls.ShouldBeEmpty();
     }
 
-    [Fact]
-    public async Task DistributedReverseChain_IsRefused_AndAPassthroughOneIsSentRaw()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ReverseChain_IsRefusedInEitherMode_AfterAuthorization(bool passthrough)
     {
         ShardRegistry registry = TestSearch.Registry();
         var client = new FakeShardClient();
         ForwardChainResolver resolver = Resolver(client, registry);
         SearchCapabilities capabilities = TestSearch.Capabilities(registry: registry);
+        SearchPlanner planner = passthrough ? TestSearch.Planner(capabilities, "Observation.subject:Patient") : TestSearch.Planner(capabilities);
+        QueryPlan plan = TestSearch.PlanOk("Patient", "_has:Observation:subject:code=a", planner);
+        plan.Occurrences[0].Hop!.Mode.ShouldBe(passthrough ? ChainResolutionMode.Passthrough : ChainResolutionMode.Distributed);
 
-        ForwardChainResolution distributed = await resolver
-            .ResolveAsync(TestSearch.PlanOk("Patient", "_has:Observation:subject:code=a", TestSearch.Planner(capabilities)), Token);
-        ForwardChainResolution passthrough = await resolver
-            .ResolveAsync(TestSearch.PlanOk("Patient", "_has:Observation:subject:code=a", TestSearch.Planner(capabilities, "Observation.subject:Patient")), Token);
+        ForwardChainResolution refused = await resolver.ResolveAsync(plan, Token);
+        ForwardChainResolution unauthorized = await resolver.ResolveAsync(plan, Readable("Patient"), 100, 1_000_000, Token);
 
-        ShouldRefuse(distributed, ForwardChainRefusalReason.ReverseChain, 0, null);
-        passthrough.ShouldBeOfType<ForwardChainReady>().Streams
-            .ShouldAllBe(s => s.Parameters.Single() == new ParameterOccurrence("_has:Observation:subject:code", "a"));
+        ShouldRefuse(refused, ForwardChainRefusalReason.ReverseChain, 0, null);
+        ShouldRefuse(unauthorized, ForwardChainRefusalReason.Unauthorized, 0, null);
         client.Calls.ShouldBeEmpty();
     }
 

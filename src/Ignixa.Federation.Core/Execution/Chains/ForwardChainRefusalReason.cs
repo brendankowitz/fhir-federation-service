@@ -11,7 +11,7 @@ public enum ForwardChainRefusalReason
     /// <summary>The caller may not read the searched type or a type a chain searches, in either chain mode.</summary>
     Unauthorized,
 
-    /// <summary>A distributed reverse chain (<c>_has</c>), which this resolver does not execute. A passthrough one is sent natively.</summary>
+    /// <summary>A reverse chain (<c>_has</c>), in either chain mode: this stage executes forward chains only.</summary>
     ReverseChain,
 
     /// <summary>An <c>_include</c>, which needs include extraction this resolver does not perform.</summary>
