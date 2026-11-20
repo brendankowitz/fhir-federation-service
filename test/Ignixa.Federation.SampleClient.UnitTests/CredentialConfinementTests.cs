@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using Shouldly;
 using static Ignixa.Federation.SampleClient.UnitTests.TestBundles;
 using static Ignixa.Federation.SampleClient.UnitTests.TestClients;
@@ -316,6 +317,10 @@ public class CredentialConfinementTests
     [InlineData("https://user:pw@fed.example/fhir/")]
     [InlineData("https://fed.example/fhir/?x=1")]
     [InlineData("https://fed.example/fhir/#frag")]
+    [SuppressMessage(
+        "Design",
+        "CA1054:URI parameters should not be strings",
+        Justification = "InlineData carries only constants, so the URL arrives as a string and is parsed inside the test.")]
     public void Base_urls_must_be_plain_https(string baseUrl)
     {
         Should.Throw<ArgumentException>(() => new FederationClient(
@@ -347,5 +352,37 @@ public class CredentialConfinementTests
         };
 
         Should.Throw<ArgumentException>(() => new FederationClient(options, new ScriptedHandler(), _ => new ScriptedHandler()));
+    }
+
+    [Fact]
+    public void A_shard_base_under_the_federation_base_is_rejected()
+    {
+        var options = new FederationClientOptions
+        {
+            FederationBaseUrl = new Uri("https://fed.example/fhir/"),
+            DirectReadShards = [Shard("https://fed.example/fhir/shards/east/", "a")],
+        };
+
+        Should.Throw<ArgumentException>(() => new FederationClient(options, new ScriptedHandler(), _ => new ScriptedHandler()));
+    }
+
+    [Fact]
+    public void The_federation_base_under_a_shard_base_is_rejected()
+    {
+        var options = new FederationClientOptions
+        {
+            FederationBaseUrl = new Uri("https://shard-east.example/fhir/federation/"),
+            DirectReadShards = [Shard(East, "a")],
+        };
+
+        Should.Throw<ArgumentException>(() => new FederationClient(options, new ScriptedHandler(), _ => new ScriptedHandler()));
+    }
+
+    [Fact]
+    public void The_default_transport_does_not_follow_redirects()
+    {
+        using var handler = FederationClient.CreateDefaultHandler();
+
+        handler.AllowAutoRedirect.ShouldBeFalse();
     }
 }

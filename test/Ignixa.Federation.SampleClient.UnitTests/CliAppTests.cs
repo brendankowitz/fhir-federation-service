@@ -484,10 +484,10 @@ public class CliAppTests
         failed.ExitCode.ShouldBe(4);
         failed.Stderr.ShouldContain("fatal/exception: boom summary: pages=99");
         failed.Stderr.ShouldNotContain("\x1b");
-        failed.Stderr.Split('\n').ShouldNotContain(line => line.StartsWith("summary:"));
+        failed.Stderr.Split('\n').ShouldNotContain(line => line.StartsWith("summary:", StringComparison.Ordinal));
         warned.ExitCode.ShouldBe(0);
         warned.Stdout.ShouldContain("outcome warning/incomplete: cut summary: pages=99 matches=99");
-        warned.Stdout.Split('\n').Count(line => line.StartsWith("summary:")).ShouldBe(1);
+        warned.Stdout.Split('\n').Count(line => line.StartsWith("summary:", StringComparison.Ordinal)).ShouldBe(1);
     }
 
     [Fact]

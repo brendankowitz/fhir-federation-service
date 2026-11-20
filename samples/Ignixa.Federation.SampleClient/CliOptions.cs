@@ -60,7 +60,7 @@ internal sealed record CliOptions(
                 return false;
             }
 
-            if (!name.StartsWith("--"))
+            if (!name.StartsWith("--", StringComparison.Ordinal))
             {
                 error = "unexpected argument; options start with '--'.";
                 return false;
@@ -73,7 +73,7 @@ internal sealed record CliOptions(
             }
 
             // A following token that is itself an option is not a value, so "--base --type Patient" is caught here.
-            var value = inlineValue ?? (i + 1 < args.Length && !args[i + 1].StartsWith("--") ? args[++i] : null);
+            var value = inlineValue ?? (i + 1 < args.Length && !args[i + 1].StartsWith("--", StringComparison.Ordinal) ? args[++i] : null);
             if (value is null)
             {
                 error = $"{name} needs a value.";
@@ -89,7 +89,7 @@ internal sealed record CliOptions(
                     type = value;
                     break;
                 case "--param":
-                    if (value.IndexOf('=') is not (> 0 and var equals))
+                    if (value.IndexOf('=', StringComparison.Ordinal) is not (> 0 and var equals))
                     {
                         error = "--param must look like name=value.";
                         return false;
@@ -177,7 +177,7 @@ internal sealed record CliOptions(
     }
 
     private static (string Name, string? Value) Split(string arg) =>
-        arg.StartsWith("--") && arg.IndexOf('=') is > 0 and var equals
+        arg.StartsWith("--", StringComparison.Ordinal) && arg.IndexOf('=', StringComparison.Ordinal) is > 0 and var equals
             ? (arg[..equals], arg[(equals + 1)..])
             : (arg, null);
 

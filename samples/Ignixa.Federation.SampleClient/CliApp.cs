@@ -7,7 +7,7 @@ namespace Ignixa.Federation.SampleClient;
 /// 5 link outside the allowed scope (or no alternate link to read). Output never includes tokens, continuation (<c>next</c>) links or query strings,
 /// or resource bodies.
 /// </summary>
-public static class CliApp
+internal static class CliApp
 {
     private const string Usage = """
         Usage: Ignixa.Federation.SampleClient --base <https url> --type <ResourceType> [options]
@@ -178,7 +178,7 @@ public static class CliApp
         foreach (var entry in page.Matches.Concat(page.Includes))
         {
             var shard = entry.SourceShard is null ? "" : $"  (shard={Clean(entry.SourceShard)})";
-            await stdout.WriteLineAsync($"{entry.Mode.ToString().ToLowerInvariant()}  {Plain(entry.FullUrl)}{shard}");
+            await stdout.WriteLineAsync($"{(entry.Mode == EntryMode.Match ? "match" : "include")}  {Plain(entry.FullUrl)}{shard}");
         }
 
         foreach (var outcome in page.Outcomes)
@@ -216,7 +216,7 @@ public static class CliApp
             throw new InvalidDataException("The read response is not a resource.");
         }
 
-        await stdout.WriteLineAsync($"{Clean(type)}/{Clean(id)} read via {mode.ToString().ToLowerInvariant()} from {Plain(source)}");
+        await stdout.WriteLineAsync($"{Clean(type)}/{Clean(id)} read via {(mode == ReadMode.Alternate ? "alternate" : "direct")} from {Plain(source)}");
         return 0;
     }
 

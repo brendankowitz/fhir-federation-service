@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Net;
 
 namespace Ignixa.Federation.SampleClient;
@@ -6,7 +7,11 @@ namespace Ignixa.Federation.SampleClient;
 /// A non-success response. The message carries only the status; details are in <see cref="Issues"/>. The raw body,
 /// request URL (which may hold an opaque continuation token) and headers are never included.
 /// </summary>
-public class FederationRequestException : Exception
+[SuppressMessage(
+    "Design",
+    "CA1032:Implement standard exception constructors",
+    Justification = "Only this client throws it, always with its required data; the standard constructors would build an instance without it.")]
+internal class FederationRequestException : Exception
 {
     public FederationRequestException(HttpStatusCode statusCode, IReadOnlyList<OperationIssue> issues)
         : this(statusCode, issues, Describe(statusCode))

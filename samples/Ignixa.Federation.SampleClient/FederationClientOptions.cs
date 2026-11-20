@@ -1,7 +1,7 @@
 namespace Ignixa.Federation.SampleClient;
 
 /// <summary>How the client talks to the federation, and which shards it may read directly.</summary>
-public sealed class FederationClientOptions
+internal sealed class FederationClientOptions
 {
     /// <summary>
     /// The federation base URL: absolute <c>https</c>, no user info, query or fragment. A trailing <c>/</c> is added

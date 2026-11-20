@@ -6,7 +6,7 @@ namespace Ignixa.Federation.SampleClient;
 /// A resource in a federated search result. Its identity is <see cref="FullUrl"/> (the resource's real URL on its
 /// shard), never type and id: two <c>Patient/123</c> from different shards are two different entries.
 /// </summary>
-public sealed class FederatedEntry : IEquatable<FederatedEntry>
+internal sealed class FederatedEntry : IEquatable<FederatedEntry>
 {
     public required Uri FullUrl { get; init; }
 

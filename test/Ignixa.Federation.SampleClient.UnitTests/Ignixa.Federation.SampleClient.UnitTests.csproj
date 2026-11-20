@@ -1,24 +1,8 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
-  <PropertyGroup>
-    <!-- xunit.v3 test projects are executables (Microsoft.Testing.Platform); run with `dotnet run`. -->
-    <OutputType>Exe</OutputType>
-    <TargetFramework>net11.0</TargetFramework>
-    <Nullable>enable</Nullable>
-    <ImplicitUsings>enable</ImplicitUsings>
-    <LangVersion>latest</LangVersion>
-    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
-    <IsPackable>false</IsPackable>
-    <RootNamespace>Ignixa.Federation.SampleClient.UnitTests</RootNamespace>
-  </PropertyGroup>
-
   <ItemGroup>
-    <PackageReference Include="xunit.v3.mtp-v2" Version="4.0.3" />
-    <PackageReference Include="Shouldly" Version="4.3.0" />
-  </ItemGroup>
-
-  <ItemGroup>
-    <Using Include="Xunit" />
+    <PackageReference Include="Shouldly" />
+    <PackageReference Include="xunit.v3" />
   </ItemGroup>
 
   <ItemGroup>

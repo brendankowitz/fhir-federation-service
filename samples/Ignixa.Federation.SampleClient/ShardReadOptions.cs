@@ -1,7 +1,7 @@
 namespace Ignixa.Federation.SampleClient;
 
 /// <summary>A shard the client may read directly, with the client's own credential for it.</summary>
-public sealed class ShardReadOptions
+internal sealed class ShardReadOptions
 {
     /// <summary>The shard base URL, as it appears in <c>fullUrl</c>. Same rules as the federation base URL.</summary>
     public required Uri BaseUrl { get; init; }

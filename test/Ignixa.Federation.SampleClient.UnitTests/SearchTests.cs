@@ -193,6 +193,43 @@ public class SearchTests
     }
 
     [Fact]
+    public async Task Source_shard_alias_is_read_from_the_canonical_extension_url()
+    {
+        var bundle = new JsonObject
+        {
+            ["resourceType"] = "Bundle",
+            ["entry"] = new JsonArray(new JsonObject
+            {
+                ["fullUrl"] = $"{East}Patient/1",
+                ["resource"] = new JsonObject { ["resourceType"] = "Patient", ["id"] = "1" },
+                ["search"] = new JsonObject { ["mode"] = "match" },
+                ["extension"] = new JsonArray(new JsonObject
+                {
+                    ["url"] = "http://ignixa.io/federation/StructureDefinition/source-shard",
+                    ["valueString"] = "k7q2",
+                }),
+            }),
+        }.ToJsonString();
+        using var client = Create(new ScriptedHandler().Ok(bundle));
+
+        var results = await SearchAll(client);
+
+        results.Matches.ShouldHaveSingleItem().SourceShard.ShouldBe("k7q2");
+    }
+
+    [Fact]
+    public async Task An_extension_with_any_other_url_does_not_provide_a_source_shard_alias()
+    {
+        var entry = Match($"{East}Patient/1", "Patient", "1", shard: "k7q2");
+        entry["extension"]![0]!["url"] = "https://github.com/brendankowitz/fhir-federation-service/StructureDefinition/source-shard";
+        using var client = Create(new ScriptedHandler().Ok(Page(null, entry)));
+
+        var results = await SearchAll(client);
+
+        results.Matches.ShouldHaveSingleItem().SourceShard.ShouldBeNull();
+    }
+
+    [Fact]
     public async Task Error_status_surfaces_operation_outcome_issues_without_leaking_the_body()
     {
         var longDiagnostics = new string('x', 500);

@@ -26,7 +26,7 @@ internal sealed class ScopedEndpoint : IDisposable
         }
 
         // Ending the base path with '/' makes the scope check below a segment-boundary check.
-        BaseUrl = baseUrl.AbsolutePath.EndsWith('/') ? baseUrl : new Uri(baseUrl.AbsoluteUri + "/");
+        BaseUrl = baseUrl.AbsolutePath.EndsWith('/', StringComparison.Ordinal) ? baseUrl : new Uri(baseUrl.AbsoluteUri + "/");
         _accessToken = accessToken;
         _http = new HttpClient(handler);
     }

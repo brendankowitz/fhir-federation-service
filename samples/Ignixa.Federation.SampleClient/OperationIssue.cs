@@ -3,7 +3,7 @@ using System.Text.Json;
 namespace Ignixa.Federation.SampleClient;
 
 /// <summary>One OperationOutcome issue: either why a request failed, or a search "outcome" entry.</summary>
-public sealed record OperationIssue(string Severity, string Code, string? Diagnostics, string? SourceShard = null)
+internal sealed record OperationIssue(string Severity, string Code, string? Diagnostics, string? SourceShard = null)
 {
     private const int MaxDiagnosticsLength = 200;
 

@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Net;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
@@ -14,7 +15,7 @@ namespace Ignixa.Federation.SampleClient;
 /// The client owns the handlers it is given (or creates) and disposes them. A supplied handler must have
 /// auto-redirect off; if you wrap a handler in a <see cref="DelegatingHandler"/>, that is yours to check.
 /// </remarks>
-public sealed class FederationClient : IDisposable
+internal sealed class FederationClient : IDisposable
 {
     private readonly ScopedEndpoint _federation;
     private readonly List<ScopedEndpoint> _shards;
@@ -25,6 +26,10 @@ public sealed class FederationClient : IDisposable
     /// Creates the transport for a shard, given its base URL; by default a plain no-redirect handler. Each shard gets
     /// its own transport.
     /// </param>
+    [SuppressMessage(
+        "Reliability",
+        "CA2000:Dispose objects before losing scope",
+        Justification = "NoRedirects returns the handler, and ScopedEndpoint takes ownership of it and disposes it.")]
     public FederationClient(
         FederationClientOptions options,
         HttpMessageHandler? federationHandler = null,
@@ -156,9 +161,12 @@ public sealed class FederationClient : IDisposable
         }
     }
 
+    /// <summary>The transport used when the caller supplies none: a plain handler that never follows redirects.</summary>
+    internal static SocketsHttpHandler CreateDefaultHandler() => new() { AllowAutoRedirect = false };
+
     private static HttpMessageHandler NoRedirects(HttpMessageHandler? handler) => handler switch
     {
-        null => new SocketsHttpHandler { AllowAutoRedirect = false },
+        null => CreateDefaultHandler(),
         HttpClientHandler { AllowAutoRedirect: true } or SocketsHttpHandler { AllowAutoRedirect: true } =>
             throw new ArgumentException("The handler follows redirects; set AllowAutoRedirect = false.", nameof(handler)),
         _ => handler,

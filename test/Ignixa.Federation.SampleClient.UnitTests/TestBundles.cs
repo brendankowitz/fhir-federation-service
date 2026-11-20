@@ -6,7 +6,7 @@ namespace Ignixa.Federation.SampleClient.UnitTests;
 internal static class TestBundles
 {
     public const string SourceShardUrl =
-        "https://github.com/brendankowitz/fhir-federation-service/StructureDefinition/source-shard";
+        "http://ignixa.io/federation/StructureDefinition/source-shard";
 
     public static string Page(string? next = null, params JsonNode[] entries)
     {

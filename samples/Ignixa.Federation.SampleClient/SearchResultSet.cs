@@ -1,7 +1,7 @@
 namespace Ignixa.Federation.SampleClient;
 
 /// <summary>Collects pages into one result. Entries are keyed by <c>fullUrl</c>, never by type and id.</summary>
-public sealed class SearchResultSet
+internal sealed class SearchResultSet
 {
     private readonly List<FederatedEntry> _matches = [];
     private readonly List<FederatedEntry> _includes = [];

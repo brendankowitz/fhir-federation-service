@@ -3,7 +3,7 @@ using System.Text.Json;
 namespace Ignixa.Federation.SampleClient;
 
 /// <summary>One page of a federated search.</summary>
-public sealed class SearchPage
+internal sealed class SearchPage
 {
     public required IReadOnlyList<FederatedEntry> Matches { get; init; }
 
@@ -22,7 +22,7 @@ public sealed class SearchPage
     internal Uri? NextLink { get; init; }
 
     private const string SourceShardExtensionUrl =
-        "https://github.com/brendankowitz/fhir-federation-service/StructureDefinition/source-shard";
+        "http://ignixa.io/federation/StructureDefinition/source-shard";
 
     /// <summary>Reads a searchset Bundle. Relative links are resolved against <paramref name="baseUrl"/>.</summary>
     internal static SearchPage Parse(JsonElement bundle, Uri baseUrl)
