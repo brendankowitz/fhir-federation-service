@@ -228,7 +228,7 @@ Examples, with Sarah as `Patient/p1` on shard A and `Patient/p2` on shard B:
 3. Bounded by `MaxChainSourceRows` (5000 scanned) and `MaxChainKeys`; overflow → 400 `too-costly`.
 4. **Targeted primary:** query only shards that own at least one resolved Patient, each with `_id=` its own ids. Shards with no keys are not queried.
 
-**Transport:** rewritten requests use `POST [shard]/[type]/_search` when the profile allows, else GET; if still over the backend's limit → `too-costly`. No split requests (split OR-lists overlap; split ANDs need a cross product). Sub-query timeout 15 s (as in the Cosmos provider) within the request deadline.
+**Transport:** rewritten requests use `POST [shard]/[type]/_search` when the profile allows, else GET. A request whose form-decoded key/value pairs repeat uses GET, because a Microsoft form POST collapses the repetition in its self link; the raw spelling of every occurrence is kept. The method is chosen before sending, is used for both the primary and the count, and binds the cursor. GET is not assumed to fit an arbitrary URL: once witness discovery is complete, the host's side-effect-free size check measures every generated request each surviving owner will be sent, in its selected method against the registered base, before any target call. Count-only plans check only the count, `_total=none` generates no count, and a requested total checks both. Any request that does not fit → `too-costly`, not a backend failure, with no re-encoding, deduplication or retry. No split requests (split OR-lists overlap; split ANDs need a cross product). Sub-query timeout 15 s (as in the Cosmos provider) within the request deadline.
 
 ### 7.6 Includes and revincludes (targeted, per page)
 

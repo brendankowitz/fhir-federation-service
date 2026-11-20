@@ -95,6 +95,8 @@ public sealed class ReverseChainAdmissionTests
     [Theory]
     [InlineData("client")]
     [InlineData("capabilities")]
+    [InlineData("counts")]
+    [InlineData("fitsRequest")]
     [InlineData("maxChainKeys")]
     [InlineData("maxChainSourceRows")]
     [InlineData("maxParallelCalls")]
@@ -104,6 +106,8 @@ public sealed class ReverseChainAdmissionTests
         var exception = Should.Throw<ArgumentException>(() => new ReverseChainResolver(
             parameter == "client" ? null! : _f.Client,
             parameter == "capabilities" ? null! : _f.Capabilities,
+            parameter == "counts" ? null! : CountFixture.Executor(_f.Client, _f.Capabilities),
+            parameter == "fitsRequest" ? null! : _f.Fits,
             parameter == "maxChainKeys" ? 0 : 1,
             parameter == "maxChainSourceRows" ? 0 : 1,
             parameter == "maxParallelCalls" ? 0 : 1,

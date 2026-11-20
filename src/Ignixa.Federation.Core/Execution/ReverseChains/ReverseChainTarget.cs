@@ -29,8 +29,9 @@ public sealed class ReverseChainTarget
     /// Choose the verb before sending and use it for both the primary search and its count target. Microsoft FHIR
     /// Server can collapse form-decoded duplicate pairs in a POST self link, so its echo cannot be verified.
     /// GET preserves those occurrences without changing their wire spelling. A cursor stays bound to its start
-    /// method; a self-link mismatch is not retried. Verifying that the GET URL fits the shard's byte limit remains
-    /// an integration prerequisite: this choice does not guarantee that an arbitrary URL fits.
+    /// method; a self-link mismatch is not retried. When the resolver generated the predicates, it measures the
+    /// request in this method before returning the target and refuses one that does not fit; GET is not assumed
+    /// to fit an arbitrary URL.
     /// </remarks>
     public ShardSearchMethod Method { get; }
 

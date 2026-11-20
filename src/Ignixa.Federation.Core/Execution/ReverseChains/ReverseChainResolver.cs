@@ -1,6 +1,7 @@
 using System.Collections.Frozen;
 using System.Runtime.ExceptionServices;
 using Ignixa.FhirPath.Expressions;
+using Ignixa.Federation.Core.Execution.Counts;
 using Ignixa.Federation.Core.Execution.Includes;
 using Ignixa.Federation.Core.Identity;
 using Ignixa.Federation.Core.Search;
@@ -14,8 +15,9 @@ namespace Ignixa.Federation.Core.Execution.ReverseChains;
 /// comma-separated alternatives to every replaced ordinal on an owner: combining identical lists with AND or OR
 /// selects the same ids. No join on source-row identities or backend AND of different id lists is needed.
 /// The sub-query requests full resources because a hop's FHIRPath need not depend on a single element.
-/// Enforcing the backend's HTTP request-byte limit is an integration prerequisite: profiles do not specify
-/// an accepted GET line or POST body size, and this resolver does not split requests.
+/// Once every clause is witnessed, each generated primary and count request is measured with the host's transport
+/// predicate in its selected method on every owning shard, before any of them is sent. One that does not fit refuses
+/// the search as too costly; requests are never split, re-encoded, deduplicated or retried.
 /// </remarks>
 public sealed class ReverseChainResolver
 {
@@ -23,6 +25,8 @@ public sealed class ReverseChainResolver
 
     private readonly IShardClient _client;
     private readonly SearchCapabilities _capabilities;
+    private readonly FederatedCountExecutor _counts;
+    private readonly Func<ShardSearchRequest, bool> _fitsRequest;
     private readonly ReferenceClassifier _classifier;
     private readonly int _maxChainSourceRows;
     private readonly int _maxChainKeys;
@@ -32,19 +36,28 @@ public sealed class ReverseChainResolver
     /// <summary>Initializes a new instance of the <see cref="ReverseChainResolver"/> class.</summary>
     /// <param name="client">The client that searches source shards and follows their continuations.</param>
     /// <param name="capabilities">The current path certifications and the registry used to route references.</param>
+    /// <param name="counts">The count executor whose exact count requests are measured when the search counts.</param>
+    /// <param name="fitsRequest">
+    /// The host's side-effect-free transport predicate: whether one request, in its own method, fits its shard's
+    /// request limits. It returns <see langword="false"/> only for size; exceptions it throws propagate unchanged.
+    /// </param>
     /// <param name="maxChainKeys">The most distinct physical target keys one distributed clause may witness across all shards.</param>
     /// <param name="maxChainSourceRows">The most source entries one distributed clause may scan across all shards and pages.</param>
     /// <param name="maxParallelCalls">The most shard calls one resolution may have in flight at once.</param>
     /// <param name="subqueryTimeout">The deadline for one distributed clause's fan-out, including continuations.</param>
-    /// <exception cref="ArgumentNullException"><paramref name="client"/> or <paramref name="capabilities"/> is <see langword="null"/>.</exception>
+    /// <exception cref="ArgumentNullException">
+    /// <paramref name="client"/>, <paramref name="capabilities"/>, <paramref name="counts"/> or <paramref name="fitsRequest"/> is <see langword="null"/>.
+    /// </exception>
     /// <exception cref="ArgumentOutOfRangeException">
     /// <paramref name="maxChainKeys"/>, <paramref name="maxChainSourceRows"/>, <paramref name="maxParallelCalls"/>
     /// or <paramref name="subqueryTimeout"/> is not positive, or the timeout exceeds the timer maximum of 4,294,967,294 milliseconds.
     /// </exception>
-    public ReverseChainResolver(IShardClient client, SearchCapabilities capabilities, int maxChainKeys, int maxChainSourceRows, int maxParallelCalls, TimeSpan subqueryTimeout)
+    public ReverseChainResolver(IShardClient client, SearchCapabilities capabilities, FederatedCountExecutor counts, Func<ShardSearchRequest, bool> fitsRequest, int maxChainKeys, int maxChainSourceRows, int maxParallelCalls, TimeSpan subqueryTimeout)
     {
         ArgumentNullException.ThrowIfNull(client);
         ArgumentNullException.ThrowIfNull(capabilities);
+        ArgumentNullException.ThrowIfNull(counts);
+        ArgumentNullException.ThrowIfNull(fitsRequest);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxChainKeys);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxChainSourceRows);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxParallelCalls);
@@ -52,6 +65,8 @@ public sealed class ReverseChainResolver
         ArgumentOutOfRangeException.ThrowIfGreaterThan(subqueryTimeout, MaxSubqueryTimeout);
         _client = client;
         _capabilities = capabilities;
+        _counts = counts;
+        _fitsRequest = fitsRequest;
         _classifier = new ReferenceClassifier(capabilities.Registry);
         _maxChainSourceRows = maxChainSourceRows;
         _maxChainKeys = maxChainKeys;
@@ -77,7 +92,8 @@ public sealed class ReverseChainResolver
     /// <exception cref="ReverseChainRefusedException">
     /// <see cref="ReverseChainRefusal.UnauthorizedType"/>: the caller cannot read a source or target type;
     /// <see cref="ReverseChainRefusal.NotCertified"/>: the operation is no longer certified on exactly the planned shards;
-    /// <see cref="ReverseChainRefusal.TooCostly"/>: a distributed clause exceeded its source-row or distinct-key limit.
+    /// <see cref="ReverseChainRefusal.TooCostly"/>: a distributed clause exceeded its source-row or distinct-key limit, or
+    /// a generated primary or count request does not fit an owning shard in its selected method.
     /// </exception>
     /// <exception cref="FetchBudgetExhaustedException">Another sub-query call would exceed <paramref name="fetchBudget"/>.</exception>
     /// <exception cref="ShardFailureException">A participating shard failed, timed out, or broke its search contract.</exception>
@@ -122,7 +138,30 @@ public sealed class ReverseChainResolver
             targets.Add(new ReverseChainTarget(plan, shard, replacements));
         }
 
+        if (candidates is not null)
+        {
+            AdmitTransport(plan, distributed[0].Hop!.Path, targets);
+        }
+
         return new ReverseChainResolution(targets.AsReadOnly(), budget.Calls);
+    }
+
+    /// <summary>
+    /// Measures every generated request the search will send: the primary page unless the plan only counts, and the
+    /// count when it is the result or a requested total. <see cref="QueryPlan.PageSize"/> bounds every page's count.
+    /// </summary>
+    private void AdmitTransport(QueryPlan plan, ReferencePath path, List<ReverseChainTarget> targets)
+    {
+        foreach (ReverseChainTarget target in targets)
+        {
+            bool fits = (plan.PageSize is not { } pageSize || _fitsRequest(target.Request(pageSize)))
+                && (!(plan.CountOnly || plan.IncludeTotal)
+                    || _fitsRequest(_counts.CountRequest(plan, target.Shard, target.Replacements, target.Method)));
+            if (!fits)
+            {
+                throw new ReverseChainRefusedException(path, ReverseChainRefusal.TooCostly);
+            }
+        }
     }
 
     private async Task<List<ResourceKey>> WitnessesAsync(ReferenceHop hop, CallBudget budget, CancellationToken caller)
