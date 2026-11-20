@@ -7,4 +7,7 @@ internal enum UnsortedSnapshotOutcome
     Invalid,
     UnsupportedVersion,
     TooLarge,
+
+    /// <summary>A participating shard is missing or changed; restart the search (HTTP 410).</summary>
+    Gone,
 }

@@ -1,4 +1,5 @@
 using Ignixa.Federation.Api.Continuations;
+using Ignixa.Federation.Core.Configuration;
 using Ignixa.Federation.Core.Execution;
 using Ignixa.Federation.Core.Identity;
 using Ignixa.Federation.Core.Search;
@@ -11,8 +12,8 @@ public sealed class UnsortedSnapshotCodecTests
 {
     private const int ByteLimit = 4096;
 
-    // Independent v1 wire fixtures: version, original count 3, one stream; GET a/Patient, template count 0, no occurrences.
-    private const string Header = "01" + "00000003" + "00000001";
+    // Independent wire fixtures: version, original count 3, one stream; GET a/Patient, template count 0, no occurrences.
+    private const string Header = "02" + "00000003" + "00000001";
     private const string Identity = "0000000161" + "0000000750617469656E74";
     private const string Stream = Identity + "00000000" + "00" + "00000000";
     private const string Start = "00" + "0000000161";
@@ -21,6 +22,10 @@ public sealed class UnsortedSnapshotCodecTests
     private static readonly ShardId A = ShardId.Parse("a");
     private static readonly ShardId B = ShardId.Parse("b");
     private static readonly ResourceType Patient = ResourceType.Parse("Patient");
+    private static readonly ShardRegistry Registry = ShardRegistry.Create(
+        [Shard("a"), Shard("b")],
+        [new BackendProfile("Synthetic", true, 50, NextLinkRedemption.RepostToSearch, null)]);
+    private static readonly string FixtureRevision = Registry.ComputeVersion([A]);
     private static readonly ResourceKey Anchor = new(B, Patient, ResourceId.Parse("P.1"));
     private static readonly ParameterOccurrence[] Occurrences =
         [new("n%61me:exact", "A%2b+雪="), new("name", ""), new("n%61me:exact", "A%2b+雪=")];
@@ -78,9 +83,9 @@ public sealed class UnsortedSnapshotCodecTests
     }
 
     [Fact]
-    public void Decode_AHandFramedV1Payload_PreservesAnInitialGetCursor()
+    public void Decode_AHandFramedPayload_PreservesAnInitialGetCursor()
     {
-        UnsortedContinuationSnapshot snapshot = Decode(Convert.FromHexString(Header + Stream + Cursor + "00" + InitialCycle));
+        UnsortedContinuationSnapshot snapshot = Decode(Convert.FromHexString(Header + Stream + Cursor + "00" + InitialCycle + FixtureRevision));
 
         snapshot.PageSize.ShouldBe(3);
         snapshot.Streams.ShouldHaveSingleItem().PageSize.ShouldBe(0);
@@ -146,10 +151,10 @@ public sealed class UnsortedSnapshotCodecTests
     }
 
     [Theory]
-    [InlineData("negative stream count", "0100000003FFFFFFFF")]
-    [InlineData("huge stream count", "01000000037FFFFFFF")]
-    [InlineData("zero client count", "010000000000000001" + Stream + Start)]
-    [InlineData("client count exceeds the admitted maximum", "017FFFFFFF00000001" + Stream + Start)]
+    [InlineData("negative stream count", "0200000003FFFFFFFF")]
+    [InlineData("huge stream count", "02000000037FFFFFFF")]
+    [InlineData("zero client count", "020000000000000001" + Stream + Start)]
+    [InlineData("client count exceeds the admitted maximum", "027FFFFFFF00000001" + Stream + Start)]
     [InlineData("unknown shape", Header + Stream + "FF")]
     [InlineData("unknown search method", Header + Identity + "00000000FF00000000" + Start)]
     [InlineData("truncated text", Header + "0000000261")]
@@ -170,26 +175,28 @@ public sealed class UnsortedSnapshotCodecTests
     [InlineData("power not a power of two", Header + Stream + Cursor + "0001" + "0000000000000000" + "00000003" + "00000000")]
     [InlineData("replay count zero", Header + Stream + "01" + Stream + Identity + "0000000131")]
     [InlineData("replay count larger than client size", Header + Stream + "01" + Identity + "000000040000000000" + Identity + "0000000131")]
-    public void Decode_MalformedOrInconsistentV1_ProducesNoSnapshot(string scenario, string hex)
+    public void Decode_MalformedOrInconsistentPayload_ProducesNoSnapshot(string scenario, string hex)
     {
-        var codec = new UnsortedSnapshotCodec(ByteLimit);
+        var codec = new UnsortedSnapshotCodec(ByteLimit, Registry);
 
-        codec.Decode(Convert.FromHexString(hex), out UnsortedContinuationSnapshot? decoded)
+        codec.Decode(Convert.FromHexString(hex + FixtureRevision), out UnsortedContinuationSnapshot? decoded)
             .ShouldBe(UnsortedSnapshotOutcome.Invalid, scenario);
         decoded.ShouldBeNull();
     }
 
-    [Fact]
-    public void Decode_UnknownVersion_ProducesNoSnapshot()
+    [Theory]
+    [InlineData("01" + "00000003" + "00000001" + Stream + Start)]
+    [InlineData("03")]
+    public void Decode_UnboundOrUnknownVersion_ProducesNoSnapshot(string hex)
     {
-        new UnsortedSnapshotCodec(ByteLimit).Decode([2], out UnsortedContinuationSnapshot? decoded)
+        new UnsortedSnapshotCodec(ByteLimit, Registry).Decode(Convert.FromHexString(hex), out UnsortedContinuationSnapshot? decoded)
             .ShouldBe(UnsortedSnapshotOutcome.UnsupportedVersion);
         decoded.ShouldBeNull();
     }
 
     [Fact]
     public void Codec_RequiresAPositiveBudget() =>
-        Should.Throw<ArgumentOutOfRangeException>(() => new UnsortedSnapshotCodec(0));
+        Should.Throw<ArgumentOutOfRangeException>(() => new UnsortedSnapshotCodec(0, Registry));
 
     [Fact]
     public void Codec_EnforcesTheSameExactByteLimitOnEncodeAndDecode()
@@ -198,8 +205,8 @@ public sealed class UnsortedSnapshotCodecTests
         var template = new ShardSearchRequest(A, Patient, [new("n", multibyte)], 0, ShardSearchMethod.Get);
         var snapshot = new UnsortedContinuationSnapshot([template], 3, UnsortedContinuation.AtStart(A));
         byte[] bytes = Encode(snapshot);
-        var exact = new UnsortedSnapshotCodec(bytes.Length);
-        var tooSmall = new UnsortedSnapshotCodec(bytes.Length - 1);
+        var exact = new UnsortedSnapshotCodec(bytes.Length, Registry);
+        var tooSmall = new UnsortedSnapshotCodec(bytes.Length - 1, Registry);
 
         exact.Encode(snapshot, out byte[]? exactBytes).ShouldBe(UnsortedSnapshotOutcome.Success);
         exactBytes.ShouldBe(bytes);
@@ -217,22 +224,40 @@ public sealed class UnsortedSnapshotCodecTests
         var cursor = new ShardCursor(B, Patient, "synthetic-\uD800", NextLinkRedemption.RepostToSearch);
         var snapshot = new UnsortedContinuationSnapshot([template], 3, UnsortedContinuation.AtCursor(cursor, null, CursorCycleState.Initial));
 
-        new UnsortedSnapshotCodec(ByteLimit).Encode(snapshot, out byte[]? bytes).ShouldBe(UnsortedSnapshotOutcome.Invalid);
+        new UnsortedSnapshotCodec(ByteLimit, Registry).Encode(snapshot, out byte[]? bytes).ShouldBe(UnsortedSnapshotOutcome.Invalid);
         bytes.ShouldBeNull();
     }
+
+    [Fact]
+    public void Encode_UnregisteredStream_ProducesNoBytes()
+    {
+        var snapshot = new UnsortedContinuationSnapshot([Post(ShardId.Parse("unknown"), 0), Post(B, 0)], 3, UnsortedContinuation.AtStart(B));
+
+        new UnsortedSnapshotCodec(ByteLimit, Registry).Encode(snapshot, out byte[]? bytes).ShouldBe(UnsortedSnapshotOutcome.Invalid);
+        bytes.ShouldBeNull();
+    }
+
+    private static ShardOptions Shard(string id) => new()
+    {
+        Id = id,
+        Alias = id,
+        BaseUrl = $"https://{id}.example.test/fhir",
+        Profile = "Synthetic",
+        Auth = new AuthOptions { Type = "ManagedIdentity", Resource = "https://fhir.example.test" },
+    };
 
     private static ShardSearchRequest Post(ShardId shard, int count) =>
         new(shard, Patient, Occurrences, count, ShardSearchMethod.PostSearch);
 
     private static byte[] Encode(UnsortedContinuationSnapshot snapshot)
     {
-        new UnsortedSnapshotCodec(ByteLimit).Encode(snapshot, out byte[]? bytes).ShouldBe(UnsortedSnapshotOutcome.Success);
+        new UnsortedSnapshotCodec(ByteLimit, Registry).Encode(snapshot, out byte[]? bytes).ShouldBe(UnsortedSnapshotOutcome.Success);
         return bytes.ShouldNotBeNull();
     }
 
     private static UnsortedContinuationSnapshot Decode(byte[] bytes)
     {
-        new UnsortedSnapshotCodec(ByteLimit).Decode(bytes, out UnsortedContinuationSnapshot? snapshot).ShouldBe(UnsortedSnapshotOutcome.Success);
+        new UnsortedSnapshotCodec(ByteLimit, Registry).Decode(bytes, out UnsortedContinuationSnapshot? snapshot).ShouldBe(UnsortedSnapshotOutcome.Success);
         return snapshot.ShouldNotBeNull();
     }
 }

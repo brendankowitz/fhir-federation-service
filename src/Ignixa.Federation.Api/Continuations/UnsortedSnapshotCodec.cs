@@ -9,30 +9,37 @@ using Ignixa.Federation.Core.Shards;
 namespace Ignixa.Federation.Api.Continuations;
 
 /// <summary>
-/// Bounded v1 payload for primary unsorted paging (design spec §7.4), independent of the protected envelope.
+/// Bounded payload for primary unsorted paging (design spec §7.4), independent of the protected envelope.
 /// </summary>
 /// <remarks>
-/// Big-endian v1: version byte, original page size, stream count, ordered requests, then one continuation.
+/// Big-endian v2: version byte, original page size, stream count, ordered requests, one continuation, then the
+/// 32-byte registry version of exactly the participating shards. The unbound draft v1 is not redeemable.
 /// A request is shard, type, sent or template count, method byte, occurrence count, then ordered key/value strings.
 /// The continuation tag selects start (shard), search (exact request and anchor), or cursor (shard, type, opaque
 /// target, redemption byte, optional anchor, optional unsigned 64-bit fingerprint, power, steps).
 /// An anchor is shard, type and logical id. All lengths, counts, power and steps are signed 32-bit integers;
 /// strings are byte-length-prefixed strict UTF-8. Option flags are one byte, 0 or 1. No trailing data is allowed.
+/// Decode only authenticated snapshot bytes, using the same immutable registry as the executor. The participating
+/// shards' registry version must still match, independently of the outer envelope's dependency checks.
 /// </remarks>
 internal sealed class UnsortedSnapshotCodec
 {
-    private const byte Version = 1;
+    private const byte Version = 2;
     private const byte AtStart = 0;
     private const byte AtSearch = 1;
     private const byte AtCursor = 2;
     private const int MinimumRequestBytes = (4 * sizeof(int)) + sizeof(byte) + 2; // Two nonempty strings.
     private const int MinimumOccurrenceBytes = (2 * sizeof(int)) + 1; // Nonempty key, possibly empty value.
+    private const int RegistryVersionBytes = 32;
     private readonly int _byteLimit;
+    private readonly ShardRegistry _registry;
 
-    internal UnsortedSnapshotCodec(int byteLimit)
+    internal UnsortedSnapshotCodec(int byteLimit, ShardRegistry registry)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(byteLimit);
+        ArgumentNullException.ThrowIfNull(registry);
         _byteLimit = byteLimit;
+        _registry = registry;
     }
 
     internal UnsortedSnapshotOutcome Encode(UnsortedContinuationSnapshot snapshot, out byte[]? bytes)
@@ -51,6 +58,12 @@ internal sealed class UnsortedSnapshotCodec
             }
 
             WriteContinuation(writer, snapshot.Continuation);
+            if (ParticipatingVersion(snapshot.Streams) is not { } revision)
+            {
+                return UnsortedSnapshotOutcome.Invalid;
+            }
+
+            writer.WriteBytes(revision);
             bytes = writer.ToArray();
             return UnsortedSnapshotOutcome.Success;
         }
@@ -83,9 +96,14 @@ internal sealed class UnsortedSnapshotCodec
             return UnsortedSnapshotOutcome.UnsupportedVersion;
         }
 
+        if (bytes.Length <= RegistryVersionBytes)
+        {
+            return UnsortedSnapshotOutcome.Invalid;
+        }
+
         try
         {
-            var reader = new PayloadReader(bytes[1..]);
+            var reader = new PayloadReader(bytes[1..^RegistryVersionBytes]);
             int pageSize = reader.ReadInt32();
             int streamCount = reader.ReadCount(MinimumRequestBytes);
             if (streamCount == 0)
@@ -105,7 +123,14 @@ internal sealed class UnsortedSnapshotCodec
                 return UnsortedSnapshotOutcome.Invalid;
             }
 
-            snapshot = new UnsortedContinuationSnapshot(streams, pageSize, continuation);
+            var restored = new UnsortedContinuationSnapshot(streams, pageSize, continuation);
+            if (ParticipatingVersion(restored.Streams) is not { } revision
+                || !bytes[^RegistryVersionBytes..].SequenceEqual(revision))
+            {
+                return UnsortedSnapshotOutcome.Gone;
+            }
+
+            snapshot = restored;
             return UnsortedSnapshotOutcome.Success;
         }
         catch (FormatException)
@@ -117,6 +142,19 @@ internal sealed class UnsortedSnapshotCodec
             // Core constructors own domain validation. Never forward their exception or parameter values.
             return UnsortedSnapshotOutcome.Invalid;
         }
+    }
+
+    private byte[]? ParticipatingVersion(IReadOnlyList<ShardSearchRequest> streams)
+    {
+        foreach (ShardSearchRequest stream in streams)
+        {
+            if (!_registry.TryGetById(stream.Shard, out _))
+            {
+                return null;
+            }
+        }
+
+        return Convert.FromHexString(_registry.ComputeVersion(streams.Select(stream => stream.Shard)));
     }
 
     private static void WriteRequest(PayloadWriter writer, ShardSearchRequest request)
@@ -270,6 +308,8 @@ internal sealed class UnsortedSnapshotCodec
         public byte[] ToArray() => _buffer.AsSpan(0, _written).ToArray();
 
         public void WriteByte(byte value) => Reserve(sizeof(byte))[0] = value;
+
+        public void WriteBytes(ReadOnlySpan<byte> bytes) => bytes.CopyTo(Reserve(bytes.Length));
 
         public void WriteFlag(bool value) => WriteByte(value ? (byte)1 : (byte)0);
 
