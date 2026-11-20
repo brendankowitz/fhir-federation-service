@@ -140,17 +140,19 @@ public sealed class HttpShardClientNextLinkTests
     }
 
     [Theory]
-    [InlineData(NextLinkRedemption.FollowGet, "GET", "/fhir/Patient?ct=", "")]
-    [InlineData(NextLinkRedemption.RepostToSearch, "POST", "/fhir/Patient/_search", "ct=")]
+    [InlineData(ShardSearchMethod.Get, NextLinkRedemption.RepostToSearch, NextLinkRedemption.FollowGet, "GET", "/fhir/Patient?ct=", "")]
+    [InlineData(ShardSearchMethod.PostSearch, NextLinkRedemption.FollowGet, NextLinkRedemption.FollowGet, "GET", "/fhir/Patient?ct=", "")]
+    [InlineData(ShardSearchMethod.PostSearch, NextLinkRedemption.RepostToSearch, NextLinkRedemption.RepostToSearch, "POST", "/fhir/Patient/_search", "ct=")]
     public async Task MultiHop_KeepsTheRedemptionAndSendsOnlyEachLinkQuery(
+        ShardSearchMethod start,
+        NextLinkRedemption profileRedemption,
         NextLinkRedemption redemption,
         string method,
         string targetPrefix,
         string bodyPrefix)
     {
         ArgumentNullException.ThrowIfNull(bodyPrefix);
-        await using var shard = ShardHarness.Start(ShardHarness.Repost);
-        ShardSearchMethod start = redemption == NextLinkRedemption.FollowGet ? ShardSearchMethod.Get : ShardSearchMethod.PostSearch;
+        await using var shard = ShardHarness.Start(profileRedemption == NextLinkRedemption.RepostToSearch ? ShardHarness.Repost : ShardHarness.Follow);
         shard.Server.Respond(
             ScriptedResponse.Json(shard.SarahPage(next: shard.Search + "?ct=Mg", entries: Searchsets.Entry(Searchsets.Patient("p1")))),
             ScriptedResponse.Json(Searchsets.Page(self: null, next: shard.AliasBase + "/Patient?ct=Mw", entries: Searchsets.Entry(Searchsets.Patient("p2")))),
@@ -165,6 +167,11 @@ public sealed class HttpShardClientNextLinkTests
         }
 
         pages.SelectMany(p => p.Entries).Select(e => e.Key.Id.Value).ShouldBe(["p1", "p2", "p3", "p4"]);
+        RecordedRequest first = shard.Server.Requests[0];
+        bool post = start == ShardSearchMethod.PostSearch;
+        first.Method.ShouldBe(post ? "POST" : "GET");
+        first.Target.ShouldBe(post ? "/fhir/Patient/_search" : "/fhir/Patient?name=Sarah&_count=10");
+        Encoding.ASCII.GetString(first.Body).ShouldBe(post ? "name=Sarah&_count=10" : string.Empty);
         RecordedRequest[] continuations = [.. shard.Server.Requests.Skip(1)];
         continuations.Length.ShouldBe(3);
         string[] tokens = ["Mg", "Mw", "NA"];
