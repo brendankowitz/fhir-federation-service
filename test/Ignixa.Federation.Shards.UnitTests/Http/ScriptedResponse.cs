@@ -23,6 +23,9 @@ internal sealed class ScriptedResponse
 
     public string? Location { get; private init; }
 
+    /// <summary>Gets a <c>Content-Location</c> header to send, which a client must never take as the resource's location.</summary>
+    public string? ContentLocation { get; private init; }
+
     /// <summary>Runs after the request is recorded but before the server sends any response bytes.</summary>
     public Func<CancellationToken, Task>? BeforeHead { get; private init; }
 
@@ -35,8 +38,11 @@ internal sealed class ScriptedResponse
     /// <summary>Gets whether the server keeps the connection open for another request after this response.</summary>
     public bool KeepsAlive { get; private init; }
 
-    public static ScriptedResponse Json(string json, Func<CancellationToken, Task>? beforeHead = null) =>
-        new(200, Encoding.UTF8.GetBytes(json), "application/fhir+json") { BeforeHead = beforeHead };
+    public static ScriptedResponse Json(string json, Func<CancellationToken, Task>? beforeHead = null, string? contentLocation = null) =>
+        new(200, Encoding.UTF8.GetBytes(json), "application/fhir+json") { BeforeHead = beforeHead, ContentLocation = contentLocation };
+
+    /// <summary>A 200 answer with exactly these body bytes, which need not be valid UTF-8.</summary>
+    public static ScriptedResponse Bytes(byte[] body) => new(200, body, "application/fhir+json");
 
     public static ScriptedResponse Status(int status, string body = "") => new(status, Encoding.UTF8.GetBytes(body), "text/plain");
 
@@ -64,6 +70,11 @@ internal sealed class ScriptedResponse
         if (Location is not null)
         {
             head.Append("Location: ").Append(Location).Append("\r\n");
+        }
+
+        if (ContentLocation is not null)
+        {
+            head.Append("Content-Location: ").Append(ContentLocation).Append("\r\n");
         }
 
         if (DeclaresLength)

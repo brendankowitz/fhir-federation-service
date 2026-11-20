@@ -207,7 +207,7 @@ internal sealed partial class Searchset
     private static string NonEmpty(string url, ShardDescriptor shard) =>
         url.Length > 0 ? url : throw Malformed(shard, "A self or next link has an empty url.");
 
-    private static bool IsString(JsonElement owner, string name, string expected) =>
+    internal static bool IsString(JsonElement owner, string name, string expected) =>
         owner.TryGetProperty(name, out JsonElement value) && string.Equals(Text(value), expected, StringComparison.Ordinal);
 
     // Every string the client consumes is decoded here. Valid JSON text can escape an unpaired surrogate ("\ud800"), which
@@ -230,7 +230,7 @@ internal sealed partial class Searchset
         }
     }
 
-    private static ShardCallException Malformed(ShardDescriptor shard, string reason) =>
+    internal static ShardCallException Malformed(ShardDescriptor shard, string reason) =>
         new(shard, ShardCallFailure.MalformedResponse, reason);
 
     [GeneratedRegex(@"\A[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]{1,7})?(Z|[+-][0-9]{2}:[0-9]{2})\z", RegexOptions.CultureInvariant)]

@@ -5,6 +5,8 @@ using System.Net.Http.Headers;
 using System.Net.Security;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
+using System.Text.Json;
+using System.Text.Unicode;
 using Ignixa.Federation.Core.Identity;
 using Ignixa.Federation.Core.Search;
 using Ignixa.Federation.Core.Shards;
@@ -38,17 +40,22 @@ namespace Ignixa.Federation.Shards.Http;
 /// <para><b>Failures.</b> A call either returns a page that represents the backend's answer exactly or throws: a
 /// classified <see cref="ShardCallException"/>, an <see cref="OperationCanceledException"/> when the caller cancels, or
 /// the credential provider's or meter's own exception. It never returns an empty page for a failure, and never retries.</para>
+/// <para><b>Read.</b> <see cref="ReadAsync"/> is the same bounded exchange for one resource, <c>GET {base}/{type}/{id}</c>,
+/// with its own <c>read</c> span. Only there are HTTP 404 and 410 classified as the resource's absence.</para>
 /// <para>Thread-safe: concurrent calls are independent.</para>
 /// </remarks>
 public sealed class HttpShardClient : IShardClient, IDisposable
 {
     private const int ChunkBytes = 16 * 1024;
     private const string Stage = "search";
+    private const string ReadStage = "read";
 
     // CancellationTokenSource.CancelAfter accepts at most uint.MaxValue - 1 milliseconds.
     private static readonly TimeSpan MaxCallTimeout = TimeSpan.FromMilliseconds(uint.MaxValue - 1);
 
     private static readonly UriCreationOptions Verbatim = new() { DangerousDisablePathAndQueryCanonicalization = true };
+
+    private static readonly JsonDocumentOptions StrictJson = new() { AllowDuplicateProperties = false };
 
     private readonly ShardDescriptor _shard;
     private readonly IShardCredentialProvider _credentials;
@@ -179,6 +186,90 @@ public sealed class HttpShardClient : IShardClient, IDisposable
 
     /// <summary>Releases the connection pool. The client must not be used afterwards.</summary>
     public void Dispose() => _invoker.Dispose();
+
+    /// <summary>
+    /// Reads the current version of one resource: a single <c>GET {base}/{type}/{id}</c> at the key's own shard, with the
+    /// same credential, deadline, size limit, metering and no-redirect rules as a search.
+    /// </summary>
+    /// <param name="key">The resource to read; its shard must be this client's.</param>
+    /// <param name="cancellationToken">Cancels the call.</param>
+    /// <returns>
+    /// The response body exactly as received, and the URL it was read from, built from the registered base and the key
+    /// alone. The body is only returned when it is one JSON object whose <c>resourceType</c> and <c>id</c> are the key's;
+    /// that is identity framing, not FHIR schema validation.
+    /// </returns>
+    /// <exception cref="ArgumentNullException"><paramref name="key"/> is <see langword="null"/>.</exception>
+    /// <exception cref="ArgumentException">
+    /// The key is for another shard, or its id is <c>.</c> or <c>..</c>, which as a URL path segment would address
+    /// something other than the resource. Nothing is sent and no credential is acquired.
+    /// </exception>
+    /// <exception cref="ShardCallException">
+    /// The exchange failed. HTTP 404 and 410 are <see cref="ShardCallFailure.ResourceNotFound"/> and
+    /// <see cref="ShardCallFailure.ResourceGone"/> here only; no error body is read, and nothing is retried or fallen back to.
+    /// </exception>
+    public Task<ShardReadResult> ReadAsync(ResourceKey key, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(key);
+        if (key.Shard != _shard.Id)
+        {
+            throw new ArgumentException("The key is for another shard.", nameof(key));
+        }
+
+        // A lexical R4 id, but as a path segment it is a dot segment that a URL resolver may fold into the parent path.
+        if (key.Id.Value is "." or "..")
+        {
+            throw new ArgumentException("The id cannot be addressed as a URL path segment.", nameof(key));
+        }
+
+        return ReadCoreAsync(key, cancellationToken);
+    }
+
+    private async Task<ShardReadResult> ReadCoreAsync(ResourceKey key, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        using Activity? activity = ShardActivity.StartBackendCall(_shard.Alias.Value, ReadStage);
+        try
+        {
+            var location = new Uri($"{_shard.CanonicalBaseUrl}/{key.Type.Value}/{key.Id.Value}", in Verbatim);
+            using var message = new HttpRequestMessage(HttpMethod.Get, location);
+
+            // The identity check runs inside the exchange, so it is under the same deadline and caller cancellation.
+            return await ExchangeAsync(message, qualifiedRead: true, body => ReadResource(body, location, key), cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (ShardCallException e)
+        {
+            activity?.SetStatus(ActivityStatusCode.Error, e.Failure.ToString());
+            throw;
+        }
+    }
+
+    private ShardReadResult ReadResource(ReadOnlyMemory<byte> body, Uri location, ResourceKey key)
+    {
+        // The read keeps the bytes as received, so they must be text a downstream consumer decodes the same way.
+        if (!Utf8.IsValid(body.Span))
+        {
+            throw Failure(ShardCallFailure.MalformedResponse, "The body is not valid UTF-8.");
+        }
+
+        try
+        {
+            using JsonDocument document = JsonDocument.Parse(body, StrictJson);
+            JsonElement root = document.RootElement;
+            if (root.ValueKind != JsonValueKind.Object
+                || !Searchset.IsString(root, "resourceType", key.Type.Value)
+                || !Searchset.IsString(root, "id", key.Id.Value))
+            {
+                throw Failure(ShardCallFailure.MalformedResponse, "The body is not the requested resource.");
+            }
+        }
+        catch (JsonException)
+        {
+            throw Failure(ShardCallFailure.MalformedResponse, "The body is not valid JSON.");
+        }
+
+        return new ShardReadResult(location, body.Span);
+    }
 
     // Redirects, cookies, decompression and ambient credentials are off: the client sends exactly what it builds and
     // reads exactly what the backend returns. A response left unread (a failed status, an oversized body) is never
@@ -389,7 +480,8 @@ public sealed class HttpShardClient : IShardClient, IDisposable
                     Content = FormBody(query),
                 }
                 : new HttpRequestMessage(HttpMethod.Get, new Uri($"{_shard.CanonicalBaseUrl}/{type.Value}?{query}", in Verbatim));
-            ReadOnlyMemory<byte> body = await ExchangeAsync(message, cancellationToken).ConfigureAwait(false);
+            ReadOnlyMemory<byte> body = await ExchangeAsync(message, qualifiedRead: false, static body => body, cancellationToken)
+                .ConfigureAwait(false);
             ShardPage page = interpret(Searchset.Read(body, _shard, type));
             cancellationToken.ThrowIfCancellationRequested();
             return page;
@@ -408,7 +500,12 @@ public sealed class HttpShardClient : IShardClient, IDisposable
         return content;
     }
 
-    private async Task<ReadOnlyMemory<byte>> ExchangeAsync(HttpRequestMessage message, CancellationToken cancellationToken)
+    // Runs one bounded exchange and hands the whole body to interpret, still under the deadline and the caller's token.
+    private async Task<T> ExchangeAsync<T>(
+        HttpRequestMessage message,
+        bool qualifiedRead,
+        Func<ReadOnlyMemory<byte>, T> interpret,
+        CancellationToken cancellationToken)
     {
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         deadline.CancelAfter(_callTimeout);
@@ -436,10 +533,12 @@ public sealed class HttpShardClient : IShardClient, IDisposable
 
             using (response)
             {
-                CheckStatus(response);
+                CheckStatus(response, qualifiedRead);
                 ReadOnlyMemory<byte> body = await ReadBodyAsync(response.Content, deadline, cancellationToken).ConfigureAwait(false);
                 deadline.Token.ThrowIfCancellationRequested();
-                return body;
+                T result = interpret(body);
+                deadline.Token.ThrowIfCancellationRequested();
+                return result;
             }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -454,12 +553,15 @@ public sealed class HttpShardClient : IShardClient, IDisposable
         }
     }
 
-    private void CheckStatus(HttpResponseMessage response)
+    // Only a qualified read treats 404 and 410 as the resource's absence; a search that gets them is still an unexpected status.
+    private void CheckStatus(HttpResponseMessage response, bool qualifiedRead)
     {
         int status = (int)response.StatusCode;
         ShardCallFailure? failure = status switch
         {
             200 => null,
+            404 when qualifiedRead => ShardCallFailure.ResourceNotFound,
+            410 when qualifiedRead => ShardCallFailure.ResourceGone,
             >= 300 and < 400 => ShardCallFailure.Redirect,
             401 or 403 => ShardCallFailure.Authentication,
             _ => ShardCallFailure.UnexpectedStatus,
@@ -468,7 +570,10 @@ public sealed class HttpShardClient : IShardClient, IDisposable
         // The body of a failed exchange is never read: it may echo the query or hold backend detail.
         if (failure is { } classified)
         {
-            throw Failure(classified, "The backend did not answer with a search page.", status);
+            throw Failure(
+                classified,
+                qualifiedRead ? "The backend did not return the resource." : "The backend did not answer with a search page.",
+                status);
         }
     }
 

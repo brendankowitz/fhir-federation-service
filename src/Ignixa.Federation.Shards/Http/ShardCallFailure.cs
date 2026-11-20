@@ -41,4 +41,10 @@ public enum ShardCallFailure
     /// ambiguous form) or repeats the query just sent. It is never followed.
     /// </summary>
     InvalidNextLink,
+
+    /// <summary>A qualified current-resource read got HTTP 404: the shard has no such resource. Never set for a search.</summary>
+    ResourceNotFound,
+
+    /// <summary>A qualified current-resource read got HTTP 410: the shard says the resource was deleted. Never set for a search.</summary>
+    ResourceGone,
 }
