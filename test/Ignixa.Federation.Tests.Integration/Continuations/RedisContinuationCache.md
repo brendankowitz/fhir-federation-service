@@ -97,8 +97,10 @@ The interop tests read two variables from the test process environment: `FEDERAT
   A skipped test is not evidence.
 - Only one set, or a port that is not a TCP port: every interop test fails.
 - Both set: the fixture authenticates, then refuses to run unless the server is a standalone primary, version
-  7.0 or later, on the given port, with an empty keyspace, and the RESP2 and RESP3 connections negotiated their
-  protocols. Each run therefore needs a freshly launched, disposable process.
+  7.2 or later, on the given port, with an empty keyspace, and the RESP2 and RESP3 connections negotiated their
+  protocols. The fixture needs Redis 7.2's cached `TIME` so the staging prefix and adapter script observe the
+  same millisecond. Redis 7.0 samples wall time for each call. This is a test prerequisite, not a change to the
+  adapter's Redis 7.0 minimum. Use a freshly launched, disposable process for each run.
 
 A real validation run reports 16 interop tests succeeded and 0 skipped. Never commit or log the variable values.
 

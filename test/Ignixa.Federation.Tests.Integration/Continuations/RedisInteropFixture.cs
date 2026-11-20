@@ -17,7 +17,8 @@ public sealed class RedisInteropFixture : IAsyncLifetime
     internal const string PortVariable = "FEDERATION_TEST_REDIS_PORT";
     internal const string PasswordVariable = "FEDERATION_TEST_REDIS_PASSWORD";
 
-    private static readonly Version MinimumVersion = new(7, 0);
+    // The exact-expiry tests need TIME to stay frozen across the staging prefix and the adapter script.
+    private static readonly Version MinimumVersion = new(7, 2);
 
     private ConnectionMultiplexer? _first;
     private ConnectionMultiplexer? _second;
