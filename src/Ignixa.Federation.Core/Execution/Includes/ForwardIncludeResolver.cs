@@ -79,8 +79,9 @@ public sealed class ForwardIncludeResolver
     /// </exception>
     /// <exception cref="ArgumentOutOfRangeException"><paramref name="fetchBudget"/> is negative.</exception>
     /// <exception cref="ShardFailureException">
-    /// A match is not a valid resource of its key's type, or a target shard failed, timed out or broke the shard contract:
-    /// a row it was not asked for, a duplicate on one page, or a <c>next</c> chain that repeats or cycles.
+    /// A match is not a valid resource of its key's type (its body cannot be read, wherever in the body the fault lies, or a
+    /// reference it holds is not a single JSON string), or a target shard failed, timed out or broke the shard contract: a
+    /// row it was not asked for, a duplicate on one page, or a <c>next</c> chain that repeats or cycles.
     /// </exception>
     /// <exception cref="FetchBudgetExhaustedException">The includes need a shard call beyond <paramref name="fetchBudget"/>.</exception>
     /// <exception cref="OperationCanceledException"><paramref name="cancellationToken"/> was cancelled.</exception>

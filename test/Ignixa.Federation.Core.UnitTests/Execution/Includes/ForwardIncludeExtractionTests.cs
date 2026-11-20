@@ -160,6 +160,14 @@ public sealed class ForwardIncludeExtractionTests
     [InlineData("\"subject\":{\"identifier\":{\"system\":\"urn:mrn\",\"value\":\"123\"}}")]
     [InlineData("\"subject\":{\"display\":\"Someone\"}")]
     [InlineData("\"subject\":{\"reference\":\"Patient/not a valid id\"}")]
+    [InlineData("\"subject\":{\"reference\":\"Patient/p1 \"}")]
+    [InlineData("\"subject\":{\"reference\":\" Patient/p1\"}")]
+    [InlineData("\"subject\":{\"reference\":\"Patient/p1 \",\"_reference\":{\"id\":\"r1\"}}")]
+    [InlineData("\"subject\":{\"_reference\":{\"id\":\"r1\"}}")]
+    [InlineData("\"subject\":{\"Reference\":\"Patient/p1\"}")]
+    [InlineData("\"subject\":{\"reference\":\"x\\\"y\"}")]
+    [InlineData("\"subject\":{\"reference\":\"x\\u0001y\"}")]
+    [InlineData("\"subject\":{\"reference\":\"x\\\\qy\"}")]
     [InlineData("\"code\":{\"text\":\"no subject\"}")]
     public async Task A_reference_that_does_not_route_to_a_registered_shard_is_not_fetched(string members)
     {
@@ -172,6 +180,39 @@ public sealed class ForwardIncludeExtractionTests
         result.Outcomes.ShouldBeEmpty();
         result.Fetches.ShouldBe(0);
         client.Calls.ShouldBeEmpty();
+    }
+
+    [Fact]
+    public async Task A_reference_with_an_extension_on_its_literal_is_still_followed()
+    {
+        var client = new FakeShardClient();
+        client.ServeIds(East, Pat(East, "p1"));
+        ShardEntry match = Resource(
+            East, Observation, "o1", "1", "\"subject\":{\"reference\":\"Patient/p1\",\"_reference\":{\"id\":\"r1\"}}");
+
+        IncludeResult result = await Resolver(client).ResolveAsync([match], ObservationSubject);
+
+        client.Searches().ShouldBe(["east Patient?_id=p1"]);
+        result.Rendered().ShouldBe(["east/Patient/p1@1"]);
+    }
+
+    [Theory]
+    [InlineData("x\\\"y")]
+    [InlineData("x\\u0001y")]
+    [InlineData("x\\\\qy")]
+    [InlineData("https://east.example/fhir/Patient/p1\\\"")]
+    public async Task A_literal_the_type_resolver_cannot_read_is_ignored_by_a_resolve_typed_include(string jsonEscapedLiteral)
+    {
+        var client = new FakeShardClient();
+        client.ServeIds(East, Pat(East, "p2"));
+
+        IncludeResult result = await Resolver(client).ResolveAsync(
+            [Obs("o1", jsonEscapedLiteral), Obs("o2", "Patient/p2")],
+            ObservationPatient);
+
+        client.Searches().ShouldBe(["east Patient?_id=p2"]);
+        result.Rendered().ShouldBe(["east/Patient/p2@1"]);
+        result.Outcomes.ShouldBeEmpty();
     }
 
     [Fact]
@@ -255,12 +296,37 @@ public sealed class ForwardIncludeExtractionTests
     [InlineData("{\"resourceType\":5,\"id\":\"o1\"}")]
     [InlineData("null")]
     [InlineData("{\"resourceType\":\"Observation\",\"id\":\"o1\",\"subject\":{\"reference\":\"Patient/p1\"},\"subject\":{\"reference\":\"Patient/p2\"}}")]
+    [InlineData("{\"resourceType\":\"Observation\",\"id\":\"o1\",\"subject\":{\"reference\":\"Patient/p1\",\"reference\":\"Patient/p2\"}}")]
+    [InlineData("{\"resourceType\":\"Observation\",\"id\":\"o1\",\"subject\":{\"reference\":\"Patient/p1\",\"Reference\":\"Patient/p2\"}}")]
+    [InlineData("{\"resourceType\":\"Observation\",\"id\":\"o1\",\"subject\":{\"reference\":\"Patient/p1\"},\"_status\":{},\"__status\":{}}")]
+    [InlineData("{\"resourceType\":\"Observation\",\"id\":\"o1\",\"subject\":{\"reference\":\"Patient/p1\"},\"_status\":{},\"__status\":{},\"___status\":{}}")]
     public async Task A_match_that_is_not_its_keys_resource_is_a_contract_violation_of_its_shard(string json)
     {
         var client = new FakeShardClient();
 
         ShardFailureException failure = await Should.ThrowAsync<ShardFailureException>(() => Resolver(client).ResolveAsync(
             [Obs(East, "ok", "Patient/p1"), Raw(West, Observation, "o1", Encoding.UTF8.GetBytes(json))],
+            ObservationSubject));
+
+        failure.Shard.ShouldBe(West);
+        failure.Reason.ShouldBe(ShardFailureReason.ContractViolation);
+        client.Calls.ShouldBeEmpty();
+    }
+
+    [Theory]
+    [InlineData("[\"Patient/p1\",\"Patient/p2\"]")]
+    [InlineData("[\"Patient/p1\"]")]
+    [InlineData("[]")]
+    [InlineData("5")]
+    [InlineData("true")]
+    [InlineData("{\"value\":\"Patient/p1\"}")]
+    [InlineData("null")]
+    public async Task A_reference_literal_that_is_not_one_json_string_is_a_contract_violation_of_its_shard(string reference)
+    {
+        var client = new FakeShardClient();
+
+        ShardFailureException failure = await Should.ThrowAsync<ShardFailureException>(() => Resolver(client).ResolveAsync(
+            [Obs(East, "ok", "Patient/p1"), Resource(West, Observation, "o1", "1", $"\"subject\":{{\"reference\":{reference}}}")],
             ObservationSubject));
 
         failure.Shard.ShouldBe(West);
