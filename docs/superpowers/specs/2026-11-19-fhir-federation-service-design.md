@@ -397,7 +397,7 @@ Config key names; token envelope wire format; exact default limits within the st
 | D3 | Microsoft FHIR Server primary; Ignixa second. |
 | D4 | Backends are not hidden: `fullUrl` is the real backend URL; no content rewriting; proxied read is an optional convenience. |
 | D5 | Retryable best-effort pages over live data; mostly stateless tokens. |
-| D6 | 16 shards is a documented soft limit, load-tested at 16 and 50. |
+| D6 | 16 shards is a documented soft limit; load-test targets are 16 and 50 shards. |
 | D7 | Unsupported parameters → 400 even under lenient handling. |
 
 ## 19. Review log
