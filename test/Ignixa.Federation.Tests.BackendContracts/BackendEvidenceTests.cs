@@ -1,0 +1,260 @@
+using System.Text.Json.Nodes;
+
+namespace Ignixa.Federation.Tests.BackendContracts;
+
+/// <summary>
+/// Backend-independent checks of the evidence path. They run without Docker and show that the
+/// contract assertions fail for the two documented breaks, so a green live run means something.
+/// The canned searchsets stand in for what a broken backend would return.
+/// </summary>
+public sealed class BackendEvidenceTests
+{
+    [Theory]
+    [InlineData("5.2.84")]
+    [InlineData("5.2.84.0")]
+    public void Identity_uses_the_software_fields_from_the_capability_statement(string version)
+    {
+        string metadata = $$$"""
+            {"resourceType":"CapabilityStatement","name":"Not the software name","version":"0.0.0",
+             "software":{"name":"Sample FHIR Backend","version":"{{{version}}}"}}
+            """;
+
+        Assert.Equal($"Sample FHIR Backend {version}", FhirHttpClient.ReadSoftwareIdentity(metadata));
+    }
+
+    [Fact]
+    public void Identity_rejects_metadata_that_could_inject_a_log_line()
+    {
+        const string metadata = """
+            {"resourceType":"CapabilityStatement","software":{"name":"Example\n::warning::Do not print",
+             "version":"5.2.84"}}
+            """;
+
+        var failure = Assert.Throws<BackendEvidenceException>(() => FhirHttpClient.ReadSoftwareIdentity(metadata));
+
+        Assert.Equal(BackendFailureKind.Startup, failure.Kind);
+        Assert.DoesNotContain("Do not print", failure.Message);
+    }
+
+    private const string LocalQueryDescription = "subject=<own base>/Patient/dup";
+
+    private static readonly string[] LocalQueryExpected = ["obs-own-absolute-dup", "obs-relative-dup"];
+
+    [Fact]
+    public void Break_type_and_id_only_matching_admits_the_foreign_reference_and_is_reported()
+    {
+        SearchsetEvidence typeIdOnlyBackend = SearchsetEvidence.Parse(
+            Searchset("obs-relative-dup", "obs-own-absolute-dup", "obs-foreign-absolute-dup"));
+
+        MatchComparison comparison = MatchComparison.Compare(
+            EvidenceLabel.Contract, LocalQueryDescription, LocalQueryExpected, typeIdOnlyBackend);
+
+        Assert.False(comparison.IsEqual);
+        string report = comparison.Describe();
+        Assert.StartsWith("[contract]", report);
+        Assert.Contains("unexpected: [obs-foreign-absolute-dup]", report);
+        Assert.Contains("missing: []", report);
+    }
+
+    [Fact]
+    public void Break_literal_url_equality_excludes_the_relative_reference_and_is_reported()
+    {
+        SearchsetEvidence literalEqualityBackend = SearchsetEvidence.Parse(Searchset("obs-own-absolute-dup"));
+
+        MatchComparison comparison = MatchComparison.Compare(
+            EvidenceLabel.Contract, LocalQueryDescription, LocalQueryExpected, literalEqualityBackend);
+
+        Assert.False(comparison.IsEqual);
+        string report = comparison.Describe();
+        Assert.Contains("missing: [obs-relative-dup]", report);
+        Assert.Contains("unexpected: []", report);
+    }
+
+    [Fact]
+    public void Matching_ids_in_any_order_are_equal()
+    {
+        SearchsetEvidence actual = SearchsetEvidence.Parse(Searchset("obs-relative-dup", "obs-own-absolute-dup"));
+
+        MatchComparison comparison = MatchComparison.Compare(
+            EvidenceLabel.Contract, LocalQueryDescription, LocalQueryExpected, actual);
+
+        Assert.True(comparison.IsEqual, comparison.Describe());
+    }
+
+    [Fact]
+    public void A_repeated_match_is_a_multiset_difference()
+    {
+        SearchsetEvidence actual = SearchsetEvidence.Parse(
+            Searchset("obs-relative-dup", "obs-relative-dup", "obs-own-absolute-dup"));
+
+        MatchComparison comparison = MatchComparison.Compare(
+            EvidenceLabel.Contract, LocalQueryDescription, LocalQueryExpected, actual);
+
+        Assert.False(comparison.IsEqual);
+        Assert.Contains("unexpected: [obs-relative-dup]", comparison.Describe());
+    }
+
+    [Fact]
+    public void Characterization_reports_use_their_own_label()
+    {
+        SearchsetEvidence actual = SearchsetEvidence.Parse(Searchset("obs-relative-dup"));
+
+        MatchComparison comparison = MatchComparison.Compare(
+            EvidenceLabel.Characterization, "subject=Patient/dup", ["obs-relative-dup", "obs-own-absolute-dup"], actual);
+
+        Assert.StartsWith("[characterization]", comparison.Describe());
+    }
+
+    [Fact]
+    public void Ids_outside_the_reserved_set_are_not_echoed_and_long_lists_are_bounded()
+    {
+        string[] stray = Enumerable.Range(0, 40).Select(i => $"stray-id-{i:D4}-with-a-long-tail-{new string('x', 60)}").ToArray();
+        SearchsetEvidence actual = SearchsetEvidence.Parse(Build([.. stray, "obs-relative-dup"]));
+
+        string report = MatchComparison.Compare(
+            EvidenceLabel.Contract, LocalQueryDescription, LocalQueryExpected, actual).Describe();
+
+        Assert.DoesNotContain("stray-id-", report);
+        Assert.Contains("unreserved", report);
+        Assert.InRange(report.Length, 1, 1_500);
+    }
+
+    [Fact]
+    public void Parse_returns_match_ids_sorted_with_ordinal_order()
+    {
+        SearchsetEvidence evidence = SearchsetEvidence.Parse(Searchset("obs-relative-dup", "obs-control-other"));
+
+        Assert.Equal(["obs-control-other", "obs-relative-dup"], evidence.MatchIds);
+    }
+
+    [Fact]
+    public void A_next_link_means_the_evidence_is_incomplete()
+    {
+        string pageOne = Build(["obs-relative-dup"], nextLink: "http://127.0.0.1:1/Observation?_getpages=x");
+
+        BackendEvidenceException failure = Assert.Throws<BackendEvidenceException>(() => SearchsetEvidence.Parse(pageOne));
+
+        Assert.Equal(BackendFailureKind.IncompleteSearch, failure.Kind);
+    }
+
+    [Fact]
+    public void A_total_that_differs_from_the_match_count_means_the_evidence_is_incomplete()
+    {
+        string truncated = Build(["obs-relative-dup"], total: 2);
+
+        BackendEvidenceException failure = Assert.Throws<BackendEvidenceException>(() => SearchsetEvidence.Parse(truncated));
+
+        Assert.Equal(BackendFailureKind.IncompleteSearch, failure.Kind);
+    }
+
+    [Fact]
+    public void A_missing_total_means_the_evidence_is_incomplete()
+    {
+        string noTotal = Build(["obs-relative-dup"], total: null);
+
+        BackendEvidenceException failure = Assert.Throws<BackendEvidenceException>(() => SearchsetEvidence.Parse(noTotal));
+
+        Assert.Equal(BackendFailureKind.IncompleteSearch, failure.Kind);
+    }
+
+    [Fact]
+    public void An_entry_that_is_not_a_match_means_the_evidence_is_incomplete()
+    {
+        string withOutcome = Build(["obs-relative-dup"], extraEntryMode: "outcome");
+
+        BackendEvidenceException failure = Assert.Throws<BackendEvidenceException>(() => SearchsetEvidence.Parse(withOutcome));
+
+        Assert.Equal(BackendFailureKind.IncompleteSearch, failure.Kind);
+    }
+
+    [Theory]
+    [InlineData("not json")]
+    [InlineData("{\"resourceType\":\"OperationOutcome\"}")]
+    [InlineData("{\"resourceType\":\"Bundle\",\"type\":\"collection\",\"total\":0}")]
+    public void A_response_that_is_not_a_searchset_means_the_evidence_is_incomplete(string body)
+    {
+        BackendEvidenceException failure = Assert.Throws<BackendEvidenceException>(() => SearchsetEvidence.Parse(body));
+
+        Assert.Equal(BackendFailureKind.IncompleteSearch, failure.Kind);
+        Assert.DoesNotContain(body, failure.Message);
+    }
+
+    [Theory]
+    [InlineData("\"total\":0,\"link\":{\"relation\":\"next\"}")]
+    [InlineData("\"total\":0,\"link\":[{}]")]
+    [InlineData("\"total\":0,\"entry\":[null]")]
+    [InlineData("\"total\":\"0\"")]
+    public void Malformed_members_cannot_establish_completeness(string members)
+    {
+        string body = "{\"resourceType\":\"Bundle\",\"type\":\"searchset\"," + members + "}";
+
+        BackendEvidenceException failure = Assert.Throws<BackendEvidenceException>(() => SearchsetEvidence.Parse(body));
+
+        Assert.Equal(BackendFailureKind.IncompleteSearch, failure.Kind);
+    }
+
+    /// <summary>Builds a FHIR R4 searchset JSON string. Shape follows the FHIR R4 Bundle definition.</summary>
+    private static string Build(
+        string[] ids,
+        string? nextLink = null,
+        int? total = -1,
+        string? selfLink = "http://127.0.0.1:1/Observation",
+        string? extraEntryMode = null)
+    {
+        var links = new JsonArray();
+        if (selfLink is not null)
+        {
+            links.Add(new JsonObject { ["relation"] = "self", ["url"] = selfLink });
+        }
+
+        if (nextLink is not null)
+        {
+            links.Add(new JsonObject { ["relation"] = "next", ["url"] = nextLink });
+        }
+
+        var entries = new JsonArray();
+        foreach (string id in ids)
+        {
+            entries.Add(Entry("Observation", id, "match"));
+        }
+
+        if (extraEntryMode is not null)
+        {
+            entries.Add(Entry("OperationOutcome", id: null, extraEntryMode));
+        }
+
+        var bundle = new JsonObject
+        {
+            ["resourceType"] = "Bundle",
+            ["type"] = "searchset",
+            ["link"] = links,
+            ["entry"] = entries,
+        };
+
+        // -1 means "the number of match ids"; null means "omit total".
+        int? effectiveTotal = total == -1 ? ids.Length : total;
+        if (effectiveTotal is not null)
+        {
+            bundle["total"] = effectiveTotal;
+        }
+
+        return bundle.ToJsonString();
+    }
+
+    private static JsonObject Entry(string resourceType, string? id, string mode)
+    {
+        var resource = new JsonObject { ["resourceType"] = resourceType };
+        if (id is not null)
+        {
+            resource["id"] = id;
+        }
+
+        return new JsonObject
+        {
+            ["resource"] = resource,
+            ["search"] = new JsonObject { ["mode"] = mode },
+        };
+    }
+
+    private static string Searchset(params string[] ids) => Build(ids);
+}
