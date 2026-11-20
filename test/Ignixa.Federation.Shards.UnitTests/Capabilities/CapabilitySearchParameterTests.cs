@@ -63,11 +63,21 @@ public sealed class CapabilitySearchParameterTests
     [InlineData("http://hl7.org/fhir/SearchParameter/Patient-name|4.0.1")]
     [InlineData("http://example.org/sp#fragment")]
     [InlineData("http://example.org/sp|1.2#fragment")]
-    [InlineData("SearchParameter/Patient-name")]
     [InlineData("urn:oid:1.2.840.10008")]
-    public void UsableAbsoluteAndRelativeCanonicals_AreKeptExactly(string canonical)
+    public void AbsoluteCanonicals_AreKeptExactly(string canonical)
     {
         ReadPatient(Params(Param("name", "string", canonical))).SearchParameters.Single().Definition.ShouldBe(canonical);
+        Read(ServerStatement(searchParam: Arr(Param("name", "string", canonical)))).CommonSearchParameters.Single().Definition.ShouldBe(canonical);
+    }
+
+    [Theory]
+    [InlineData("SearchParameter/Patient-name")]
+    [InlineData("//example.org/sp|1.2#fragment")]
+    public void RelativeCanonicals_AreRefusedInBothScopes(string canonical)
+    {
+        string parameter = Param("name", "string", canonical);
+        Should.Throw<FormatException>(() => ReadPatient(Params(parameter)));
+        Should.Throw<FormatException>(() => Read(ServerStatement(searchParam: Arr(parameter))));
     }
 
     [Theory]

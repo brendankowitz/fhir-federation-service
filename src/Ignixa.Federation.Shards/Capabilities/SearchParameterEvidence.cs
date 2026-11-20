@@ -24,7 +24,7 @@ public sealed record SearchParameterEvidence
     public SearchParameterType Type { get; }
 
     /// <summary>
-    /// Gets the reported <c>definition</c> canonical, including any <c>|version</c> suffix, exactly as sent; or
+    /// Gets the reported absolute <c>definition</c> canonical, with any version or fragment, exactly as sent; or
     /// <see langword="null"/> when the shard reported none. A malformed definition is refused by the reader, never
     /// reported as <see langword="null"/>.
     /// </summary>

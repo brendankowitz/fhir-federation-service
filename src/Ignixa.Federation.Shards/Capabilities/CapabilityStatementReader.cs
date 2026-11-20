@@ -232,14 +232,13 @@ public static class CapabilityStatementReader
         return parameters.ToImmutable();
     }
 
-    // An R4 canonical is a URI reference, absolute or relative, with an optional "|version" and then an optional "#fragment".
-    // Only that lexical shape is checked: the value is neither dereferenced nor matched, and its spelling is kept as sent.
+    // R4 searchParam.definition refers to SearchParameter.url, so the URI must be absolute even with a version or fragment.
     private static string? ReadDefinition(JsonElement parameter, string path)
     {
         string? definition = OptionalString(parameter, "definition", path);
         return definition is null || IsCanonical(definition)
             ? definition
-            : throw Malformed(path, "definition is not a canonical.");
+            : throw Malformed(path, "definition is not an absolute canonical.");
     }
 
     private static bool IsCanonical(string value)
@@ -264,7 +263,7 @@ public static class CapabilityStatementReader
 
         int bar = beforeFragment.IndexOf('|', StringComparison.Ordinal);
         string url = bar < 0 ? beforeFragment : beforeFragment[..bar];
-        if (url.Length == 0 || !Uri.IsWellFormedUriString(url, UriKind.RelativeOrAbsolute))
+        if (url.Length == 0 || !Uri.IsWellFormedUriString(url, UriKind.Absolute))
         {
             return false;
         }
