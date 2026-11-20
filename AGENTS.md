@@ -19,9 +19,11 @@ test/
   Ignixa.Federation.Core.UnitTests/
   Ignixa.Federation.Shards.UnitTests/
   Ignixa.Federation.Tests.Integration/
+  Ignixa.Federation.SampleClient.UnitTests/
 deploy/    Dockerfile and compose.yaml
 docs/      Documentation and the design spec
-samples/   Planned sample client
+samples/
+  Ignixa.Federation.SampleClient/   Sample console client for the public search wire contract
 tools/     Dev scripts
 ```
 
@@ -31,6 +33,7 @@ tools/     Dev scripts
 * `Shards` makes HTTP calls to backends. It has no ASP.NET dependency.
 * `Api` is the host. Endpoints, authentication, dependency injection, and response shaping live here.
 * Dependencies point one way: `Api` references `Shards` and `Core`, and `Shards` references `Core`.
+* The sample client in `samples/` uses only the public HTTP wire contract. It references no `src/` project.
 * Parse external data into domain types at the boundary. Inside the boundary, trust the types and do not re-validate.
 
 ## Naming
@@ -60,7 +63,7 @@ tools/     Dev scripts
 * Test projects are executables. `Directory.Build.props` sets `OutputType` to `Exe` for everything under `test/`. They need no `Microsoft.NET.Test.Sdk`.
 * Every test project needs at least one test. A test project with zero tests exits with code 8, "zero tests ran".
 * Test behaviour that a caller can observe, not implementation. A test should fail when the behaviour breaks and survive an internal refactor.
-* The suite has 358 tests today: Core 347, Shards 7, Integration 4.
+* The test projects live under `test/`, and [test/README.md](test/README.md) describes what each covers. Run the whole suite with `dotnet test --solution Ignixa.Federation.slnx -c Release` (see below).
 
 ## Build, test, and run
 

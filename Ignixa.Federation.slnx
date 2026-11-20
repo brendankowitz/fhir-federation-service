@@ -4,8 +4,12 @@
     <Project Path="src/Ignixa.Federation.Core/Ignixa.Federation.Core.csproj" />
     <Project Path="src/Ignixa.Federation.Shards/Ignixa.Federation.Shards.csproj" />
   </Folder>
+  <Folder Name="/samples/">
+    <Project Path="samples/Ignixa.Federation.SampleClient/Ignixa.Federation.SampleClient.csproj" />
+  </Folder>
   <Folder Name="/test/">
     <Project Path="test/Ignixa.Federation.Core.UnitTests/Ignixa.Federation.Core.UnitTests.csproj" />
+    <Project Path="test/Ignixa.Federation.SampleClient.UnitTests/Ignixa.Federation.SampleClient.UnitTests.csproj" />
     <Project Path="test/Ignixa.Federation.Shards.UnitTests/Ignixa.Federation.Shards.UnitTests.csproj" />
     <Project Path="test/Ignixa.Federation.Tests.Integration/Ignixa.Federation.Tests.Integration.csproj" />
   </Folder>
