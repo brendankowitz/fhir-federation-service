@@ -46,7 +46,7 @@ internal static class IncludeReferenceExtractor
     /// The match's body is not a valid resource of its key's type, a contract violation of its shard: invalid UTF-8,
     /// invalid JSON, any failure reading the body while the expression is evaluated (such as a duplicate property at any
     /// depth or conflicting <c>_</c>-prefixed properties), a resource of another type than its key, or a
-    /// <c>Reference.reference</c> that is not a single JSON string.
+    /// <c>Reference.reference</c> the expression returns that is not a single JSON string.
     /// </exception>
     public static IReadOnlyList<string> Extract(ShardEntry match, Expression expression)
     {
@@ -130,8 +130,8 @@ internal static class IncludeReferenceExtractor
             return null;
         }
 
-        // The node compares names case-insensitively, but Ignixa reads only the exact "reference" name; the parse already
-        // rejected a second property differing only in case.
+        // The node compares names case-insensitively, but Ignixa reads only the exact "reference" name; a second property
+        // differing only in case is rejected when this loop first walks the object, still inside the contract-violation wrapper.
         foreach ((string name, JsonNode? value) in json)
         {
             if (string.Equals(name, "reference", StringComparison.Ordinal))

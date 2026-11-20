@@ -216,6 +216,20 @@ public sealed class ForwardIncludeExtractionTests
     }
 
     [Fact]
+    public async Task A_non_string_reference_is_skipped_by_a_resolve_typed_include()
+    {
+        var client = new FakeShardClient();
+        ShardEntry match = Resource(East, Observation, "o1", "1", "\"subject\":{\"reference\":5}");
+
+        IncludeResult result = await Resolver(client).ResolveAsync([match], ObservationPatient);
+
+        result.Includes.ShouldBeEmpty();
+        result.Outcomes.ShouldBeEmpty();
+        result.Fetches.ShouldBe(0);
+        client.Calls.ShouldBeEmpty();
+    }
+
+    [Fact]
     public async Task Only_matches_of_the_includes_source_type_are_read()
     {
         var client = new FakeShardClient();
