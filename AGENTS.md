@@ -60,7 +60,7 @@ tools/     Dev scripts
 * Test projects are executables. `Directory.Build.props` sets `OutputType` to `Exe` for everything under `test/`. They need no `Microsoft.NET.Test.Sdk`.
 * Every test project needs at least one test. A test project with zero tests exits with code 8, "zero tests ran".
 * Test behaviour that a caller can observe, not implementation. A test should fail when the behaviour breaks and survive an internal refactor.
-* The suite has 358 tests today: Core 347, Shards 7, Integration 4.
+* The test projects live under `test/`, and [test/README.md](test/README.md) describes what each covers. Run the whole suite with `dotnet test --solution Ignixa.Federation.slnx -c Release` (see below).
 
 ## Build, test, and run
 
