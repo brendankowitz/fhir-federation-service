@@ -117,7 +117,7 @@ public sealed class UnsortedPageExecutorFailureTests
 
         ShardFailureException thrown = await Should.ThrowAsync<ShardFailureException>(
             Fixture.Executor(client, Fixture.Registry(1))
-                .ExecuteAsync(Fixture.Streams(1), 2, UnsortedContinuation.AtCursor(cursor, null), 10, Token));
+                .ExecuteAsync(Fixture.Streams(1), 2, UnsortedContinuation.AtCursor(cursor, null, CursorCycleState.Initial), 10, Token));
 
         thrown.Reason.ShouldBe(ShardFailureReason.ContractViolation);
     }

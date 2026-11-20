@@ -56,7 +56,10 @@ public sealed class UnsortedPageExecutor
     /// <exception cref="ArgumentOutOfRangeException">
     /// <paramref name="pageSize"/> is less than 1 or <paramref name="fetchBudget"/> is negative.
     /// </exception>
-    /// <exception cref="ShardFailureException">A shard the page needs failed, timed out or broke the shard contract.</exception>
+    /// <exception cref="ShardFailureException">
+    /// A shard the page needs failed, timed out or broke the shard contract, including a <c>next</c> chain that cycles back
+    /// to a cursor an earlier page of the stream followed.
+    /// </exception>
     /// <exception cref="ContinuationAnchorMissingException">The replayed input no longer returns the anchor.</exception>
     /// <exception cref="FetchBudgetExhaustedException">The page needs a shard call beyond <paramref name="fetchBudget"/>.</exception>
     /// <exception cref="OperationCanceledException"><paramref name="cancellationToken"/> was cancelled.</exception>
@@ -89,6 +92,10 @@ public sealed class UnsortedPageExecutor
     /// Fills <paramref name="matches"/> from the frontier stream onward and says where the next page starts. The first
     /// frontier response that leaves the page unfilled starts the speculative fanout over every later stream, once.
     /// </summary>
+    /// <remarks>
+    /// Every committed forward transition, following a <c>next</c> or placing it in the returned continuation, advances the
+    /// frontier's cycle detection; replaying the current input does not. The detection restarts with each new stream.
+    /// </remarks>
     private static async Task<UnsortedContinuation?> FillAsync(
         ShardStream[] ordered,
         int index,
@@ -101,6 +108,7 @@ public sealed class UnsortedPageExecutor
         ShardSearchRequest? search = resumeFrom?.Search;
         ShardCursor? cursor = resumeFrom?.Cursor;
         ResourceKey? anchor = resumeFrom?.LastEmitted;
+        CursorCycleState cycle = resumeFrom?.CycleState ?? CursorCycleState.Initial;
         if (cursor is not null)
         {
             redeemed.Add(cursor);
@@ -140,7 +148,7 @@ public sealed class UnsortedPageExecutor
 
             if (matches.Count == pageSize)
             {
-                return ContinuationAfter(ordered, index, page, start + taken, cursor, search, matches[^1].Key);
+                return ContinuationAfter(ordered, index, page, start + taken, cursor, search, matches[^1].Key, cycle);
             }
 
             if (!fannedOut)
@@ -152,6 +160,7 @@ public sealed class UnsortedPageExecutor
 
             if (page.Next is not null)
             {
+                cycle = stream.Follow(cycle, page.Next);
                 redeemed.Add(page.Next);
                 cursor = page.Next;
                 search = null;
@@ -161,11 +170,13 @@ public sealed class UnsortedPageExecutor
                 index++;
                 cursor = null;
                 search = null;
+                cycle = CursorCycleState.Initial;
             }
         }
 
         return null;
     }
+
     /// <summary>
     /// Says where the next page starts once this one is full. A fill inside a backend page replays the same input and skips
     /// through the last emitted key; a fill at the end of a backend page continues with its successor.
@@ -177,16 +188,19 @@ public sealed class UnsortedPageExecutor
         int consumed,
         ShardCursor? cursor,
         ShardSearchRequest? search,
-        ResourceKey last)
+        ResourceKey last,
+        CursorCycleState cycle)
     {
         if (consumed < page.Entries.Count)
         {
-            return cursor is not null ? UnsortedContinuation.AtCursor(cursor, last) : UnsortedContinuation.AtSearch(search!, last);
+            return cursor is not null
+                ? UnsortedContinuation.AtCursor(cursor, last, cycle)
+                : UnsortedContinuation.AtSearch(search!, last);
         }
 
         if (page.Next is not null)
         {
-            return UnsortedContinuation.AtCursor(page.Next, null);
+            return UnsortedContinuation.AtCursor(page.Next, null, ordered[index].Follow(cycle, page.Next));
         }
 
         return index + 1 < ordered.Length ? UnsortedContinuation.AtStart(ordered[index + 1].Shard) : null;

@@ -10,16 +10,23 @@ namespace Ignixa.Federation.Core.Execution;
 /// <remarks>
 /// Exactly one shape holds. <see cref="AtStart"/> starts a stream fresh. <see cref="AtSearch"/> replays the exact request
 /// that was sent and skips through <see cref="LastEmitted"/>. <see cref="AtCursor"/> redeems a backend cursor, and skips
-/// through <see cref="LastEmitted"/> when one is set.
+/// through <see cref="LastEmitted"/> when one is set; it also carries the stream's <see cref="CycleState"/>, because only a
+/// stream that has followed a cursor can be in a cycle.
 /// </remarks>
 public sealed class UnsortedContinuation
 {
-    private UnsortedContinuation(ShardId shard, ShardSearchRequest? search, ShardCursor? cursor, ResourceKey? lastEmitted)
+    private UnsortedContinuation(
+        ShardId shard,
+        ShardSearchRequest? search,
+        ShardCursor? cursor,
+        ResourceKey? lastEmitted,
+        CursorCycleState cycleState)
     {
         Shard = shard;
         Search = search;
         Cursor = cursor;
         LastEmitted = lastEmitted;
+        CycleState = cycleState;
     }
 
     /// <summary>Gets the shard whose stream resumes; every stream before it is exhausted.</summary>
@@ -37,6 +44,12 @@ public sealed class UnsortedContinuation
     /// </summary>
     public ResourceKey? LastEmitted { get; }
 
+    /// <summary>
+    /// Gets the cycle detection of the resumed stream's cursors, including <see cref="Cursor"/>. It is
+    /// <see cref="CursorCycleState.Initial"/> unless this is <see cref="AtCursor"/>.
+    /// </summary>
+    public CursorCycleState CycleState { get; }
+
     /// <summary>Resumes at the first page of <paramref name="shard"/>'s stream.</summary>
     /// <param name="shard">The shard whose stream starts fresh.</param>
     /// <returns>The continuation.</returns>
@@ -44,7 +57,7 @@ public sealed class UnsortedContinuation
     public static UnsortedContinuation AtStart(ShardId shard)
     {
         ArgumentNullException.ThrowIfNull(shard);
-        return new UnsortedContinuation(shard, null, null, null);
+        return new UnsortedContinuation(shard, null, null, null, CursorCycleState.Initial);
     }
 
     /// <summary>Resumes by replaying <paramref name="sent"/> exactly and skipping through <paramref name="lastEmitted"/>.</summary>
@@ -65,7 +78,7 @@ public sealed class UnsortedContinuation
         }
 
         RequireAnchorOf(sent.Shard, sent.Type, lastEmitted);
-        return new UnsortedContinuation(sent.Shard, sent, null, lastEmitted);
+        return new UnsortedContinuation(sent.Shard, sent, null, lastEmitted, CursorCycleState.Initial);
     }
 
     /// <summary>Resumes by redeeming <paramref name="cursor"/>, skipping through <paramref name="lastEmitted"/> when set.</summary>
@@ -73,18 +86,23 @@ public sealed class UnsortedContinuation
     /// <param name="lastEmitted">
     /// The last key emitted from the page <paramref name="cursor"/> returns, or <see langword="null"/> when none was.
     /// </param>
+    /// <param name="cycleState">
+    /// The stream's cycle detection after following <paramref name="cursor"/>, as the page that issued this continuation
+    /// left it. <see cref="CursorCycleState.Initial"/> forgets earlier cursors, so a cycle through them is found later.
+    /// </param>
     /// <returns>The continuation.</returns>
-    /// <exception cref="ArgumentNullException"><paramref name="cursor"/> is <see langword="null"/>.</exception>
+    /// <exception cref="ArgumentNullException"><paramref name="cursor"/> or <paramref name="cycleState"/> is <see langword="null"/>.</exception>
     /// <exception cref="ArgumentException"><paramref name="lastEmitted"/> is not of the cursor's shard and type.</exception>
-    public static UnsortedContinuation AtCursor(ShardCursor cursor, ResourceKey? lastEmitted)
+    public static UnsortedContinuation AtCursor(ShardCursor cursor, ResourceKey? lastEmitted, CursorCycleState cycleState)
     {
         ArgumentNullException.ThrowIfNull(cursor);
+        ArgumentNullException.ThrowIfNull(cycleState);
         if (lastEmitted is not null)
         {
             RequireAnchorOf(cursor.Shard, cursor.Type, lastEmitted);
         }
 
-        return new UnsortedContinuation(cursor.Shard, null, cursor, lastEmitted);
+        return new UnsortedContinuation(cursor.Shard, null, cursor, lastEmitted, cycleState);
     }
 
     private static void RequireAnchorOf(ShardId shard, ResourceType type, ResourceKey lastEmitted)

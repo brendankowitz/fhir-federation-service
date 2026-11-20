@@ -61,6 +61,17 @@ internal sealed class ShardStream
         }
     }
 
+    /// <summary>
+    /// Records a committed forward transition to <paramref name="successor"/>, a cursor <see cref="Validate"/> accepted,
+    /// in the stream's cross-continuation cycle detection.
+    /// </summary>
+    /// <returns>The state after following <paramref name="successor"/>.</returns>
+    /// <exception cref="ShardFailureException"><paramref name="successor"/> closes a cycle of <c>next</c> links.</exception>
+    public CursorCycleState Follow(CursorCycleState cycle, ShardCursor successor) =>
+        cycle.TryFollow(successor, out CursorCycleState? followed)
+            ? followed
+            : throw new ShardFailureException(Shard, ShardFailureReason.ContractViolation, null);
+
     private bool Owns(ShardCursor cursor) =>
         cursor.Shard == Shard && cursor.Type == _template.Type && cursor.Redemption == Redemption;
 }

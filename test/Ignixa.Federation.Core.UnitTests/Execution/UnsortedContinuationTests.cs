@@ -17,6 +17,7 @@ public sealed class UnsortedContinuationTests
         start.Search.ShouldBeNull();
         start.Cursor.ShouldBeNull();
         start.LastEmitted.ShouldBeNull();
+        start.CycleState.ShouldBe(CursorCycleState.Initial);
     }
 
     [Fact]
@@ -30,19 +31,22 @@ public sealed class UnsortedContinuationTests
         resume.Search.ShouldBeSameAs(sent);
         resume.Cursor.ShouldBeNull();
         resume.LastEmitted.ShouldBe(Fixture.Key(1, "a"));
+        resume.CycleState.ShouldBe(CursorCycleState.Initial);
     }
 
     [Fact]
-    public void AtCursor_KeepsTheCursorAndAnOptionalAnchor()
+    public void AtCursor_KeepsTheCursorAnOptionalAnchorAndTheCycleState()
     {
         ShardCursor cursor = Fixture.Cursor(1, "1");
+        var cycle = new CursorCycleState(7UL, 4, 1);
 
-        UnsortedContinuation resume = UnsortedContinuation.AtCursor(cursor, null);
+        UnsortedContinuation resume = UnsortedContinuation.AtCursor(cursor, null, cycle);
 
         resume.Shard.ShouldBe(Fixture.Shard(1));
         resume.Search.ShouldBeNull();
         resume.Cursor.ShouldBe(cursor);
         resume.LastEmitted.ShouldBeNull();
+        resume.CycleState.ShouldBeSameAs(cycle);
     }
 
     [Fact]
@@ -51,7 +55,8 @@ public sealed class UnsortedContinuationTests
         Should.Throw<ArgumentNullException>(() => UnsortedContinuation.AtStart(null!));
         Should.Throw<ArgumentNullException>(() => UnsortedContinuation.AtSearch(null!, Fixture.Key(0, "a")));
         Should.Throw<ArgumentNullException>(() => UnsortedContinuation.AtSearch(Fixture.Stream(0), null!));
-        Should.Throw<ArgumentNullException>(() => UnsortedContinuation.AtCursor(null!, null));
+        Should.Throw<ArgumentNullException>(() => UnsortedContinuation.AtCursor(null!, null, CursorCycleState.Initial));
+        Should.Throw<ArgumentNullException>(() => UnsortedContinuation.AtCursor(Fixture.Cursor(0, "1"), null, null!));
     }
 
     [Fact]
@@ -59,8 +64,9 @@ public sealed class UnsortedContinuationTests
     {
         Should.Throw<ArgumentException>(() => UnsortedContinuation.AtSearch(Fixture.Stream(0), Fixture.Key(1, "a")));
         Should.Throw<ArgumentException>(() => UnsortedContinuation.AtSearch(Fixture.Stream(0), Fixture.Key(0, "a", Fixture.Observation)));
-        Should.Throw<ArgumentException>(() => UnsortedContinuation.AtCursor(Fixture.Cursor(0, "1"), Fixture.Key(1, "a")));
-        Should.Throw<ArgumentException>(() => UnsortedContinuation.AtCursor(Fixture.Cursor(0, "1"), Fixture.Key(0, "a", Fixture.Observation)));
+        Should.Throw<ArgumentException>(() => UnsortedContinuation.AtCursor(Fixture.Cursor(0, "1"), Fixture.Key(1, "a"), CursorCycleState.Initial));
+        Should.Throw<ArgumentException>(
+            () => UnsortedContinuation.AtCursor(Fixture.Cursor(0, "1"), Fixture.Key(0, "a", Fixture.Observation), CursorCycleState.Initial));
     }
 
     [Fact]

@@ -175,7 +175,7 @@ public sealed class UnsortedPageExecutorEmissionTests
         client.Serve(2, ["w"]);
 
         UnsortedPage page = await Fixture.Executor(client, Fixture.Registry(3))
-            .ExecuteAsync(Fixture.Streams(3), 5, UnsortedContinuation.AtCursor(cursor, null), 10, Token);
+            .ExecuteAsync(Fixture.Streams(3), 5, UnsortedContinuation.AtCursor(cursor, null, CursorCycleState.Initial), 10, Token);
 
         page.Ids().ShouldBe(["s1/y", "s1/z", "s2/w"]);
         client.Calls[0].Cursor.ShouldBe(cursor);

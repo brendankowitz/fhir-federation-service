@@ -60,7 +60,7 @@ public sealed class UnsortedPageExecutorContinuationTests
         client.OnContinue(cursor, Fixture.Page(null, Fixture.Entries(0, "a", "b", "c", "d")));
 
         UnsortedPage page = await Fixture.Executor(client, Fixture.Registry(1))
-            .ExecuteAsync(Fixture.Streams(1), 1, UnsortedContinuation.AtCursor(cursor, Fixture.Key(0, "b")), 10, Token);
+            .ExecuteAsync(Fixture.Streams(1), 1, UnsortedContinuation.AtCursor(cursor, Fixture.Key(0, "b"), CursorCycleState.Initial), 10, Token);
 
         page.Ids().ShouldBe(Fixture.Ids(0, "c"));
         UnsortedContinuation next = page.Next.ShouldNotBeNull();
@@ -78,7 +78,7 @@ public sealed class UnsortedPageExecutorContinuationTests
         client.OnContinue(second, Fixture.Page(null, Fixture.Entries(0, "c")));
 
         UnsortedPage page = await Fixture.Executor(client, Fixture.Registry(1))
-            .ExecuteAsync(Fixture.Streams(1), 5, UnsortedContinuation.AtCursor(first, Fixture.Key(0, "b")), 10, Token);
+            .ExecuteAsync(Fixture.Streams(1), 5, UnsortedContinuation.AtCursor(first, Fixture.Key(0, "b"), CursorCycleState.Initial), 10, Token);
 
         page.Ids().ShouldBe(Fixture.Ids(0, "c"));
         page.Next.ShouldBeNull();
@@ -108,7 +108,7 @@ public sealed class UnsortedPageExecutorContinuationTests
 
         ContinuationAnchorMissingException thrown = await Should.ThrowAsync<ContinuationAnchorMissingException>(
             Fixture.Executor(client, Fixture.Registry(2))
-                .ExecuteAsync(Fixture.Streams(2), 2, UnsortedContinuation.AtCursor(cursor, Fixture.Key(1, "gone")), 10, Token));
+                .ExecuteAsync(Fixture.Streams(2), 2, UnsortedContinuation.AtCursor(cursor, Fixture.Key(1, "gone"), CursorCycleState.Initial), 10, Token));
 
         thrown.Shard.ShouldBe(Fixture.Shard(1));
         thrown.Message.ShouldNotContain(cursor.Target);

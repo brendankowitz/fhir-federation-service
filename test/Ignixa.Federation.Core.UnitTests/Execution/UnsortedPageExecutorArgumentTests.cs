@@ -61,8 +61,8 @@ public sealed class UnsortedPageExecutorArgumentTests
         [
             UnsortedContinuation.AtStart(Fixture.Shard(2)),
             UnsortedContinuation.AtSearch(postSent, Fixture.Key(1, "a")),
-            UnsortedContinuation.AtCursor(Fixture.Cursor(1, "1", NextLinkRedemption.RepostToSearch), null),
-            UnsortedContinuation.AtCursor(Fixture.Cursor(1, "1", type: Fixture.Observation), null),
+            UnsortedContinuation.AtCursor(Fixture.Cursor(1, "1", NextLinkRedemption.RepostToSearch), null, CursorCycleState.Initial),
+            UnsortedContinuation.AtCursor(Fixture.Cursor(1, "1", type: Fixture.Observation), null, CursorCycleState.Initial),
         ];
 
         foreach (UnsortedContinuation resume in mismatched)
