@@ -134,7 +134,8 @@ def check(root):
     oracle = index({"oracle": load({"oracle": uniq["oracle"]})["oracle"]}, True)
     placed = {n: index(load(files), True) for n, files in uniq["placements"].items()}
     colo, cross = placed["colocated"], placed["cross-shard"]
-    coll = index(load(m["corpora"]["collision"]["placements"]["per-shard"]), False)
+    collision = m["corpora"]["collision"]
+    coll = index(load(collision["placements"]["per-shard"]), False)
     mv = uniq["crossShardVariant"]
     tid, url = (lambda k: k[1]), (lambda k: base[k[0]] + k[1])
     ctx = {"unique-id": (oracle, tid), "collision": (coll, url)}
@@ -196,8 +197,6 @@ def check(root):
             need(Counter(expected) == Counter(ident(k) for k in found) and len(found) == 2,
                  f"{cid}: expectedFullUrls must list both owning fullUrls")
             need(c["perShardMatches"] == {s: sorted(t for sh, t in found if sh == s) for s in base}, f"{cid}: perShardMatches differ")
-            need(c["expectedGiven"] == {ident(k): idx[k]["name"][0]["given"] for k in found},
-                 f"{cid}: expectedGiven differs from the seeds (given names bound to fullUrls)")
         elif kind == "chain-forward":
             need(c["chainPath"] == "Observation.subject:Patient" and c["mode"] == "Distributed",
                  f"{cid}: chain path or mode changed")
@@ -225,6 +224,10 @@ def check(root):
                 need(len({tuple(u.split("/")[-2:]) for u in shared}) < len(shared),
                      f"{cid}: needs two include fullUrls with the same Type/id")
     need(0 < len(orchid) < len(obs), "chain needs matching and nonmatching Observations")
+    patient_ids = Counter(t for _, t in coll if t.startswith("Patient/"))
+    given_by_full_url = {url(k): r["name"][0]["given"] for k, r in coll.items() if patient_ids[k[1]] > 1}
+    need(collision["expectedGiven"] == given_by_full_url,
+         "collision corpus: expectedGiven differs from the seeds (given names bound to fullUrls)")
 
 
 def main(argv):

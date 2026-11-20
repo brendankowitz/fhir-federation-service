@@ -27,6 +27,10 @@
       "idsUnique": false,
       "placements": {
         "per-shard": {"east": "seeds/collision/east.json", "west": "seeds/collision/west.json"}
+      },
+      "expectedGiven": {
+        "https://fhir-east.example.org/Patient/dup": ["Eli"],
+        "https://fhir-west.example.org/Patient/dup": ["Gus"]
       }
     }
   },
@@ -87,11 +91,7 @@
       "query": "Patient?name=Orchid&_count=1",
       "count": 1,
       "perShardMatches": {"east": ["Patient/dup"], "west": ["Patient/dup"]},
-      "expectedFullUrls": ["https://fhir-east.example.org/Patient/dup", "https://fhir-west.example.org/Patient/dup"],
-      "expectedGiven": {
-        "https://fhir-east.example.org/Patient/dup": ["Eli"],
-        "https://fhir-west.example.org/Patient/dup": ["Gus"]
-      }
+      "expectedFullUrls": ["https://fhir-east.example.org/Patient/dup", "https://fhir-west.example.org/Patient/dup"]
     },
     {
       "id": "collision.chain.distributed.east",
