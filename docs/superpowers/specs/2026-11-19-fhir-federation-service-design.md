@@ -169,7 +169,12 @@ Goal: retry-safe and scale-out-safe without a page cache, distributed locks, or 
 
 - **Snapshot:** each token is an immutable, Data-Protection-encrypted snapshot: format version, issued-at, binding hash, effective plan (classified parameters, rewritten parameters per shard, resolved chain key sets), page size, registry hash, hash of the parameter definitions the query resolved, and per stream `(replayable backend request, lastEmittedKey, exhausted)`. `lastEmittedKey` = `(lastUpdated, type/id)` for sorted streams, `type/id` for unsorted.
 - **Redemption is re-execution:** re-issue each stream's backend request, skip entries up to and including `lastEmittedKey`, continue. Redeeming twice performs the same computation. If `lastEmittedKey` is no longer on the re-fetched backend page → 410 "restart the search" **[call]**.
-- **Replayable backend requests are required** and certified per profile. Microsoft FHIR Server's keyset `ct` is stateless and replayable. For streams started with POST `_search`, the shard client re-POSTs the parameters of the backend's `next` link to `[type]/_search` after the origin check (`NextLinkRedemption`), because certified backends render `next` as a GET URL carrying every parameter (≈45 KB for 1,000 chain keys, past Kestrel's 8 KB request-line default). Streams started with GET always follow `next` with GET, whatever the profile's `NextLinkRedemption`; a profile can declare re-POST only if it supports POST `_search`.
+- **Replayable backend requests are required** and certified per profile. Microsoft FHIR Server's keyset `ct` is stateless and replayable. A stream's `next` links are redeemed according to how the stream started and the profile's `NextLinkRedemption` policy (`BackendProfile.RedemptionFor`); the result is fixed in every cursor of that stream:
+  - **Started with GET:** follow `next` with GET, whatever the policy.
+  - **Started with POST `_search`, policy `FollowGet`:** follow `next` with GET. A profile declares this only for query shapes whose GET `next` links it certifies as usable (within the backend's request-line limit).
+  - **Started with POST `_search`, policy `RepostToSearch`:** after the origin check, re-POST the parameters of the backend's `next` link to `[type]/_search`, because certified backends render `next` as a GET URL carrying every parameter (≈45 KB for 1,000 chain keys, past Kestrel's 8 KB request-line default).
+
+  A profile can declare `RepostToSearch` only if it supports POST `_search`.
 - **Storage:** snapshots ≤ `MaxInlineTokenBytes` (2 KB) travel in the token — no server state. Larger ones (chain key sets) are stored encrypted in `IDistributedCache` under a random id; they hold ids and timestamps only. On successor issue, the predecessor's TTL drops to 60 s.
 - **Binding:** hash of (`iss`, `sub`, `oid`/`client_id`, sorted role claims). Mismatch → 403.
 - **Lifetime:** 15 min sliding, 60 min absolute **[call]** (D5). Expired or missing → 410. Unprotect failure → 400.
@@ -423,6 +428,7 @@ Config key names; token envelope wire format; exact default limits within the st
 | Topology hiding & content rewriting (Astra, Fable) | Dropped by D4 |
 | Rename (2026-11-20, Forge) | Rename-only: product Ignixa Federation, .NET 11, Ignixa.Federation.* projects, source-shard extension URL; no design change |
 | Registry and IShardClient contract placement (2026-11-20, Forge/Astra) | §12.1: the shard registry and IShardClient contract (Core.Shards), ParameterOccurrence (Core.Search) and options (Core.Configuration) are in Core; Shards holds the HTTP implementation and concrete profiles; v1 behaviour unchanged |
+| Next-link redemption by start method (2026-11-20, Forge, review R5/R5b) | §7.4: GET starts follow GET; POST starts follow GET or re-POST per the profile's `NextLinkRedemption`; re-POST requires POST `_search` support. Matches `BackendProfile.RedemptionFor` |
 
 ## 20. Prior art
 
