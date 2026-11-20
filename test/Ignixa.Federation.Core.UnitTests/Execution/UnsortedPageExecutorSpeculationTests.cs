@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using Ignixa.Federation.Core.Execution;
 using Ignixa.Federation.Core.Shards;
 using Shouldly;
@@ -97,6 +98,50 @@ public sealed class UnsortedPageExecutorSpeculationTests
         client.MaxInFlight.ShouldBe(3);
         client.Calls.Count.ShouldBe(7);
         page.Fetches.ShouldBe(7);
+    }
+
+    [Theory]
+    [MemberData(nameof(Iterations))]
+    public async Task CompletedButUnconsumedSpeculation_HoldsItsWindowSlotUntilTheFrontierReachesIt(int iteration)
+    {
+        _ = iteration;
+        var client = new FakeShardClient();
+        var frontier = new TaskCompletionSource();
+        StrongBox<int> violations = ScriptSixShardsWithAGatedFrontier(client, frontier, failFirstSpeculation: false);
+
+        Task<UnsortedPage> execution = Fixture.Executor(client, Fixture.Registry(6), 3).ExecuteAsync(Fixture.Streams(6), 100, null, 100, Token);
+        await client.WhenStarted(4);
+        await Task.WhenAll(client.Calls.Where(c => c.Search is { } s && s.Shard != Fixture.Shard(0)).Select(c => c.Finished));
+        int speculativeWhileBlocked = client.Calls.Count(c => c.Shard != Fixture.Shard(0));
+        frontier.SetResult();
+        UnsortedPage page = await execution;
+
+        speculativeWhileBlocked.ShouldBe(2);
+        Volatile.Read(ref violations.Value).ShouldBe(0);
+        page.Ids().ShouldBe([.. Fixture.Ids(0, "a", "b"), .. Enumerable.Range(1, 5).Select(shard => $"s{shard}/x")]);
+        client.Calls.Count.ShouldBe(7);
+        client.MaxInFlight.ShouldBeLessThanOrEqualTo(3);
+        page.Fetches.ShouldBe(7);
+    }
+
+    [Theory]
+    [MemberData(nameof(Iterations))]
+    public async Task FailedButUnconsumedSpeculation_HoldsItsWindowSlotAndFailsThePageWhenReached(int iteration)
+    {
+        _ = iteration;
+        var client = new FakeShardClient();
+        var frontier = new TaskCompletionSource();
+        StrongBox<int> violations = ScriptSixShardsWithAGatedFrontier(client, frontier, failFirstSpeculation: true);
+
+        Task<UnsortedPage> execution = Fixture.Executor(client, Fixture.Registry(6), 3).ExecuteAsync(Fixture.Streams(6), 100, null, 100, Token);
+        await client.WhenStarted(4);
+        await Task.WhenAll(client.Calls.Where(c => c.Search is { } s && s.Shard != Fixture.Shard(0)).Select(c => c.Finished));
+        frontier.SetResult();
+
+        ShardFailureException thrown = await Should.ThrowAsync<ShardFailureException>(execution);
+        thrown.Shard.ShouldBe(Fixture.Shard(1));
+        Volatile.Read(ref violations.Value).ShouldBe(0);
+        client.InFlight.ShouldBe(0);
     }
 
     [Fact]
@@ -265,5 +310,36 @@ public sealed class UnsortedPageExecutorSpeculationTests
         next.Search.ShouldNotBeNull().PageSize.ShouldBe(2);
         next.LastEmitted.ShouldBe(Fixture.Key(1, "c"));
         chained.ShouldBe([.. Fixture.Ids(0, "a"), .. Fixture.Ids(1, "b", "c", "d", "e", "f", "g"), .. Fixture.Ids(2, "x", "y", "z")]);
+    }
+
+    /// <summary>
+    /// Scripts six shards for a three-call window: s0's first page underfills and leaves its continuation waiting for
+    /// <paramref name="frontier"/>, and s1 to s5 answer instantly with one entry each, s1 failing when asked. Counts each
+    /// call to s3 to s5 that starts while the frontier is still blocked: only two speculative slots exist, and s1's and
+    /// s2's outcomes hold them until the frontier consumes them.
+    /// </summary>
+    private static StrongBox<int> ScriptSixShardsWithAGatedFrontier(FakeShardClient client, TaskCompletionSource frontier, bool failFirstSpeculation)
+    {
+        var violations = new StrongBox<int>();
+        ShardCursor cursor = Fixture.Cursor(0, "1");
+        client.OnSearch(0, Fixture.Page(cursor, Fixture.Entries(0, "a")));
+        client.OnContinue(cursor, frontier, Fixture.Page(null, Fixture.Entries(0, "b")));
+        for (int ordinal = 1; ordinal < 6; ordinal++)
+        {
+            ShardPage page = Fixture.Page(null, Fixture.Entries(ordinal, "x"));
+            bool fails = failFirstSpeculation && ordinal == 1;
+            bool beyondTheWindow = ordinal >= 3;
+            client.OnSearch(Fixture.Shard(ordinal), (_, _) =>
+            {
+                if (beyondTheWindow && !frontier.Task.IsCompleted)
+                {
+                    Interlocked.Increment(ref violations.Value);
+                }
+
+                return fails ? Task.FromException<ShardPage>(new InvalidOperationException("backend said 500")) : Task.FromResult(page);
+            });
+        }
+
+        return violations;
     }
 }

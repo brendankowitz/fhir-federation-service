@@ -1,4 +1,3 @@
-using System.Diagnostics.CodeAnalysis;
 using Ignixa.Federation.Core.Shards;
 
 namespace Ignixa.Federation.Core.Execution;
@@ -9,14 +8,18 @@ namespace Ignixa.Federation.Core.Execution;
 /// </summary>
 /// <remarks>
 /// <para>
-/// The frontier is the single caller of the public methods. Speculative workers run beside it; the lock guards the budget
-/// and the claim of each speculative fetch, so exactly one claimant starts it. At most <c>maxParallelFetches - 1</c>
-/// workers run, which keeps one call slot for the frontier, and a worker never spends the frontier's last budgeted call.
+/// The frontier is the single caller of the public methods, and so the only one that starts speculative calls. The lock
+/// guards the budget, the window and the claim of each speculative fetch, so exactly one claimant starts it. The
+/// speculative window holds <c>maxParallelFetches - 1</c> fetches, counting both running calls and completed outcomes the
+/// frontier has not reached yet, failed ones included. A fetch leaves the window when the frontier reaches its stream; its
+/// call then counts as the frontier's own, because the frontier waits on it and starts nothing else. The frontier claims an
+/// unstarted fetch itself without a window slot. So at most <c>maxParallelFetches</c> calls run, lookahead stays bounded
+/// however fast backends answer, and a speculative call never spends the frontier's last budgeted call.
 /// </para>
 /// <para>
 /// Every call's result is kept as a completed task and its failure observed, so a discarded failure is never an unobserved
 /// task exception; only a needed result is turned into a page or an exception. <see cref="DisposeAsync"/> cancels and joins
-/// the workers, and must run on every exit.
+/// every speculative call, which releases the whole window, and must run on every exit.
 /// </para>
 /// </remarks>
 internal sealed class FetchScheduler : IAsyncDisposable
@@ -32,6 +35,7 @@ internal sealed class FetchScheduler : IAsyncDisposable
     private readonly List<Task> _workers = [];
     private int _nextInQueue;
     private int _started;
+    private int _inWindow;
 
     public FetchScheduler(IShardClient client, int budget, int maxParallelFetches, CancellationToken caller)
     {
@@ -55,8 +59,8 @@ internal sealed class FetchScheduler : IAsyncDisposable
     }
 
     /// <summary>
-    /// Queues one speculative first-page fetch per request, in order, and starts the workers that run them. Call it at most
-    /// once; it does nothing when no slot is free for speculation.
+    /// Queues one speculative first-page fetch per request, in order, and starts as many as the window holds. Call it at
+    /// most once; it does nothing when no slot is free for speculation.
     /// </summary>
     public void Speculate(IEnumerable<ShardSearchRequest> firstPages)
     {
@@ -73,28 +77,31 @@ internal sealed class FetchScheduler : IAsyncDisposable
                 _queue.Add(fetch);
                 _byShard.Add(request.Shard, fetch);
             }
-        }
 
-        for (int i = Math.Min(_speculativeSlots, _queue.Count); i > 0; i--)
-        {
-            _workers.Add(Task.Run(WorkAsync));
+            Pump();
         }
     }
 
     /// <summary>
-    /// Gets a stream's first page for the frontier: the speculative result when a worker started it, otherwise a needed
-    /// call with the queued request, or with <paramref name="remaining"/> when the stream was never queued.
+    /// Gets a stream's first page for the frontier: the speculative result when a speculative call started it, otherwise a
+    /// needed call with the queued request, or with <paramref name="remaining"/> when the stream was never queued. Reaching a
+    /// speculatively started stream frees its window slot for the next queued fetch.
     /// </summary>
     /// <returns>The page, and the request whose response it is.</returns>
     public async Task<(ShardPage Page, ShardSearchRequest Sent)> FirstPageAsync(ShardStream stream, int remaining)
     {
         SpeculativeFetch? fetch;
-        bool claimedByWorker;
+        bool speculative;
         lock (_lock)
         {
             _byShard.TryGetValue(stream.Shard, out fetch);
-            claimedByWorker = fetch is { Claimed: true };
-            if (!claimedByWorker)
+            speculative = fetch is { Claimed: true };
+            if (speculative)
+            {
+                _inWindow--;
+                Pump();
+            }
+            else
             {
                 ChargeNeeded();
                 fetch?.Claim();
@@ -102,7 +109,7 @@ internal sealed class FetchScheduler : IAsyncDisposable
         }
 
         ShardSearchRequest sent = fetch?.Request ?? stream.FirstPage(remaining);
-        Task<ShardPage> completed = claimedByWorker
+        Task<ShardPage> completed = speculative
             ? await fetch!.Outcome
             : await CallAsync(sent, null, _caller);
         return (PageOrThrow(stream.Shard, completed), sent);
@@ -112,11 +119,17 @@ internal sealed class FetchScheduler : IAsyncDisposable
 
     public Task<ShardPage> ContinueAsync(ShardCursor cursor) => NeededAsync(cursor.Shard, null, cursor);
 
-    /// <summary>Cancels speculation and waits until every worker, and so every speculative call, has finished.</summary>
+    /// <summary>Cancels speculation and waits until every speculative call has finished.</summary>
     public async ValueTask DisposeAsync()
     {
         await _speculation.CancelAsync();
-        await Task.WhenAll(_workers);
+        Task[] started;
+        lock (_lock)
+        {
+            started = [.. _workers];
+        }
+
+        await Task.WhenAll(started);
         _speculation.Dispose();
     }
 
@@ -141,34 +154,25 @@ internal sealed class FetchScheduler : IAsyncDisposable
         _started++;
     }
 
-    private async Task WorkAsync()
+    /// <summary>
+    /// Starts queued fetches, in order, while the window has a free slot, speculation is live and the budget keeps a call
+    /// for the frontier. A fetch the frontier already claimed is skipped. Call it holding the lock.
+    /// </summary>
+    private void Pump()
     {
-        while (TryClaimNext(out SpeculativeFetch? fetch))
+        while (_nextInQueue < _queue.Count && _inWindow < _speculativeSlots && !_speculation.IsCancellationRequested && _budget - _started > 1)
         {
-            fetch.Complete(await CallAsync(fetch.Request, null, _speculation.Token));
-        }
-    }
-
-    // A worker stops at the first fetch it may not start, leaving that fetch for the frontier to claim.
-    private bool TryClaimNext([NotNullWhen(true)] out SpeculativeFetch? fetch)
-    {
-        lock (_lock)
-        {
-            while (_nextInQueue < _queue.Count && !_speculation.IsCancellationRequested && _budget - _started > 1)
+            SpeculativeFetch fetch = _queue[_nextInQueue++];
+            if (fetch.Claimed)
             {
-                SpeculativeFetch candidate = _queue[_nextInQueue++];
-                if (!candidate.Claimed)
-                {
-                    candidate.Claim();
-                    _started++;
-                    fetch = candidate;
-                    return true;
-                }
+                continue;
             }
-        }
 
-        fetch = null;
-        return false;
+            fetch.Claim();
+            _started++;
+            _inWindow++;
+            _workers.Add(Task.Run(async () => fetch.Complete(await CallAsync(fetch.Request, null, _speculation.Token))));
+        }
     }
 
     /// <summary>Turns a needed call's completed task into its page, or into the exception the page fails with.</summary>
@@ -210,7 +214,7 @@ internal sealed class FetchScheduler : IAsyncDisposable
             ? await _client.SearchAsync(request, cancellationToken)
             : await _client.ContinueAsync(cursor!, cancellationToken);
 
-    /// <summary>A speculative first-page fetch. Exactly one claimant starts it; a worker claimant publishes its outcome.</summary>
+    /// <summary>A speculative first-page fetch. Exactly one claimant starts it; a speculative claimant publishes its outcome.</summary>
     private sealed class SpeculativeFetch(ShardSearchRequest request)
     {
         private readonly TaskCompletionSource<Task<ShardPage>> _outcome = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -220,7 +224,7 @@ internal sealed class FetchScheduler : IAsyncDisposable
         /// <summary>Gets whether a claimant has started, or is about to start, this fetch. Guarded by the scheduler's lock.</summary>
         public bool Claimed { get; private set; }
 
-        /// <summary>Gets the completed call, once the worker that claimed this fetch has run it.</summary>
+        /// <summary>Gets the completed call, once the speculative call that claimed this fetch has run.</summary>
         public Task<Task<ShardPage>> Outcome => _outcome.Task;
 
         public void Claim() => Claimed = true;
