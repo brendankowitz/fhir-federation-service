@@ -125,6 +125,23 @@ public sealed class SearchCapabilitiesTests
     }
 
     [Fact]
+    public void DoesNotPublishWildcardOrIterateIncludesEvenWhenEveryShardAdvertisesThem()
+    {
+        ResourceSearchSupport patient = new(
+            Type("Patient"),
+            AllResources[0].Parameters,
+            ["*", "Patient:*", "Patient:organization:iterate", "Patient:organization"],
+            ["*", "Observation:*:Patient", "Observation:subject:iterate", "Observation:subject"]);
+        ShardRegistry registry = Registry();
+        var capabilities = new SearchCapabilities(registry, registry.Shards.Select(
+            s => new ShardSearchCapability(s.Id, [patient], Certification())));
+
+        ResourceSearchSupport published = capabilities.Resources.Single();
+        published.SearchIncludes.ShouldBe(["Patient:organization"]);
+        published.SearchRevIncludes.ShouldBe(["Observation:subject"]);
+    }
+
+    [Fact]
     public void SupportsLastUpdatedSortOnlyWhenEveryShardHasStableTies()
     {
         Capabilities().SupportsLastUpdatedSort.ShouldBeTrue();

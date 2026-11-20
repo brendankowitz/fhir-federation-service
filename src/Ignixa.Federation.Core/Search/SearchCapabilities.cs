@@ -105,8 +105,8 @@ public sealed class SearchCapabilities
             }
         }
 
-        string[] includes = [.. perShard.Skip(1).Aggregate(perShard[0].SearchIncludes.AsEnumerable(), (a, r) => a.Intersect(r.SearchIncludes, StringComparer.Ordinal)).Order(StringComparer.Ordinal)];
-        string[] revIncludes = [.. perShard.Skip(1).Aggregate(perShard[0].SearchRevIncludes.AsEnumerable(), (a, r) => a.Intersect(r.SearchRevIncludes, StringComparer.Ordinal)).Order(StringComparer.Ordinal)];
+        string[] includes = IntersectIncludes(perShard.Select(r => r.SearchIncludes));
+        string[] revIncludes = IntersectIncludes(perShard.Select(r => r.SearchRevIncludes));
         var support = new ResourceSearchSupport(
             type,
             parameters.Values.Select(d => new SearchParameterSupport(d.Code, d.Type, d.Url)),
@@ -118,6 +118,20 @@ public sealed class SearchCapabilities
             includes.ToFrozenSet(StringComparer.Ordinal),
             revIncludes.ToFrozenSet(StringComparer.Ordinal));
     }
+
+    private static string[] IntersectIncludes(IEnumerable<IReadOnlyList<string>> perShard) =>
+    [
+        .. perShard.Select(forms => forms.AsEnumerable())
+            .Aggregate((left, right) => left.Intersect(right, StringComparer.Ordinal))
+            .Where(form => form.Split(':') switch
+            {
+                [string source, string code] => R4Search.IsResourceType(source) && R4Search.IsSearchCode(code),
+                [string source, string code, string target] =>
+                    R4Search.IsResourceType(source) && R4Search.IsSearchCode(code) && R4Search.IsResourceType(target),
+                _ => false,
+            })
+            .Order(StringComparer.Ordinal),
+    ];
 
     private sealed record Published(
         ResourceSearchSupport Support,
