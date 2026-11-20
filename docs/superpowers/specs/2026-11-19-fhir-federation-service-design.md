@@ -188,7 +188,7 @@ Each chain occurrence is an **independent existential test**; two occurrences of
 **Resolution mode.** Both modes send the primary search to every shard; they differ in **where the join happens**.
 
 - **`Passthrough`** — *join inside each shard.* The chain parameter is forwarded unchanged; each shard resolves it against its own data; results are merged. One call per shard, no sub-queries, no key cap. Exact **only** if every reference on that path stays on the shard; a cross-shard absolute reference on a Passthrough path is a silently missed match.
-- **`Distributed`** — *join in the federation.* Sub-query the target on all shards, then send each shard a rewritten query with relative forms for its own keys and absolute forms for other shards' keys (below). Exact for same-shard and cross-shard references; costs an extra round, the `MaxChainKeys` cap and large request bodies.
+- **`Distributed`** — *join in the federation.* Sub-query the target on all shards, then send each shard a rewritten query with its **own-side forms** for its own keys and **registered-base absolute forms** for other shards' keys (below). Exact for same-shard and cross-shard references; costs an extra round, the `MaxChainKeys` cap and large request bodies.
 
 **Mode is chosen per reference path, not per deployment**, because placement is usually path-specific: with patient-compartment placement `Observation.subject → Patient` never leaves the shard, while `Observation.performer → Practitioner` may. Configuration (`ChainResolution`):
 
@@ -202,9 +202,14 @@ Examples, with Sarah as `Patient/p1` on shard A and `Patient/p2` on shard B:
 | Query | Mode | Backend calls |
 |---|---|---|
 | `Observation?subject:Patient.name=Sarah` | Passthrough (`Observation.subject:Patient` listed) | every shard gets the query unchanged |
-| same | Distributed | `Patient?name=Sarah` on all shards → A: `Observation?subject=Patient/p1,https://B/Patient/p2`; B: `Observation?subject=Patient/p2,https://A/Patient/p1` |
+| same | Distributed | `Patient?name=Sarah` on all shards → A: `Observation?subject=` own-side form(s) of `p1` plus the registered-base absolute form of `p2` on B (e.g. `https://B/Patient/p2`); B: `Observation?subject=` own-side form(s) of `p2` plus the registered-base absolute form of `p1` on A (see *Search-value forms*) |
 | `Patient?_has:Observation:subject:code=X` | Passthrough | every shard gets the query unchanged |
 | same | Distributed | `Observation?code=X` on all shards → resolve each `subject` to its owning shard → `Patient?_id=…` only on owning shards |
+
+**Search-value forms.** A backend matches search values against the references it *stores*; a relative value such as `Patient/p1` does not by itself restrict a match to the local shard.
+
+- **Own-side forms** are the search values used to select keys owned by the shard being queried. The backend profile must prove that the values match all supported local reference encodings (relative, canonical absolute, and approved aliases) without matching a foreign-base reference with the same type and id. This proof is specific to the path and query shape. A relative search value can be used only if proven safe; the own-absolute form (`{BaseUrl}/Type/id`) on Microsoft FHIR Server is a **candidate**, not certified, until the compatibility run (§15) passes. If a rewrite needs own-side forms and lacks this proof, reject the request with 400.
+- **Foreign keys** use the forms their owning shard actually registers: its canonical `BaseUrl` and approved `LinkBaseAliases` (§4.2), never an authority taken from the caller's request (Host or forwarding headers).
 
 **Admission rules:**
 - Target type unambiguous per hop (explicit type modifier or single-target reference parameter); else 400 asking for a type modifier.
@@ -215,7 +220,7 @@ Examples, with Sarah as `Patient/p1` on shard A and `Patient/p2` on shard B:
 **Distributed forward chain** — `Observation?subject:Patient.name=Sarah`:
 1. Sub-query `Patient?name=Sarah&_elements=id` on all shards in parallel, paging to exhaustion → set of `(shard, Patient, id)`.
 2. Cap `MaxChainKeys` = 1000 distinct keys (exactly 1000 valid; proven overflow → 400 `too-costly`). Zero keys → empty result.
-3. **Per-shard rewrite.** For backend shard X, replace the occurrence with one occurrence whose OR-list holds the **relative** form for keys on X and the **absolute** form(s) (`BaseUrl` and certified `LinkBaseAliases`) for keys on other shards: `subject=Patient/a,https://fhir-west.internal/Patient/b`. Each shard therefore receives a different rewritten query. AND with other occurrences is preserved.
+3. **Per-shard rewrite.** For backend shard X, replace the occurrence with one occurrence whose OR-list holds the proven **own-side** form(s) for keys on X (see *Search-value forms*) and the **absolute** form(s) (the owning shard's registered `BaseUrl` and approved `LinkBaseAliases`) for keys on other shards, for example `subject=<own-side form of a>,https://fhir-west.internal/Patient/b`. Each shard therefore receives a different rewritten query. AND with other occurrences is preserved.
 
 **Distributed reverse chain** — `Patient?_has:Observation:subject:code=1234-5`:
 1. Sub-query `Observation?code=1234-5` on all shards, fetching the elements the reference parameter's FHIRPath expression depends on (full resources when not provably a single element) **[call]**.
@@ -229,7 +234,7 @@ Examples, with Sarah as `Patient/p1` on shard A and `Patient/p2` on shard B:
 
 - Computed from **this page's matches only**, after the page cut. Includes never consume `_count` or a match cursor; a resource included on page 1 is included again on page 3 if it belongs there.
 - **`_include=Observation:subject[:Patient]`:** extract references (§7.7); each resolves to exactly one shard. Group by `(shard, type)` and fetch `POST [shard]/[type]/_search` with `_id=…` — **only the shards actually referenced**. Optional target type honoured.
-- **`_revinclude=Observation:subject[:Patient]`:** for page matches owned by shard X, query X with the relative forms (`subject=Patient/a,…`) and every other shard with the absolute forms (`subject=https://X/Patient/a,…`), in parallel.
+- **`_revinclude=Observation:subject[:Patient]`:** for page matches owned by shard X, query X with its proven own-side forms (*Search-value forms*, §7.5) and every other shard with the registered-base absolute forms of X (`subject=https://X/Patient/a,…`), in parallel.
 - `MaxIncludesPerPage` = 1000. On overflow: emit what was fetched, add `search.mode=outcome` (`code=incomplete`, "included resources truncated").
 - Dedup per page by `(shard, type, id, versionId)`; a resource that is a match is not repeated as an include.
 - Versioned references (`Patient/p/_history/2`): v1 includes the **current** version and adds an outcome warning **[call]** (vread includes are v2).
