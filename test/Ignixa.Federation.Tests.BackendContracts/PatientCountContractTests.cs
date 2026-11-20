@@ -14,7 +14,7 @@ namespace Ignixa.Federation.Tests.BackendContracts;
 /// link, no total) is not evidence and fails as <c>[incomplete-search]</c>.
 /// </summary>
 [Collection(LiveCountBackendDefinition.Name)]
-public sealed class PatientCountContractTests(PatientCountBackendFixture backend, ITestOutputHelper output) : IClassFixture<PatientCountBackendFixture>
+public sealed class PatientCountContractTests(PatientCountBackendFixture backend, ITestOutputHelper output)
 {
     private const int CaseTimeoutMilliseconds = 120_000;
 

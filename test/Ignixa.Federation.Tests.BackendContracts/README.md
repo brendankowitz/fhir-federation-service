@@ -85,6 +85,41 @@ Readiness for this backend still uses the positive `_id` search for the three se
 query never gates readiness. Offline tests (`PatientCountEvidenceTests`, no Docker) cover the parser,
 the sanitized report, the request construction, the seed shape, and the generalized readiness.
 
+## Repeated decoded `_id` (`RepeatedIdContractTests`)
+
+A third witness records how the backend handles the same `_id` sent twice. The two sent occurrences are
+one plain spelling and one raw-escaped spelling that decode to the same name and value:
+`_id=count-female-1` and `%5Fid=%63ount-female-1`. It reuses the seeded count backend through a shared
+collection fixture, so no third SQL start occurs. Four live cases, each independent:
+
+| Method | Shape | Controls (after the pair) | Match contract |
+| --- | --- | --- | --- |
+| GET, POST | primary | `_count=100&_total=accurate` | exactly the seeded Patient `count-female-1`, `total` 1, no `next` link |
+| GET, POST | count | `_count=0` | `total` 1, no entries, no `next` link |
+
+GET is `Patient?<pair>&<controls>`; POST is `Patient/_search` with the same text as an
+`application/x-www-form-urlencoded` body. Both send `Prefer: handling=strict`.
+
+Each case reports two things apart:
+
+- **Match** is a contract. A complete answer with a different Patient or total is `[contract]`; an answer
+  that cannot be accounted for (next link, entries on a count, a wrong or missing `_id` in the echo, or
+  more than one `self` link) is `[incomplete-search]`; HTTP 400, 422 or 501 is `[unsupported-capability]`
+  and names the method and shape.
+- **`Bundle.self` echo** is a characterization only. One decoded `_id` occurrence is a collapsed pair and
+  two is an echoed pair; either passes. A collapsed pair does not prove the predicates were preserved,
+  and an echoed pair does not show that the identical predicates independently affected the result.
+  The report contains counts only, never the query text or response body.
+
+The raw escape spelling must reach the wire. .NET canonicalizes a GET query and silently unescapes
+`%5F` and `%63`, which would send `_id=…&_id=…`. The GET request therefore uses an absolute URI created
+with `DangerousDisablePathAndQueryCanonicalization`, and an offline test captures the real request through
+a loopback server to prove the spelling pair is on the wire. The POST body is sent raw.
+
+No live outcome is recorded yet: the match and echo results for GET and POST are pending the first Linux
+run. Offline tests (`RepeatedIdEvidenceTests`, no Docker) cover the parser, sanitized reporting, and
+the actual request target and form body sent by the client.
+
 ## Run it
 
 Requires .NET SDK 11.0.100. The live tests also require a local Docker engine for `linux/amd64` containers.
@@ -92,17 +127,17 @@ The harness uses `/var/run/docker.sock` on Linux and the Docker Desktop Linux en
 Run the same two commands as CI from the repository root:
 
 ```text
-dotnet run --project test/Ignixa.Federation.Tests.BackendContracts/Ignixa.Federation.Tests.BackendContracts.csproj --configuration Release -- --show-live-output on --progress off --fail-skips on --filter-class '*EvidenceTests' --minimum-expected-tests 78
-dotnet run --project test/Ignixa.Federation.Tests.BackendContracts/Ignixa.Federation.Tests.BackendContracts.csproj --configuration Release --no-build -- --show-live-output on --progress off --fail-skips on --filter-class '*ContractTests' --minimum-expected-tests 9
+dotnet run --project test/Ignixa.Federation.Tests.BackendContracts/Ignixa.Federation.Tests.BackendContracts.csproj --configuration Release -- --show-live-output on --progress off --fail-skips on --filter-class '*EvidenceTests' --minimum-expected-tests 150
+dotnet run --project test/Ignixa.Federation.Tests.BackendContracts/Ignixa.Federation.Tests.BackendContracts.csproj --configuration Release --no-build -- --show-live-output on --progress off --fail-skips on --filter-class '*ContractTests' --minimum-expected-tests 13
 ```
 
-The first command builds the project and runs the 78 offline tests. The second runs the nine live cases
-(three reference, six count) using that build. The separate filters and minimum test counts prevent
+The first command builds the project and runs the 150 offline tests. The second runs the thirteen live cases
+(three reference, six count, four repeated `_id`) using that build. The separate filters and minimum test counts prevent
 offline tests from satisfying the live gate. Failed or skipped cases make their command exit non-zero.
 
 The first live run can take several minutes to pull images and initialize the SQL schema.
 
-The project is intentionally outside the main solution; use the standalone command above.
+The project is intentionally outside the main solution; use the standalone commands above.
 
 ## Constraints
 
@@ -152,8 +187,10 @@ base and can include foreign references, so it is not an exact-local query.
 ## Evidence status
 
 - Local (Windows, no Docker engine): the project builds with the .NET 11.0.100 SDK. The offline tests pass.
-  The nine live cases (three reference, six count) run and fail with `[prerequisite]`, as they should
-  without Docker: 87 total, 78 passed, 9 failed, 0 skipped.
-- Pending Docker or CI: startup, port binding, match sets and the Patient count totals have not been
-  verified against a live backend. The first Linux run in `.github/workflows/backend-contracts.yml`
+  The thirteen live cases (three reference, six count, four repeated `_id`) run and fail with
+  `[prerequisite]`, as they should without Docker: the offline run is 150 passed, 0 failed, 0 skipped,
+  and the live run is 13 total, 0 passed, 13 failed, 0 skipped.
+- Pending Docker or CI: startup, port binding, match sets, the Patient count totals and the repeated
+  `_id` match and echo outcomes have not been verified against a live backend; no outcome is recorded
+  here and none is assumed. The first Linux run in `.github/workflows/backend-contracts.yml`
   supplies that evidence. Until then the count witness is not accepted.

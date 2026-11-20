@@ -22,6 +22,10 @@ public sealed class PatientCountBackendFixture : IAsyncLifetime
     internal Task<CountEvidence> CountPatientsAsync(HttpMethod method, string? gender, CancellationToken cancellationToken) =>
         Backend.Client.CountPatientsAsync(method, gender, cancellationToken);
 
+    /// <summary>Runs the repeated decoded <c>_id</c> request for the seeded Patient and returns the accounted-for answer.</summary>
+    internal Task<RepeatedIdEvidence> SearchRepeatedIdAsync(HttpMethod method, RepeatedIdShape shape, CancellationToken cancellationToken) =>
+        Backend.Client.SearchRepeatedIdAsync(method, shape, cancellationToken);
+
     public async ValueTask DisposeAsync()
     {
         if (_backend is not null)

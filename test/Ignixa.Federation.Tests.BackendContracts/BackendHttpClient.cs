@@ -15,6 +15,10 @@ internal sealed class BackendHttpClient : IDisposable
     private const long MaxResponseBytes = 4 * 1024 * 1024;
     private static readonly TimeSpan RequestTimeout = TimeSpan.FromSeconds(30);
 
+    private const string SeededPatientId = "count-female-1";
+    private const string PlainIdSpelling = "_id=count-female-1";
+    private const string EncodedIdSpelling = "%5Fid=%63ount-female-1";
+
     private readonly HttpClient _http;
 
     [SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope",
@@ -211,8 +215,74 @@ internal sealed class BackendHttpClient : IDisposable
     public async Task<CountEvidence> CountPatientsAsync(HttpMethod method, string? gender, CancellationToken cancellationToken)
     {
         using HttpRequestMessage request = BuildCountRequest(method, gender);
-        string operation = $"the {method.Method} count";
+        return await SendForEvidenceAsync(request, $"the {method.Method} count", "a count", CountEvidence.Parse, cancellationToken);
+    }
 
+    /// <summary>
+    /// Builds the repeated decoded <c>_id</c> request for the seeded Patient: <c>_id=count-female-1</c> and a second
+    /// occurrence spelled <c>%5Fid=%63ount-female-1</c>, which decodes to the same name and the same value. The
+    /// literal escapes are sent as written: in the GET target, and in the body of <c>POST Patient/_search</c>, which
+    /// is not re-encoded. <see cref="Uri"/> would otherwise unescape these unreserved characters and turn the
+    /// spelling pair into two plain occurrences, so the GET target is built with canonicalization disabled. That
+    /// is why the request is absolute. The primary shape asks for a single page (<c>_count=100</c>) with an
+    /// accurate total; the count shape is the ordinary <c>_count=0</c> with no <c>_total</c>. Both ask for strict
+    /// handling.
+    /// </summary>
+    /// <param name="method">GET or POST.</param>
+    /// <param name="shape">The primary page or the ordinary count.</param>
+    /// <param name="baseAddress">The backend base address, ending in a slash.</param>
+    internal static HttpRequestMessage BuildRepeatedIdRequest(HttpMethod method, RepeatedIdShape shape, Uri baseAddress)
+    {
+        string controls = shape == RepeatedIdShape.Primary ? "_count=100&_total=accurate" : "_count=0";
+        string query = $"{PlainIdSpelling}&{EncodedIdSpelling}&{controls}";
+
+        HttpRequestMessage request;
+        if (method == HttpMethod.Get)
+        {
+            var target = new Uri($"{baseAddress.AbsoluteUri}Patient?{query}", new UriCreationOptions { DangerousDisablePathAndQueryCanonicalization = true });
+            request = new HttpRequestMessage(HttpMethod.Get, target);
+        }
+        else if (method == HttpMethod.Post)
+        {
+            request = new HttpRequestMessage(HttpMethod.Post, new Uri(baseAddress, "Patient/_search"))
+            {
+                Content = new ByteArrayContent(System.Text.Encoding.ASCII.GetBytes(query))
+                {
+                    Headers = { ContentType = new MediaTypeHeaderValue("application/x-www-form-urlencoded") },
+                },
+            };
+        }
+        else
+        {
+            throw new ArgumentOutOfRangeException(nameof(method), "Only GET and POST have a repeated _id request shape.");
+        }
+
+        request.Headers.TryAddWithoutValidation("Prefer", "handling=strict");
+        return request;
+    }
+
+    /// <summary>
+    /// Sends <see cref="BuildRepeatedIdRequest"/> and accounts for the response. Failures name only the method,
+    /// the shape, the HTTP status and fixed text, never a response body, a server link or the request.
+    /// </summary>
+    public async Task<RepeatedIdEvidence> SearchRepeatedIdAsync(HttpMethod method, RepeatedIdShape shape, CancellationToken cancellationToken)
+    {
+        using HttpRequestMessage request = BuildRepeatedIdRequest(method, shape, _http.BaseAddress!);
+        return await SendForEvidenceAsync(
+            request,
+            $"the {method.Method} {(shape == RepeatedIdShape.Primary ? "primary" : "count")} repeated-_id search",
+            "a result",
+            body => RepeatedIdEvidence.Parse(body, shape, SeededPatientId),
+            cancellationToken);
+    }
+
+    private async Task<T> SendForEvidenceAsync<T>(
+        HttpRequestMessage request,
+        string operation,
+        string answer,
+        Func<string, T> parse,
+        CancellationToken cancellationToken)
+    {
         HttpStatusCode status;
         string body;
         try
@@ -235,7 +305,7 @@ internal sealed class BackendHttpClient : IDisposable
             case HttpStatusCode.OK:
                 try
                 {
-                    return CountEvidence.Parse(body);
+                    return parse(body);
                 }
                 catch (BackendEvidenceException e)
                 {
@@ -245,7 +315,7 @@ internal sealed class BackendHttpClient : IDisposable
             case HttpStatusCode.BadRequest or HttpStatusCode.UnprocessableEntity or HttpStatusCode.NotImplemented:
                 throw new BackendEvidenceException(
                     BackendFailureKind.UnsupportedCapability,
-                    $"the backend rejected {operation} with HTTP {(int)status}. This is a capability answer, not a count.");
+                    $"the backend rejected {operation} with HTTP {(int)status}. This is a capability answer, not {answer}.");
 
             default:
                 throw new BackendEvidenceException(
