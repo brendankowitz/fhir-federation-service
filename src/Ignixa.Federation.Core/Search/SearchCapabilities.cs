@@ -1,5 +1,6 @@
 using System.Collections.Frozen;
 using System.Collections.ObjectModel;
+using System.Diagnostics.CodeAnalysis;
 using Ignixa.Federation.Core.Identity;
 using Ignixa.Federation.Core.Shards;
 using Ignixa.Search.Models;
@@ -48,7 +49,7 @@ public sealed class SearchCapabilities
             .Where(t => R4Search.IsResourceType(t.Value) && _shards.All(s => s.Resources.Any(r => r.Type == t)))
             .ToFrozenDictionary(t => t, t => Intersect(t, [.. _shards.Select(s => s.Resources.Single(r => r.Type == t))]));
         Resources = new ReadOnlyCollection<ResourceSearchSupport>(
-            [.. _resources.Values.Select(p => p.Support).OrderBy(r => r.Type.Value, StringComparer.Ordinal)]);
+            [.. _resources.OrderBy(p => p.Key.Value, StringComparer.Ordinal).Select(p => Project(p.Key, p.Value))]);
         SupportsLastUpdatedSort = registry.Shards.All(d => d.Profile.LastUpdatedOrder?.StableTies == true);
     }
 
@@ -59,7 +60,9 @@ public sealed class SearchCapabilities
     /// Gets the resource types every shard searches, ordered by name, each with the parameters and includes every shard
     /// supports. Reference parameters are not listed: a caller's reference value is refused
     /// (<see cref="SearchFailureCode.UnsupportedReferenceFilter"/>), and an entry cannot say that only <c>:missing</c>,
-    /// chains and includes are planned. They still serve the chains, includes and revincludes every shard certifies.
+    /// chains and includes are planned. They still serve the chains, includes and revincludes every shard certifies. An
+    /// include or revinclude every shard advertises is listed only when a request for exactly that value is admitted; an
+    /// advertised untyped include that is withheld (a polymorphic reference) still admits its certified typed forms.
     /// </summary>
     public IReadOnlyList<ResourceSearchSupport> Resources { get; }
 
@@ -79,6 +82,92 @@ public sealed class SearchCapabilities
         _resources.TryGetValue(type, out Published? published) && published.RevIncludes.Contains(revInclude);
 
     internal bool EveryShard(Func<SearchCertification, bool> proven) => _shards.All(s => proven(s.Certification));
+
+    /// <summary>Gets a value indicating whether every shard proves comma alternatives for <paramref name="type"/>.</summary>
+    internal bool ProvesAlternatives(SearchParamType type) => EveryShard(c => c.OrAlternatives.Contains(type));
+
+    /// <summary>
+    /// Admits <c>_include=Source:code[:Target]</c>, or <c>_revinclude</c> when <paramref name="reverse"/>, searched from
+    /// <paramref name="searched"/>; the federation answers it by extracting references from the page, or by a follow-up
+    /// search of the source type. The one admission rule for requests and for <see cref="Resources"/>.
+    /// </summary>
+    /// <param name="searched">The searched resource type.</param>
+    /// <param name="value">The include value.</param>
+    /// <param name="reverse">Whether the value is a revinclude.</param>
+    /// <param name="hop">The certified hop when admitted.</param>
+    /// <param name="failure">
+    /// When refused: <see cref="SearchFailureCode.InvalidValue"/> for a value that names no R4 reference from or to
+    /// <paramref name="searched"/>, otherwise <see cref="SearchFailureCode.UnsupportedInclude"/>.
+    /// </param>
+    /// <returns>Whether the value is admitted.</returns>
+    internal bool TryAdmitInclude(ResourceType searched, string value, bool reverse, [NotNullWhen(true)] out ReferenceHop? hop, out SearchFailureCode failure)
+    {
+        hop = null;
+        failure = SearchFailureCode.UnsupportedInclude;
+        string[] parts = value.Split(':');
+        if (parts is ["*"] or [_, "*", ..])
+        {
+            return false;
+        }
+
+        ResourceType? typed = null;
+        if (parts.Length is not (2 or 3)
+            || !ResourceType.TryParse(parts[0], out ResourceType? source)
+            || !R4Search.IsSearchCode(parts[1])
+            || R4Search.FindDefinition(source, parts[1]) is not { Type: SearchParamType.Reference } definition
+            || (parts.Length == 3 && !ResourceType.TryParse(parts[2], out typed)))
+        {
+            failure = SearchFailureCode.InvalidValue;
+            return false;
+        }
+
+        string code = parts[1];
+        string[] targets = [.. definition.TargetResourceTypes];
+        ResourceType target;
+        if (reverse)
+        {
+            if (!targets.Contains(searched.Value, StringComparer.Ordinal) || (typed is not null && typed != searched))
+            {
+                failure = SearchFailureCode.InvalidValue;
+                return false;
+            }
+
+            target = searched;
+        }
+        else if (source != searched || (typed is not null && !targets.Contains(typed.Value, StringComparer.Ordinal)))
+        {
+            failure = SearchFailureCode.InvalidValue;
+            return false;
+        }
+        else if (typed is not null)
+        {
+            target = typed;
+        }
+        else if (targets is [string only])
+        {
+            target = ResourceType.Parse(only);
+        }
+        else
+        {
+            // Including every target type of a polymorphic reference is not certified per target.
+            return false;
+        }
+
+        // An advertised untyped include covers each typed form of it.
+        Func<ResourceType, string, bool> advertises = reverse ? AdvertisesRevInclude : AdvertisesInclude;
+        var path = new ReferencePath(source, code, target);
+        if (!(advertises(searched, value) || advertises(searched, $"{source.Value}:{code}"))
+            || !R4Search.IsPlainReference(definition, source)
+            || CertifiedPath(path, reverse ? ReferencePathOperations.RevIncludeSearch : ReferencePathOperations.IncludeExtraction) is not { } certifications
+            || !ProvesAlternatives(reverse ? SearchParamType.Reference : SearchParamType.Token)
+            || (reverse ? FindParameter(source, code) : FindParameter(target, "_id")) is null)
+        {
+            return false;
+        }
+
+        hop = new ReferenceHop(path, definition.Url, definition.Expression, null, null, certifications);
+        return true;
+    }
 
     /// <summary>
     /// Gets every shard's certification of <paramref name="path"/> when each proves all of <paramref name="required"/>. A
@@ -119,36 +208,31 @@ public sealed class SearchCapabilities
             }
         }
 
-        string[] includes = IntersectIncludes(perShard.Select(r => r.SearchIncludes));
-        string[] revIncludes = IntersectIncludes(perShard.Select(r => r.SearchRevIncludes));
-        var support = new ResourceSearchSupport(
-            type,
-            parameters.Values.Where(d => d.Type != SearchParamType.Reference).Select(d => new SearchParameterSupport(d.Code, d.Type, d.Url)),
-            includes,
-            revIncludes);
         return new Published(
-            support,
             parameters.ToFrozenDictionary(StringComparer.Ordinal),
-            includes.ToFrozenSet(StringComparer.Ordinal),
-            revIncludes.ToFrozenSet(StringComparer.Ordinal));
+            IntersectIncludes(perShard.Select(r => r.SearchIncludes)),
+            IntersectIncludes(perShard.Select(r => r.SearchRevIncludes)));
     }
 
-    private static string[] IntersectIncludes(IEnumerable<IReadOnlyList<string>> perShard) =>
-    [
-        .. perShard.Select(forms => forms.AsEnumerable())
+    // Every form all shards advertise stays internal, so a withheld untyped include still covers its typed forms.
+    private static FrozenSet<string> IntersectIncludes(IEnumerable<IReadOnlyList<string>> perShard) =>
+        perShard.Select(forms => forms.AsEnumerable())
             .Aggregate((left, right) => left.Intersect(right, StringComparer.Ordinal))
-            .Where(form => form.Split(':') switch
-            {
-                [string source, string code] => R4Search.IsResourceType(source) && R4Search.IsSearchCode(code),
-                [string source, string code, string target] =>
-                    R4Search.IsResourceType(source) && R4Search.IsSearchCode(code) && R4Search.IsResourceType(target),
-                _ => false,
-            })
-            .Order(StringComparer.Ordinal),
-    ];
+            .ToFrozenSet(StringComparer.Ordinal);
+
+    private ResourceSearchSupport Project(ResourceType type, Published published) => new(
+        type,
+        published.Parameters.Values
+            .Where(d => d.Type != SearchParamType.Reference)
+            .OrderBy(d => d.Code, StringComparer.Ordinal)
+            .Select(d => new SearchParameterSupport(d.Code, d.Type, d.Url)),
+        Admitted(type, published.Includes, reverse: false),
+        Admitted(type, published.RevIncludes, reverse: true));
+
+    private string[] Admitted(ResourceType type, FrozenSet<string> advertised, bool reverse) =>
+        [.. advertised.Where(form => TryAdmitInclude(type, form, reverse, out _, out _)).Order(StringComparer.Ordinal)];
 
     private sealed record Published(
-        ResourceSearchSupport Support,
         FrozenDictionary<string, SearchParameterInfo> Parameters,
         FrozenSet<string> Includes,
         FrozenSet<string> RevIncludes);

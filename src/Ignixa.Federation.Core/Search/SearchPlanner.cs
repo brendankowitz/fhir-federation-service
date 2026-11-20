@@ -264,69 +264,16 @@ public sealed class SearchPlanner
     /// </summary>
     private SearchFailureCode? PlanInclude(Draft draft, QueryOccurrence occurrence, bool reverse)
     {
-        string[] parts = occurrence.Value.Split(':');
-        if (parts is ["*"] or [_, "*", ..])
+        if (!_capabilities.TryAdmitInclude(draft.Type, occurrence.Value, reverse, out ReferenceHop? hop, out SearchFailureCode failure))
         {
-            return SearchFailureCode.UnsupportedInclude;
-        }
-
-        ResourceType? typed = null;
-        if (parts.Length is not (2 or 3)
-            || !ResourceType.TryParse(parts[0], out ResourceType? source)
-            || !R4Search.IsSearchCode(parts[1])
-            || R4Search.FindDefinition(source, parts[1]) is not { Type: SearchParamType.Reference } definition
-            || (parts.Length == 3 && !ResourceType.TryParse(parts[2], out typed)))
-        {
-            return SearchFailureCode.InvalidValue;
-        }
-
-        string code = parts[1];
-        string[] targets = [.. definition.TargetResourceTypes];
-        ResourceType target;
-        if (reverse)
-        {
-            if (!targets.Contains(draft.Type.Value, StringComparer.Ordinal) || (typed is not null && typed != draft.Type))
-            {
-                return SearchFailureCode.InvalidValue;
-            }
-
-            target = draft.Type;
-        }
-        else if (source != draft.Type || (typed is not null && !targets.Contains(typed.Value, StringComparer.Ordinal)))
-        {
-            return SearchFailureCode.InvalidValue;
-        }
-        else if (typed is not null)
-        {
-            target = typed;
-        }
-        else if (targets is [string only])
-        {
-            target = ResourceType.Parse(only);
-        }
-        else
-        {
-            // Including every target type of a polymorphic reference is not certified per target.
-            return SearchFailureCode.UnsupportedInclude;
-        }
-
-        // An advertised untyped include covers each typed form of it.
-        Func<ResourceType, string, bool> advertises = reverse ? _capabilities.AdvertisesRevInclude : _capabilities.AdvertisesInclude;
-        var path = new ReferencePath(source, code, target);
-        if (!(advertises(draft.Type, occurrence.Value) || advertises(draft.Type, $"{source.Value}:{code}"))
-            || !R4Search.IsPlainReference(definition, source)
-            || _capabilities.CertifiedPath(path, reverse ? ReferencePathOperations.RevIncludeSearch : ReferencePathOperations.IncludeExtraction) is not { } certifications
-            || !OrProven(reverse ? SearchParamType.Reference : SearchParamType.Token)
-            || (reverse ? _capabilities.FindParameter(source, code) : _capabilities.FindParameter(target, "_id")) is null)
-        {
-            return SearchFailureCode.UnsupportedInclude;
+            return failure;
         }
 
         draft.Occurrences.Add(new PlannedOccurrence(
             occurrence,
             reverse ? OccurrenceKind.RevInclude : OccurrenceKind.Include,
             OccurrenceAction.Remove,
-            new ReferenceHop(path, definition.Url, definition.Expression, null, null, certifications)));
+            hop));
         return null;
     }
 
@@ -563,7 +510,7 @@ public sealed class SearchPlanner
         return _capabilities.EveryShard(c => c.SupportsModifier(type, certified));
     }
 
-    private bool OrProven(SearchParamType type) => _capabilities.EveryShard(c => c.OrAlternatives.Contains(type));
+    private bool OrProven(SearchParamType type) => _capabilities.ProvesAlternatives(type);
 
     /// <summary>One outbound backend parameter: its AND group, value type, and count-shape descriptor.</summary>
     private sealed record Outbound(int Ordinal, string Group, SearchParamType Type, string Shape);

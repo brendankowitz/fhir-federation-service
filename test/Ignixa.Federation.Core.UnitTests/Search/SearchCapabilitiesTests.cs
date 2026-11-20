@@ -12,6 +12,35 @@ public sealed class SearchCapabilitiesTests
     private static ShardSearchCapability Shard(string id, IEnumerable<ResourceSearchSupport>? resources = null) =>
         new(ShardId.Parse(id), resources ?? AllResources, Certification());
 
+    private static void ShouldPublishIncludes(SearchCapabilities capabilities, string type, string[] includes, string[] revIncludes)
+    {
+        ResourceSearchSupport published = capabilities.Resources.Single(r => r.Type.Value == type);
+        published.SearchIncludes.ShouldBe(includes, type);
+        published.SearchRevIncludes.ShouldBe(revIncludes, type);
+    }
+
+    /// <summary>Asserts each include every shard advertised is published exactly when it plans as the sole occurrence.</summary>
+    private static void ShouldPublishExactlyWhatPlans(SearchCapabilities capabilities, IEnumerable<ResourceSearchSupport> advertised)
+    {
+        SearchPlanner planner = Planner(capabilities);
+        foreach (ResourceSearchSupport resource in advertised)
+        {
+            ResourceSearchSupport published = capabilities.Resources.Single(r => r.Type == resource.Type);
+            foreach ((string key, IReadOnlyList<string> forms, IReadOnlyList<string> publishedForms) in new[]
+            {
+                ("_include", resource.SearchIncludes, published.SearchIncludes),
+                ("_revinclude", resource.SearchRevIncludes, published.SearchRevIncludes),
+            })
+            {
+                foreach (string form in forms)
+                {
+                    bool plans = Plan(resource.Type.Value, $"{key}={form}", planner).Plan is not null;
+                    publishedForms.Contains(form).ShouldBe(plans, $"{resource.Type.Value}?{key}={form}");
+                }
+            }
+        }
+    }
+
     [Fact]
     public void RejectsAShardWithNoCapability()
     {
@@ -134,9 +163,10 @@ public sealed class SearchCapabilitiesTests
             ["*", "Observation:*:Patient", "Observation:subject:iterate", "Observation:subject"]);
         ShardRegistry registry = Registry();
         var capabilities = new SearchCapabilities(registry, registry.Shards.Select(
-            s => new ShardSearchCapability(s.Id, [patient], Certification())));
+            s => new ShardSearchCapability(s.Id, [patient, .. AllResources.Skip(1)], Certification())));
 
-        ResourceSearchSupport published = capabilities.Resources.Single();
+        ResourceSearchSupport published = capabilities.Resources.Single(r => r.Type.Value == "Patient");
+        ShouldPublishExactlyWhatPlans(capabilities, [patient]);
         published.SearchIncludes.ShouldBe(["Patient:organization"]);
         published.SearchRevIncludes.ShouldBe(["Observation:subject"]);
     }
@@ -149,8 +179,57 @@ public sealed class SearchCapabilitiesTests
         ResourceSearchSupport patient = Capabilities().Resources.Single(r => r.Type.Value == "Patient");
 
         patient.Parameters.Select(p => p.Code).ShouldBe(["_id", "_lastUpdated", "birthdate", "family", "gender", "name"]);
-        patient.SearchIncludes.ShouldBe(["Patient:general-practitioner", "Patient:organization"]);
-        patient.SearchRevIncludes.ShouldBe(["Observation:performer", "Observation:subject"]);
+        patient.SearchIncludes.ShouldBe(["Patient:organization"]);
+        patient.SearchRevIncludes.ShouldBe(["Observation:subject"]);
+    }
+
+    // Metadata states what a request admits: a common include that does not plan alone is withheld, even when every shard
+    // advertises it (a polymorphic target, an uncertified path, a canonical reference).
+    [Fact]
+    public void PublishesExactlyTheCommonIncludesThatPlanAlone()
+    {
+        SearchCapabilities capabilities = Capabilities();
+
+        ShouldPublishExactlyWhatPlans(capabilities, AllResources);
+        ShouldPublishIncludes(capabilities, "Patient", ["Patient:organization"], ["Observation:subject"]);
+        ShouldPublishIncludes(capabilities, "Observation", ["Observation:subject:Patient"], []);
+        ShouldPublishIncludes(capabilities, "Organization", [], ["Patient:organization"]);
+        ShouldPublishIncludes(capabilities, "QuestionnaireResponse", [], []);
+        ShouldPublishIncludes(capabilities, "Questionnaire", [], []);
+    }
+
+    // Coverage attested for another registry proves no revinclude search; extraction needs no coverage.
+    [Fact]
+    public void WithholdsARevIncludeWhoseRegistryCoverageIsStale()
+    {
+        ShardRegistry aliased = TestShards.Create(TestShards.East("https://east-legacy.example/fhir"), TestShards.West());
+        SearchCapabilities capabilities = Capabilities(registry: aliased);
+
+        ShouldPublishExactlyWhatPlans(capabilities, AllResources);
+        ShouldPublishIncludes(capabilities, "Patient", ["Patient:organization"], []);
+        ShouldPublishIncludes(capabilities, "Organization", [], []);
+    }
+
+    // An untyped polymorphic include is not published, yet still covers its certified typed form on request; the typed form
+    // is not published because no shard advertised it.
+    [Fact]
+    public void KeepsTheTypedFallbackWithoutPublishingTheUntypedOrSynthesizingTheTypedInclude()
+    {
+        ResourceSearchSupport[] resources =
+        [
+            AllResources[0],
+            new(Type("Observation"), AllResources[1].Parameters, ["Observation:subject"], []),
+            .. AllResources.Skip(2),
+        ];
+        ShardRegistry registry = Registry();
+        var capabilities = new SearchCapabilities(registry, registry.Shards.Select(s => new ShardSearchCapability(s.Id, resources, Certification())));
+        SearchPlanner planner = Planner(capabilities);
+
+        ShouldPublishExactlyWhatPlans(capabilities, resources);
+        ShouldPublishIncludes(capabilities, "Observation", [], []);
+        ShouldPublishIncludes(capabilities, "Patient", ["Patient:organization"], ["Observation:subject"]);
+        PlanOk("Observation", "_include=Observation:subject:Patient", planner).Occurrences.ShouldHaveSingleItem().Hop!.Path.ShouldBe(ObservationSubjectPatient);
+        PlanOk("Patient", "_revinclude=Observation:subject:Patient", planner).Occurrences.ShouldHaveSingleItem().Hop!.Path.ShouldBe(ObservationSubjectPatient);
     }
 
     [Fact]
