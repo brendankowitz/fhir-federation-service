@@ -82,10 +82,13 @@ internal sealed class SubjectJoinEvidence
     /// </summary>
     public string Describe(string label, SubjectJoinCase join, HttpMethod method)
     {
+        // Both accepted echoes of a repeated term in a form POST are recorded, not required.
+        bool characterized = method == HttpMethod.Post && join.RepeatsATerm;
         string echo = Echo(join, method) switch
         {
+            SubjectEchoOutcome.Echoed when characterized => $"characterization only: every occurrence echoed ({Counts(join, observed: true)})",
             SubjectEchoOutcome.Echoed => "matched",
-            SubjectEchoOutcome.Collapsed => $"collapsed to one occurrence per term (characterization only; {Counts(join, observed: true)})",
+            SubjectEchoOutcome.Collapsed => $"characterization only: collapsed to one occurrence per term ({Counts(join, observed: true)})",
             _ => $"unsupported echo behavior (observed: {Counts(join, observed: true)}; expected: {Counts(join, observed: false)})",
         };
         return $"{Match(join, label).Describe()}; echo of decoded selection pairs: {echo}";

@@ -18,7 +18,11 @@ internal sealed record SubjectJoinCase(
     string Label,
     string WireQuery,
     IReadOnlyList<string> ExpectedIds,
-    IReadOnlyList<SubjectTerm> ExpectedTerms);
+    IReadOnlyList<SubjectTerm> ExpectedTerms)
+{
+    /// <summary>Two occurrences decode to the same term, so a form POST echo of one or two is only characterized.</summary>
+    public bool RepeatsATerm => ExpectedTerms.Select(t => t.Value).Distinct(StringComparer.Ordinal).Count() < ExpectedTerms.Count;
+}
 
 /// <summary>
 /// The Observation.subject join cases over <see cref="SeedData"/>. The reference text is dynamic because the

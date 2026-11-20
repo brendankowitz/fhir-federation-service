@@ -191,27 +191,31 @@ Six live cases are added: `equal` and `unequal` as GET, and `foreign-single`, `o
 | `equal` | foreign A twice, spelled `subject` and `%73ubject`, second value with `%50atient` | `obs-foreign-absolute-dup` |
 | `unequal` | foreign A, then own-absolute `Patient/dup` | none |
 
-The expected ids are literals, never derived from a response. The two `equal` spellings differ as raw text and
-decode to the same pair. Every request appends `&_count=100&_total=accurate` and sends `Prefer: handling=strict`.
-GET is `Observation?<selection>&<controls>` with canonicalization disabled; POST is `Observation/_search` with the
-same text as a raw form body.
+The expected ids are written from the requirement and the reserved seed ids, never from a response. The two `equal`
+spellings differ as raw text and decode to the same pair. Every request appends `&_count=100&_total=accurate` and
+sends `Prefer: handling=strict`. GET is `Observation?<selection>&<controls>` with canonicalization disabled; POST
+is `Observation/_search` with the same text as a raw form body.
 
-Each case reports two facts apart. The **match** multiset of one complete page is a `[contract]` for every case
-and method. The **`Bundle.self` echo** compares the decoded pairs, ignoring only `_count` and `_total`, with the
-requested selection as a multiset:
+Each case reports two facts apart, and neither excuses the other:
 
-- Both methods accept the exact echo of every occurrence.
-- A GET echo that collapses the repeated pair, or drops, alters or adds a pair, fails even when the match is
-  correct.
-- A form POST echo that collapses repeated equal terms to one per distinct term is **characterization only**:
-  it is reported as such and passes if the match is correct. Zero, three, wrong, missing or extra terms fail.
-- A correct echo never excuses a wrong match.
+- **Match** (`[contract]`, every case and method): the sorted ids of one complete page equal the table.
+- **`Bundle.self` echo**: the decoded pairs, ignoring only `_count` and `_total`, compared with the requested
+  terms as a multiset. GET must echo every occurrence, so a collapsed, dropped, altered, tripled or added pair
+  fails. A form POST of `equal` is **characterization only**: both one occurrence (collapsed) and two (echoed)
+  pass and are reported as characterization. Zero, three, wrong, missing or extra terms fail, and distinct
+  terms must each echo once.
 
-POST collapse being tolerated is a record of what the backend does. It is not authorization for any production
-behavior. Reports print reserved ids, term labels and counts, never a reference value, query or response text.
-Offline tests (`SubjectJoinEvidenceTests`, no Docker) cover the parser, the match and echo rules, the raw
-spellings, the report text, and the real GET and POST wire through a loopback server. Any native run of another
-build is separate and is not evidence for this suite. No live outcome of this witness is recorded yet.
+Accepting either POST echo records what a backend does. It neither says the predicates independently affected the
+result nor preserves or authorizes POST for production joins. Reports print reserved ids, term labels and counts,
+never a reference value, query or response text. Offline tests (`SubjectJoinEvidenceTests`, no Docker) cover the
+seed and raw-spelling tie, the match and echo rules against each other, the one and two POST echoes, spelling and
+order, representative unaccountable pages, sanitized reports, and the real GET and POST wire through a loopback
+server.
+
+Coordinator-reported, not reproduced here: a separate native run (not this harness, not the pinned image, and
+without a software identity recorded in this repository) selected the matches in the table for both methods. GET
+echoed both occurrences for `equal` and `unequal`; POST echoed one occurrence for `equal` and both for `unequal`.
+That is not evidence for this suite and not acceptance. No live outcome of this witness is recorded yet.
 
 ## Run it
 
@@ -220,11 +224,11 @@ The harness uses `/var/run/docker.sock` on Linux and the Docker Desktop Linux en
 Run the same two commands as CI from the repository root:
 
 ```text
-dotnet run --project test/Ignixa.Federation.Tests.BackendContracts/Ignixa.Federation.Tests.BackendContracts.csproj --configuration Release -- --show-live-output on --progress off --fail-skips on --filter-class '*EvidenceTests' --minimum-expected-tests 295
+dotnet run --project test/Ignixa.Federation.Tests.BackendContracts/Ignixa.Federation.Tests.BackendContracts.csproj --configuration Release -- --show-live-output on --progress off --fail-skips on --filter-class '*EvidenceTests' --minimum-expected-tests 252
 dotnet run --project test/Ignixa.Federation.Tests.BackendContracts/Ignixa.Federation.Tests.BackendContracts.csproj --configuration Release --no-build -- --show-live-output on --progress off --fail-skips on --filter-class '*ContractTests' --minimum-expected-tests 31
 ```
 
-The first command builds the project and runs the 295 offline tests. The second runs the thirty-one live
+The first command builds the project and runs the 252 offline tests. The second runs the thirty-one live
 cases (three reference, six count, four repeated `_id`, twelve Patient.given, six Observation.subject join)
 using that build. The separate
 filters and minimum test counts prevent offline tests from satisfying the live gate. Failed or skipped cases
@@ -286,7 +290,7 @@ base and can include foreign references, so it is not an exact-local query.
 - Local (Windows, no Docker engine): the project builds with the .NET 11.0.100 SDK. The offline tests pass.
   The thirty-one live cases (three reference, six count, four repeated `_id`, twelve Patient.given, six
   Observation.subject join) run and fail with `[prerequisite]`, as they should without Docker: the offline run
-  is 295 passed, 0 failed, 0 skipped, and the live run is 31 total, 0 passed, 31 failed, 0 skipped.
+  is 252 passed, 0 failed, 0 skipped, and the live run is 31 total, 0 passed, 31 failed, 0 skipped.
 - Pending Docker or CI: startup, port binding, match sets, the Patient count totals, the repeated
   `_id` match and echo outcomes, the Patient.given match and echo outcomes, and the Observation.subject join
   match and echo outcomes have not been verified against a live backend; no outcome is recorded here and none is

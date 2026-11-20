@@ -14,9 +14,9 @@ namespace Ignixa.Federation.Tests.BackendContracts;
 /// foreign references with the same type and id.
 ///
 /// One seeded backend serves three independently reported single-term cases and the repeated-<c>subject</c>
-/// join cases. Every expected id list is a
-/// literal in this file, written from the requirement and the upstream source, never computed from
-/// the seed code. Seeded data (see README):
+/// join cases. The single-term expected id lists are literals in this file, written from the requirement and the
+/// upstream source, never computed from the seed code. The join cases' lists are in <c>SubjectJoinCases</c>, built from
+/// the reserved seed id constants, and also never from a response. Seeded data (see README):
 /// <list type="bullet">
 /// <item><c>obs-relative-dup</c>: subject <c>Patient/dup</c></item>
 /// <item><c>obs-own-absolute-dup</c>: subject <c>{local request base}/Patient/dup</c></item>
