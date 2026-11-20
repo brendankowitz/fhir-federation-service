@@ -132,14 +132,13 @@ public sealed class ReverseChainResolver
         Exception? firstFailure = null;
         Task all = Task.WhenAll(_capabilities.Registry.Shards.Select(ScanAsync));
         await all.ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
-
         caller.ThrowIfCancellationRequested();
         if (firstFailure is not null)
         {
             ExceptionDispatchInfo.Throw(firstFailure);
         }
 
-        if (stop.IsCancellationRequested)
+        if (!all.IsCompletedSuccessfully && stop.IsCancellationRequested)
         {
             // The fan-out missed its deadline, but no slot holder reported a failure. Do not invent a shard alias.
             throw new TimeoutException("The reverse-chain sub-query exceeded its deadline.");
@@ -155,7 +154,6 @@ public sealed class ReverseChainResolver
             try
             {
                 await ReadShardAsync(shard, hop, expression, witnesses, budget, stop.Token);
-                stop.Token.ThrowIfCancellationRequested();
             }
             catch (Exception exception)
             {
