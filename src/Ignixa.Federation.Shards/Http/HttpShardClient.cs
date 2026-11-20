@@ -222,7 +222,14 @@ public sealed class HttpShardClient : IShardClient, IDisposable
     public Task<ShardPage> SearchAsync(ShardSearchRequest request, CancellationToken cancellationToken) =>
         SearchMeteredAsync(request, meter: null, cancellationToken);
 
-    internal Task<ShardPage> SearchMeteredAsync(ShardSearchRequest request, IShardTransferMeter? meter, CancellationToken cancellationToken)
+    internal Task<ShardPage> SearchMeteredAsync(ShardSearchRequest request, IShardTransferMeter? meter, CancellationToken cancellationToken) =>
+        SearchCoreAsync(request, meter, witness: null, cancellationToken);
+
+    internal Task<ShardPage> SearchWithWitnessAsync(ShardSearchRequest request, WireWitness witness, CancellationToken cancellationToken) =>
+        SearchCoreAsync(request, meter: null, witness, cancellationToken);
+
+    private Task<ShardPage> SearchCoreAsync(
+        ShardSearchRequest request, IShardTransferMeter? meter, WireWitness? witness, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(request);
         if (request.Shard != _shard.Id)
@@ -242,7 +249,7 @@ public sealed class HttpShardClient : IShardClient, IDisposable
         }
 
         string query = BuildQuery(request);
-        return CallAsync(request.Type, query, post, ShardCallFailure.RequestTooLarge, page => FirstPage(request, query, page), meter, cancellationToken);
+        return CallAsync(request.Type, query, post, ShardCallFailure.RequestTooLarge, page => FirstPage(request, query, page), meter, witness, cancellationToken);
     }
 
     /// <inheritdoc/>
@@ -281,6 +288,7 @@ public sealed class HttpShardClient : IShardClient, IDisposable
                 NextCursor(page, cursor.Type, query, link => new ShardCursor(cursor.Shard, cursor.Type, link, cursor.Redemption)),
                 page.Total),
             meter,
+            witness: null,
             cancellationToken);
     }
 
@@ -319,6 +327,7 @@ public sealed class HttpShardClient : IShardClient, IDisposable
                 Operation.Metadata,
                 ReadCapabilities,
                 meter: null,
+                witness: null,
                 cancellationToken).ConfigureAwait(false);
         }
         catch (ShardCallException e)
@@ -404,6 +413,7 @@ public sealed class HttpShardClient : IShardClient, IDisposable
                 Operation.Read,
                 body => ReadResource(body, location, key),
                 meter,
+                witness: null,
                 cancellationToken).ConfigureAwait(false);
         }
         catch (ShardCallException e)
@@ -639,6 +649,7 @@ public sealed class HttpShardClient : IShardClient, IDisposable
         ShardCallFailure tooLarge,
         Func<Searchset, ShardPage> interpret,
         IShardTransferMeter? meter,
+        WireWitness? witness,
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
@@ -663,6 +674,7 @@ public sealed class HttpShardClient : IShardClient, IDisposable
                 Operation.Search,
                 body => interpret(Searchset.Read(body, _shard, type)),
                 meter,
+                witness,
                 cancellationToken).ConfigureAwait(false);
         }
         catch (ShardCallException e)
@@ -692,6 +704,7 @@ public sealed class HttpShardClient : IShardClient, IDisposable
         Operation operation,
         Func<ReadOnlyMemory<byte>, T> interpret,
         IShardTransferMeter? meter,
+        WireWitness? witness,
         CancellationToken cancellationToken)
     {
         using var expiry = new CancellationTokenSource(_callTimeout, _deadlineClock);
@@ -710,7 +723,7 @@ public sealed class HttpShardClient : IShardClient, IDisposable
                 using HttpRequestMessage message = CreateMessage(method, uri, formBody);
                 try
                 {
-                    return await SendAsync(message, token, operation, interpret, callMeter, deadline, cancellationToken).ConfigureAwait(false);
+                    return await SendAsync(message, token, operation, interpret, callMeter, deadline, witness, cancellationToken).ConfigureAwait(false);
                 }
                 catch (OperationCanceledException) when (deadline.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
                 {
@@ -779,6 +792,7 @@ public sealed class HttpShardClient : IShardClient, IDisposable
         Func<ReadOnlyMemory<byte>, T> interpret,
         IShardTransferMeter? meter,
         CancellationTokenSource deadline,
+        WireWitness? witness,
         CancellationToken cancellationToken)
     {
         message.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
@@ -796,12 +810,14 @@ public sealed class HttpShardClient : IShardClient, IDisposable
             throw new ExternalShardFailure(e);
         }
 
+        witness?.Sending();
         HttpResponseMessage response = await OnWireAsync(
             () => new ValueTask<HttpResponseMessage>(_invoker.SendAsync(message, deadline.Token)), deadline, cancellationToken)
             .ConfigureAwait(false);
 
         using (response)
         {
+            witness?.Answered((int)response.StatusCode);
             CheckStatus(response, operation);
             ReadOnlyMemory<byte> body = await ReadBodyAsync(response.Content, meter, deadline, cancellationToken).ConfigureAwait(false);
             deadline.Token.ThrowIfCancellationRequested();
