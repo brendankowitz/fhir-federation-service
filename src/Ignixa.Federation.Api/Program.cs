@@ -1,4 +1,5 @@
 using System.Diagnostics.CodeAnalysis;
+using Ignixa.Federation.Api.Metadata;
 using Ignixa.Federation.Api.Search;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 
@@ -28,6 +29,7 @@ else
 }
 
 app.MapPrimarySearch();
+app.MapFederatedMetadata();
 
 app.Run();
 
