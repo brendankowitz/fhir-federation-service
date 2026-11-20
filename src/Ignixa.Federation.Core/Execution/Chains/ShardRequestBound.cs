@@ -3,8 +3,9 @@ using Ignixa.Federation.Core.Shards;
 namespace Ignixa.Federation.Core.Execution.Chains;
 
 /// <summary>
-/// An operator-trusted transport ceiling for one shard: the method its chain witness and rewritten primary searches use,
-/// and the largest initial request the shard is known to accept with that method.
+/// An operator-trusted transport ceiling for one shard: the largest initial request the shard is known to accept by the
+/// method its chain witness and rewritten primary searches use, which is POST search when its profile supports it and GET
+/// otherwise. <see cref="ForwardChainResolver"/> rejects a bound for any other method rather than guess its size.
 /// </summary>
 /// <remarks>
 /// <see cref="ForwardChainResolver"/> measures each complete initial request in UTF-8 bytes before sending or exposing it:
@@ -17,7 +18,7 @@ namespace Ignixa.Federation.Core.Execution.Chains;
 public sealed class ShardRequestBound
 {
     /// <summary>Initializes a new instance of the <see cref="ShardRequestBound"/> class.</summary>
-    /// <param name="method">The method used for this shard's witness and primary searches.</param>
+    /// <param name="method">The method this bound measures; it must be the method the shard's profile rewrites with.</param>
     /// <param name="maxRequestBytes">The largest measured initial request, in bytes; positive.</param>
     /// <exception cref="ArgumentOutOfRangeException">
     /// <paramref name="method"/> is undefined, or <paramref name="maxRequestBytes"/> is not positive.
@@ -34,7 +35,7 @@ public sealed class ShardRequestBound
         MaxRequestBytes = maxRequestBytes;
     }
 
-    /// <summary>Gets the method used for this shard's witness and primary searches.</summary>
+    /// <summary>Gets the method this bound measures, which the shard's witness and primary searches use.</summary>
     public ShardSearchMethod Method { get; }
 
     /// <summary>Gets the largest measured initial request, in bytes.</summary>

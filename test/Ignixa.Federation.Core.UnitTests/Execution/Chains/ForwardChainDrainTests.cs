@@ -38,21 +38,17 @@ public sealed class ForwardChainDrainTests
     }
 
     [Fact]
-    public async Task WitnessSearchAsksEachShardForItsMaximumPage_ByTheBoundMethod()
+    public async Task WitnessSearchAsksEachShardForItsMaximumPage_ByItsProfilesRewriteMethod()
     {
-        ShardRegistry registry = Registry();
+        ShardRegistry registry = GetOnlyEastRegistry();
         var client = new FakeShardClient();
         ServePages(client, East, Patient, ["p1"]);
         ServePages(client, West, Patient, []);
-        ForwardChainResolver resolver = Resolver(
-            client,
-            registry,
-            bound: s => new ShardRequestBound(s.Id == East ? ShardSearchMethod.Get : ShardSearchMethod.PostSearch, 1_000_000));
 
-        await resolver.ResolveAsync(Plan(registry, Chain), Token);
+        await Resolver(client, registry).ResolveAsync(Plan(registry, Chain), Token);
 
         client.Calls.Select(c => (c.Shard, c.Search!.PageSize, c.Search.Method)).ShouldBe(
-            [(East, 1000, ShardSearchMethod.Get), (West, 1000, ShardSearchMethod.PostSearch)],
+            [(East, 500, ShardSearchMethod.Get), (West, 1000, ShardSearchMethod.PostSearch)],
             ignoreOrder: true);
     }
 

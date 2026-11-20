@@ -36,6 +36,17 @@ internal static class ChainScenario
 
     public static ShardRegistry Registry() => TestShards.Create(TestShards.East(EastAlias), TestShards.West());
 
+    /// <summary>A profile without POST search, whose largest page differs from the stock profiles'.</summary>
+    public static readonly BackendProfile GetOnly = new("GetOnly", SupportsPostSearch: false, MaxCount: 500, NextLinkRedemption.FollowGet, null);
+
+    /// <summary>The scenario's registry with east on the <see cref="GetOnly"/> profile.</summary>
+    public static ShardRegistry GetOnlyEastRegistry() =>
+        ShardRegistry.Create([TestShards.East(EastAlias).WithProfile(GetOnly.Name), TestShards.West()], [.. TestShards.Profiles, GetOnly]);
+
+    /// <summary>Gets a bound of <paramref name="maxRequestBytes"/> by the method <paramref name="shard"/>'s profile rewrites with.</summary>
+    public static ShardRequestBound ProfileBound(ShardDescriptor shard, int maxRequestBytes = 1_000_000) =>
+        new(shard.Profile.SupportsPostSearch ? ShardSearchMethod.PostSearch : ShardSearchMethod.Get, maxRequestBytes);
+
     /// <summary>Gets a witness page with <paramref name="ids"/> of <paramref name="type"/> on <paramref name="shard"/>.</summary>
     public static ShardPage Witness(ShardId shard, ResourceType type, ShardCursor? next, params string[] ids) =>
         new(ids.Select(id => Fixture.Entry(Key(shard, type, id))), next, null);
@@ -80,7 +91,7 @@ internal static class ChainScenario
         new(
             client,
             registry,
-            registry.Shards.ToDictionary(s => s.Id, s => bound?.Invoke(s) ?? new ShardRequestBound(ShardSearchMethod.PostSearch, 1_000_000)),
+            registry.Shards.ToDictionary(s => s.Id, s => bound?.Invoke(s) ?? ProfileBound(s)),
             limits ?? new LimitOptions(),
             timeouts ?? new TimeoutOptions());
 

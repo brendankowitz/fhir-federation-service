@@ -159,13 +159,13 @@ public sealed class ForwardChainRefusalTests
     [InlineData(-1)]
     public async Task PrimaryRequestOverTheShardBound_IsRefusedBeforeItIsSent(int slack)
     {
-        ShardRegistry registry = Registry();
+        ShardRegistry registry = GetOnlyEastRegistry();
         var backend = new ChainBackend(registry).Patient(East, "orchid", "Orchid");
         int target = Encoding.UTF8.GetByteCount("/fhir/Observation?subject=Patient%2Forchid&_count=20");
         ForwardChainResolver resolver = Resolver(
             backend.Client,
             registry,
-            bound: s => s.Id == East ? new ShardRequestBound(ShardSearchMethod.Get, target + slack) : new ShardRequestBound(ShardSearchMethod.PostSearch, 1_000_000));
+            bound: s => s.Id == East ? new ShardRequestBound(ShardSearchMethod.Get, target + slack) : ProfileBound(s));
 
         ForwardChainResolution result = await resolver.ResolveAsync(Plan(registry, Chain), Token);
 
@@ -205,14 +205,24 @@ public sealed class ForwardChainRefusalTests
         Should.Throw<ArgumentException>(() => new ForwardChainResolver(new FakeShardClient(), registry, extra, new LimitOptions(), new TimeoutOptions()));
     }
 
-    [Fact]
-    public void PostSearchBound_RequiresAProfileThatSupportsIt()
+    [Theory]
+    [InlineData(true, ShardSearchMethod.PostSearch, true)]
+    [InlineData(true, ShardSearchMethod.Get, false)] // GET on a POST-capable shard is not the method its rewrite uses.
+    [InlineData(false, ShardSearchMethod.Get, true)]
+    [InlineData(false, ShardSearchMethod.PostSearch, false)]
+    public void BoundMethod_MustBeTheMethodTheShardsProfileRewritesWith(bool postCapable, ShardSearchMethod method, bool accepted)
     {
-        var noPost = new BackendProfile("NoPost", SupportsPostSearch: false, MaxCount: 100, NextLinkRedemption.FollowGet, null);
-        ShardRegistry registry = ShardRegistry.Create([TestShards.East().WithProfile("NoPost")], [noPost]);
+        ShardRegistry registry = postCapable ? Registry() : GetOnlyEastRegistry();
+        Func<ShardDescriptor, ShardRequestBound> bound = s => s.Id == East ? new ShardRequestBound(method, 100) : ProfileBound(s);
 
-        Should.Throw<ArgumentException>(() => Resolver(new FakeShardClient(), registry));
-        Resolver(new FakeShardClient(), registry, bound: _ => new ShardRequestBound(ShardSearchMethod.Get, 100)).ShouldNotBeNull();
+        if (accepted)
+        {
+            Resolver(new FakeShardClient(), registry, bound: bound).ShouldNotBeNull();
+        }
+        else
+        {
+            Should.Throw<ArgumentException>(() => Resolver(new FakeShardClient(), registry, bound: bound)).ParamName.ShouldBe("requestBounds");
+        }
     }
 
     [Theory]

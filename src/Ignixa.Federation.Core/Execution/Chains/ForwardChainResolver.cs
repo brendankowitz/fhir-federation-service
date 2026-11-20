@@ -53,8 +53,9 @@ public sealed class ForwardChainResolver
     /// </param>
     /// <exception cref="ArgumentNullException">A required argument is <see langword="null"/>.</exception>
     /// <exception cref="ArgumentException">
-    /// <paramref name="requestBounds"/> misses a registry shard, names another shard, or asks for
-    /// <see cref="ShardSearchMethod.PostSearch"/> on a shard whose profile does not support it.
+    /// <paramref name="requestBounds"/> misses a registry shard, names another shard, or is for a method other than the one
+    /// the shard's profile rewrites with: <see cref="ShardSearchMethod.PostSearch"/> when it supports POST search, otherwise
+    /// <see cref="ShardSearchMethod.Get"/>.
     /// </exception>
     /// <exception cref="ArgumentOutOfRangeException">A limit or timeout is not positive.</exception>
     public ForwardChainResolver(
@@ -91,9 +92,14 @@ public sealed class ForwardChainResolver
                 throw new ArgumentException("Every registry shard, and no other, needs a request bound.", nameof(requestBounds));
             }
 
-            if (bound.Method == ShardSearchMethod.PostSearch && !shard.Profile.SupportsPostSearch)
+            // A rewritten search goes by POST when the profile supports it, else by GET, per the design spec. The bound must
+            // describe that very method, so the resolver never measures one method and sends another.
+            ShardSearchMethod rewrite = shard.Profile.SupportsPostSearch ? ShardSearchMethod.PostSearch : ShardSearchMethod.Get;
+            if (bound.Method != rewrite)
             {
-                throw new ArgumentException("A request bound asks for POST search on a shard whose profile does not support it.", nameof(requestBounds));
+                throw new ArgumentException(
+                    $"Shard '{shard.Id}' rewrites searches by {rewrite}, but its request bound is for {bound.Method}.",
+                    nameof(requestBounds));
             }
 
             _byShard.Add(shard.Id, new Target(shard, bound));
