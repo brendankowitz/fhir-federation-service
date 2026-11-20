@@ -2,8 +2,13 @@
 
   <PropertyGroup>
     <IsPackable>true</IsPackable>
-    <Description>Shard backend call instrumentation for Ignixa Federation, a read-only FHIR R4 search federation gateway.</Description>
+    <Description>The HTTPS shard search client and its instrumentation for Ignixa Federation, a read-only FHIR R4 search federation gateway.</Description>
   </PropertyGroup>
+
+  <ItemGroup>
+    <!-- The tests reach one internal seam: trusting only a generated loopback leaf certificate. -->
+    <InternalsVisibleTo Include="Ignixa.Federation.Shards.UnitTests" />
+  </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\Ignixa.Federation.Core\Ignixa.Federation.Core.csproj" />
