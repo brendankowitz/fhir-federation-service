@@ -22,6 +22,7 @@ public sealed class ReverseChainResolver
     private readonly SearchCapabilities _capabilities;
     private readonly ReferenceClassifier _classifier;
     private readonly int _maxChainSourceRows;
+    private readonly int _maxChainKeys;
 
     /// <summary>Creates a resolver with positive key, row and concurrency limits and a positive sub-query timeout.</summary>
     public ReverseChainResolver(IShardClient client, SearchCapabilities capabilities, int maxChainKeys, int maxChainSourceRows, int maxParallelCalls, TimeSpan subqueryTimeout)
@@ -36,6 +37,7 @@ public sealed class ReverseChainResolver
         _capabilities = capabilities;
         _classifier = new ReferenceClassifier(capabilities.Registry);
         _maxChainSourceRows = maxChainSourceRows;
+        _maxChainKeys = maxChainKeys;
     }
 
     /// <summary>Resolves reverse chains without issuing any primary search.</summary>
@@ -52,13 +54,14 @@ public sealed class ReverseChainResolver
         {
             ReferenceHop hop = occurrence.Hop!;
             var expression = IncludeReferenceExtractor.ParseExpression(hop);
-            var witnesses = new List<ResourceKey>();
+            var witnesses = new ReverseChainWitnesses(hop.Path, _maxChainSourceRows, _maxChainKeys);
             foreach (ShardDescriptor shard in _capabilities.Registry.Shards)
             {
                 await ReadShardAsync(shard, hop, expression, witnesses, budget, cancellationToken);
             }
 
-            candidates = candidates is null ? [.. witnesses.Distinct()] : [.. candidates.Intersect(witnesses)];
+            var keys = witnesses.OrderedKeys();
+            candidates = candidates is null ? keys : [.. candidates.Intersect(keys)];
             if (candidates.Count == 0)
             {
                 return new ReverseChainResolution([], budget.Calls);
@@ -87,7 +90,7 @@ public sealed class ReverseChainResolver
     }
 
     private async Task ReadShardAsync(
-        ShardDescriptor shard, ReferenceHop hop, Expression expression, List<ResourceKey> witnesses, CallBudget budget, CancellationToken token)
+        ShardDescriptor shard, ReferenceHop hop, Expression expression, ReverseChainWitnesses witnesses, CallBudget budget, CancellationToken token)
     {
         int wanted = (int)Math.Min(int.MaxValue, (long)_maxChainSourceRows + 1);
         var template = new ShardSearchRequest(shard.Id, hop.Path.Source, [hop.Terminal!], wanted, ReverseChainTarget.MethodFor(shard));
@@ -95,6 +98,7 @@ public sealed class ReverseChainResolver
         var redeemed = new HashSet<ShardCursor>();
         CursorCycleState cycle = CursorCycleState.Initial;
         ShardCursor? cursor = null;
+        long position = 0;
         do
         {
             token.ThrowIfCancellationRequested();
@@ -103,6 +107,7 @@ public sealed class ReverseChainResolver
                 ? await _client.SearchAsync(stream.FirstPage(wanted), token)
                 : await _client.ContinueAsync(cursor, token);
             stream.Validate(page, redeemed);
+            witnesses.ChargeRows(page.Entries.Count);
             foreach (ShardEntry entry in page.Entries)
             {
                 foreach (string literal in IncludeReferenceExtractor.Extract(entry, expression))
@@ -110,7 +115,7 @@ public sealed class ReverseChainResolver
                     if (_classifier.Classify(entry.Key.Shard, literal) is { Kind: ReferenceKind.Relative or ReferenceKind.KnownAbsolute, Target: { } key }
                         && key.Type == hop.Path.Target)
                     {
-                        witnesses.Add(key);
+                        witnesses.Record(key, shard.Ordinal, position++);
                     }
                 }
             }

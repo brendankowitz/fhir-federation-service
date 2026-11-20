@@ -1,4 +1,5 @@
 using Ignixa.Federation.Core.Execution;
+using Ignixa.Federation.Core.Execution.ReverseChains;
 using Ignixa.Federation.Core.Shards;
 using Ignixa.Federation.Core.UnitTests.Execution.Includes;
 using Ignixa.Federation.Core.UnitTests.Shards;
@@ -10,6 +11,23 @@ namespace Ignixa.Federation.Core.UnitTests.Execution.ReverseChains;
 public sealed class ReverseChainPagingTests
 {
     private readonly ReverseChainFixture _f = new();
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task OnlyProvenOverflowOfTheOccurrenceWideLimitIsRefused(bool limitRows)
+    {
+        // Three source rows, two distinct keys (same id but different owners).
+        _f.Client.OnSearch(East, Page(null, Obs("first", "Patient/dup"), Obs("again", "Patient/dup")));
+        _f.Client.OnSearch(West, Page(null, Obs(West, "third", "Patient/dup")));
+        var plan = _f.Plan();
+        var token = TestContext.Current.CancellationToken;
+        (await _f.Resolver(keys: 2, rows: 3).ResolveAsync(plan, AllTypes, 2, token)).Targets.Count.ShouldBe(2);
+        var resolver = _f.Resolver(keys: limitRows ? 2 : 1, rows: limitRows ? 2 : 3);
+        var exception = await Should.ThrowAsync<ReverseChainRefusedException>(() => resolver.ResolveAsync(plan, AllTypes, 2, token));
+        exception.Reason.ShouldBe(ReverseChainRefusal.TooCostly);
+        exception.Path.ShouldBe(plan.Occurrences[0].Hop!.Path);
+    }
 
     [Fact]
     public async Task BudgetIsLiveAcrossContinuationsAndAcrossClauses()
