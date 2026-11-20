@@ -59,6 +59,11 @@ public sealed class QueryPlan
     /// building a request.
     /// </param>
     /// <returns>Backend predicates in original order, plus the certified sort when requested. The executor adds pagination and count controls.</returns>
+    /// <remarks>
+    /// For a distributed forward rewrite, evidence covers this ordered search. The executor must not add, reorder or
+    /// alter its predicates or sort; it renders generated keys using the selected shard's certified forms and enforces
+    /// the configured key bound before sending a request.
+    /// </remarks>
     /// <exception cref="ArgumentException">A replacement is missing, empty, or supplied for an occurrence that is not replaced.</exception>
     public IReadOnlyList<ParameterOccurrence> BuildBackendParameters(IReadOnlyDictionary<int, string> decodedReplacements)
     {

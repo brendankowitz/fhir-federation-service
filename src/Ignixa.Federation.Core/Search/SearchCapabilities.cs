@@ -57,13 +57,16 @@ public sealed class SearchCapabilities
     public ShardRegistry Registry { get; }
 
     /// <summary>
-    /// Gets the resource types every shard searches, ordered by name, each with the parameters and includes every shard
-    /// supports. Reference parameters are not listed: a caller's reference value is refused
-    /// (<see cref="SearchFailureCode.UnsupportedReferenceFilter"/>), and an entry cannot say that only <c>:missing</c>,
-    /// chains and includes are planned. They still serve the chains, includes and revincludes every shard certifies. An
-    /// include or revinclude every shard advertises is listed only when a request for exactly that value is admitted; an
-    /// advertised untyped include that is withheld (a polymorphic reference) still admits its certified typed forms.
+    /// Gets the resource types every shard searches, ordered by name. A listed parameter has a common R4 definition
+    /// and a representative value that plans as one unmodified predicate on that type. This does not promise every
+    /// value, modifier or combination. Composite and special parameters have no general witness and are not listed.
     /// </summary>
+    /// <remarks>
+    /// Reference parameters are not listed. A caller's identity filter is refused
+    /// (<see cref="SearchFailureCode.UnsupportedReferenceFilter"/>), independently of support for <c>:missing</c>,
+    /// chains or includes. An include or revinclude is listed only when every shard advertises that exact form and
+    /// it plans alone. A certified typed form covered by an advertised untyped form can plan without being listed.
+    /// </remarks>
     public IReadOnlyList<ResourceSearchSupport> Resources { get; }
 
     /// <summary>Gets a value indicating whether every shard's profile certifies a <c>_lastUpdated</c> order with stable ties.</summary>
@@ -159,6 +162,7 @@ public sealed class SearchCapabilities
         if (!(advertises(searched, value) || advertises(searched, $"{source.Value}:{code}"))
             || !R4Search.IsPlainReference(definition, source)
             || CertifiedPath(path, reverse ? ReferencePathOperations.RevIncludeSearch : ReferencePathOperations.IncludeExtraction) is not { } certifications
+            || (reverse && certifications.Values.Any(c => c.RevIncludeSearchShape is null))
             || !ProvesAlternatives(reverse ? SearchParamType.Reference : SearchParamType.Token)
             || (reverse ? FindParameter(source, code) : FindParameter(target, "_id")) is null)
         {
@@ -223,7 +227,7 @@ public sealed class SearchCapabilities
     private ResourceSearchSupport Project(ResourceType type, Published published) => new(
         type,
         published.Parameters.Values
-            .Where(d => d.Type != SearchParamType.Reference)
+            .Where(d => SearchPlanner.CanPublishParameter(type, d))
             .OrderBy(d => d.Code, StringComparer.Ordinal)
             .Select(d => new SearchParameterSupport(d.Code, d.Type, d.Url)),
         Admitted(type, published.Includes, reverse: false),

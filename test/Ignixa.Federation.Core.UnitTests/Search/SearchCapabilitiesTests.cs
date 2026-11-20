@@ -19,10 +19,29 @@ public sealed class SearchCapabilitiesTests
         published.SearchRevIncludes.ShouldBe(revIncludes, type);
     }
 
-    /// <summary>Asserts each include every shard advertised is published exactly when it plans as the sole occurrence.</summary>
+    /// <summary>Checks a bare predicate for each published parameter and single-occurrence admission for common include forms.</summary>
     private static void ShouldPublishExactlyWhatPlans(SearchCapabilities capabilities, IEnumerable<ResourceSearchSupport> advertised)
     {
         SearchPlanner planner = Planner(capabilities);
+        foreach (ResourceSearchSupport published in capabilities.Resources)
+        {
+            foreach (SearchParameterSupport parameter in published.Parameters)
+            {
+                string value = parameter.Type switch
+                {
+                    SearchParamType.String => "Smith",
+                    SearchParamType.Token => "female",
+                    SearchParamType.Date => "1990-04-03",
+                    SearchParamType.Number or SearchParamType.Quantity => "2.5",
+                    SearchParamType.Uri => "https://example.org/form",
+                    _ => throw new InvalidOperationException($"No bare predicate witness for {published.Type.Value}.{parameter.Code}."),
+                };
+                string query = $"{parameter.Code}={value}";
+                QueryPlan plan = Plan(published.Type.Value, query, planner).Plan.ShouldNotBeNull($"{published.Type.Value}?{query}");
+                plan.Occurrences.ShouldHaveSingleItem().Kind.ShouldBe(OccurrenceKind.Predicate);
+            }
+        }
+
         foreach (ResourceSearchSupport resource in advertised)
         {
             ResourceSearchSupport published = capabilities.Resources.Single(r => r.Type == resource.Type);
@@ -141,6 +160,42 @@ public sealed class SearchCapabilitiesTests
         capabilities.Resources.Single(r => r.Type.Value == "Patient").Parameters.Select(p => p.Code).ShouldBe(["_id"]);
     }
 
+    [Theory]
+    [InlineData("Patient", "_type", SearchParamType.Token, "Patient")]
+    [InlineData("Patient", "_text", SearchParamType.String, "Smith")]
+    [InlineData("Patient", "_source", SearchParamType.Uri, "https://example.org/source")]
+    [InlineData("Patient", "_has", SearchParamType.Special, "Observation")]
+    [InlineData("Patient", "_filter", SearchParamType.Special, "name%20eq%20Smith")]
+    [InlineData("Location", "near", SearchParamType.Special, "40|-75|5|km")]
+    public void DoesNotPublishAnUnplannableBareParameterEvenWhenEveryShardAdvertisesIt(
+        string type, string code, SearchParamType parameterType, string value)
+    {
+        ResourceSearchSupport resource = new(Type(type), [Param(code, parameterType), Param("_id", SearchParamType.Token)], [], []);
+        var capabilities = new SearchCapabilities(Registry(), [Shard("east", [resource]), Shard("west", [resource])]);
+
+        PlanFails(type, $"{code}={value}", Planner(capabilities));
+        capabilities.Resources.Single().Parameters.Select(p => p.Code).ShouldBe(["_id"]);
+        ShouldPublishExactlyWhatPlans(capabilities, [resource]);
+    }
+
+    [Fact]
+    public void PublishesOrdinaryBarePredicatesButNotCompositeParametersWithoutAGeneralWitness()
+    {
+        ResourceSearchSupport[] resources =
+        [
+            new(Type("Observation"), [.. AllResources[1].Parameters, Param("code-value-quantity", SearchParamType.Composite)], [], []),
+            new(Type("RiskAssessment"), [Param("probability", SearchParamType.Number)], [], []),
+            new(Type("Questionnaire"), [Param("url", SearchParamType.Uri)], [], []),
+        ];
+        var capabilities = new SearchCapabilities(Registry(), [Shard("east", resources), Shard("west", resources)]);
+
+        capabilities.Resources.Single(r => r.Type.Value == "Observation").Parameters.Select(p => p.Code)
+            .ShouldBe(["_id", "code", "date", "value-quantity"]);
+        capabilities.Resources.Single(r => r.Type.Value == "RiskAssessment").Parameters.Single().Code.ShouldBe("probability");
+        capabilities.Resources.Single(r => r.Type.Value == "Questionnaire").Parameters.Single().Code.ShouldBe("url");
+        ShouldPublishExactlyWhatPlans(capabilities, resources);
+    }
+
     [Fact]
     public void PublishesOnlyIncludesEveryShardAdvertises()
     {
@@ -176,11 +231,16 @@ public sealed class SearchCapabilitiesTests
     [Fact]
     public void DoesNotPublishReferenceParametersButKeepsTheirIncludes()
     {
-        ResourceSearchSupport patient = Capabilities().Resources.Single(r => r.Type.Value == "Patient");
+        SearchCapabilities capabilities = Capabilities();
+        ResourceSearchSupport patient = capabilities.Resources.Single(r => r.Type.Value == "Patient");
 
         patient.Parameters.Select(p => p.Code).ShouldBe(["_id", "_lastUpdated", "birthdate", "family", "gender", "name"]);
         patient.SearchIncludes.ShouldBe(["Patient:organization"]);
         patient.SearchRevIncludes.ShouldBe(["Observation:subject"]);
+        SearchPlanner planner = Planner(capabilities);
+        PlanOk("Patient", "organization:missing=true", planner).Occurrences.Single().Kind.ShouldBe(OccurrenceKind.Predicate);
+        PlanOk("Patient", "organization.name=Example", planner).Occurrences.Single().Kind.ShouldBe(OccurrenceKind.ForwardChain);
+        ShouldFail("Patient", "organization=Organization/1", SearchFailureCode.UnsupportedReferenceFilter, planner: planner);
     }
 
     // Metadata states what a request admits: a common include that does not plan alone is withheld, even when every shard

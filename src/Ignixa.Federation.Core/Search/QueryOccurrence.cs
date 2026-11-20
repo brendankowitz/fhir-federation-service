@@ -29,4 +29,8 @@ public sealed record QueryOccurrence
     /// kept as written (<c>a\,b</c>); splitting on commas is the planner's job. May be empty.
     /// </summary>
     public string Value { get; }
+
+    /// <summary>Formats the occurrence's position without any query text.</summary>
+    /// <returns>The occurrence ordinal.</returns>
+    public override string ToString() => FormattableString.Invariant($"Query occurrence {Ordinal}");
 }

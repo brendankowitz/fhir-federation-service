@@ -76,13 +76,20 @@ internal static class TestSearch
     ];
 
     /// <summary>Proves every operation on <paramref name="path"/>, with registry coverage attested for <paramref name="coveredRegistryVersion"/> or, by default, the <see cref="Registry"/> version.</summary>
-    public static ReferencePathCertification FullPath(ReferencePath path, string? coveredRegistryVersion = null) => new(
+    public static ReferencePathCertification FullPath(
+        ReferencePath path,
+        string? coveredRegistryVersion = null,
+        IEnumerable<string>? forwardShapes = null) => new(
         path,
         ReferencePathOperations.NativeForward | ReferencePathOperations.NativeReverse | ReferencePathOperations.DistributedForward
             | ReferencePathOperations.DistributedReverse | ReferencePathOperations.IncludeExtraction | ReferencePathOperations.RevIncludeSearch,
         ReferenceSearchForms.Relative | ReferenceSearchForms.CanonicalAbsolute,
         ReferenceSearchForms.CanonicalAbsolute | ReferenceSearchForms.LinkBaseAliases,
-        coveredRegistryVersion ?? Registry().Version);
+        coveredRegistryVersion ?? Registry().Version,
+        forwardShapes ?? [StandaloneShape(path)],
+        StandaloneShape(path));
+
+    public static string StandaloneShape(ReferencePath path) => $"{path.Source.Value}?@{path}";
 
     public static IReadOnlyList<ReferencePathCertification> AllPaths { get; } =
         [FullPath(ObservationSubjectPatient), FullPath(PatientOrganization), FullPath(ObservationPerformerPractitioner), FullPath(QuestionnaireResponseQuestionnaire)];

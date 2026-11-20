@@ -22,7 +22,9 @@ public sealed class SearchPlannerReferenceCoverageTests
         operations,
         ReferenceSearchForms.CanonicalAbsolute,
         ReferenceSearchForms.CanonicalAbsolute,
-        coveredRegistryVersion);
+        coveredRegistryVersion,
+        operations.HasFlag(ReferencePathOperations.DistributedForward) ? [StandaloneShape(path)] : null,
+        operations.HasFlag(ReferencePathOperations.RevIncludeSearch) ? StandaloneShape(path) : null);
 
     private static SearchPlanner Planner(ShardRegistry registry, ReferencePathOperations operations, string? coveredRegistryVersion)
     {
@@ -98,5 +100,83 @@ public sealed class SearchPlannerReferenceCoverageTests
 
         PlanOk("Patient", "_revinclude=Observation:subject", planner);
         ShouldFail("Observation", "subject:Patient.name=smith", SearchFailureCode.UnsupportedChain, planner: planner);
+    }
+
+    [Theory]
+    [InlineData("code=1")]
+    [InlineData("date=ge2025-01-01")]
+    [InlineData("_sort=_lastUpdated")]
+    [InlineData("subject:Patient.gender=male")]
+    public void StandaloneReferenceSearchProofDoesNotCoverAnAdditionalKeptFilter(string kept)
+    {
+        SearchPlanner planner = TestSearch.Planner();
+
+        PlanOk("Observation", "subject:Patient.name=smith", planner);
+        ShouldFail("Observation", $"subject:Patient.name=smith&{kept}", SearchFailureCode.UnsupportedChain, planner: planner);
+    }
+
+    [Fact]
+    public void ForwardShapeEvidenceCoversOnlyTheRetainedValuesProvenOnEveryShard()
+    {
+        const string shape = "Observation?@Observation.subject:Patient&date=ge2025-01-01";
+        const string search = "subject:Patient.name=smith&date=ge2025-01-01";
+        SearchCertification proven = Certification(paths: [FullPath(ObservationSubjectPatient, forwardShapes: [shape])]);
+        SearchPlanner planner = TestSearch.Planner(Capabilities(proven, proven));
+
+        PlanOk("Observation", search, planner);
+        PlanOk("Observation", "subject:Patient.name=jones&date=%67e2025-01-01", planner);
+        ShouldFail("Observation", "subject:Patient.name=smith&date=lt2025-01-01", SearchFailureCode.UnsupportedChain, planner: planner);
+        ShouldFail("Observation", "subject:Patient.name=smith&date=ge2026-01-01", SearchFailureCode.UnsupportedChain, planner: planner);
+        ShouldFail("Observation", search, SearchFailureCode.UnsupportedChain, planner: TestSearch.Planner(Capabilities(proven)));
+    }
+
+    [Fact]
+    public void HitShapeAndExactCountProofDoNotCoverReferenceSelectionInACountSearch()
+    {
+        SearchCertification hitsOnly = Certification(exactCountShapes: ["Observation?subject=,"]);
+        SearchPlanner planner = TestSearch.Planner(Capabilities(hitsOnly, hitsOnly));
+
+        PlanOk("Observation", "subject:Patient.name=smith", planner);
+        ShouldFail("Observation", "subject:Patient.name=smith&_summary=count", SearchFailureCode.UnsupportedChain, planner: planner);
+        ShouldFail("Observation", "subject:Patient.name=smith&_total=accurate", SearchFailureCode.UnsupportedChain, planner: planner);
+    }
+
+    [Fact]
+    public void RevIncludeProofCoversItsFollowUpSearchNotThePrimaryFilters()
+    {
+        PlanOk("Patient", "name=smith&_revinclude=Observation:subject");
+        PlanOk("Patient", "gender=male&_revinclude=Observation:subject");
+    }
+
+    [Fact]
+    public void DoesNotAdmitOrAdvertiseRevIncludeWithoutItsStandaloneProof()
+    {
+        var path = new ReferencePathCertification(
+            ObservationSubjectPatient,
+            ReferencePathOperations.RevIncludeSearch,
+            ReferenceSearchForms.CanonicalAbsolute,
+            ReferenceSearchForms.CanonicalAbsolute,
+            Registry().Version);
+        SearchCapabilities capabilities = Capabilities(west: Certification(paths: [path]));
+
+        ShouldFail("Patient", "_revinclude=Observation:subject", SearchFailureCode.UnsupportedInclude, planner: TestSearch.Planner(capabilities));
+        capabilities.Resources.Single(r => r.Type.Value == "Patient").SearchRevIncludes.ShouldNotContain("Observation:subject");
+    }
+
+    [Fact]
+    public void RefusedShapeDoesNotRenderCallerValuesOrProofLiteralsInDiagnostics()
+    {
+        var certificate = FullPath(ObservationSubjectPatient, forwardShapes: ["Observation?@Observation.subject:Patient&code=operator-literal"]);
+        SearchCertification shard = Certification(paths: [certificate]);
+        SearchPlanner planner = TestSearch.Planner(Capabilities(shard, shard));
+        SearchQuery query = Query("subject:Patient.name=caller-name&code=caller-identifier");
+        QueryOccurrence kept = query.Occurrences[1];
+        SearchFailure failure = planner.Plan(Type("Observation"), query).Failure.ShouldNotBeNull();
+
+        failure.ToString().ShouldNotContain("caller-identifier");
+        failure.ToString().ShouldNotContain("caller-name");
+        certificate.ToString().ShouldNotContain("operator-literal");
+        kept.ToString().ShouldNotContain("caller-identifier");
+        kept.Raw.ToString().ShouldNotContain("caller-identifier");
     }
 }

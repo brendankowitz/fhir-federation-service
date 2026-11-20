@@ -19,7 +19,9 @@ public sealed class SearchPlannerChainTests
                 operations,
                 searchesByReference ? ReferenceSearchForms.Relative : ReferenceSearchForms.None,
                 searchesByReference ? ReferenceSearchForms.CanonicalAbsolute : ReferenceSearchForms.None,
-                searchesByReference ? Registry().Version : null),
+                searchesByReference ? Registry().Version : null,
+                operations.HasFlag(ReferencePathOperations.DistributedForward) ? [StandaloneShape(ObservationSubjectPatient)] : null,
+                operations.HasFlag(ReferencePathOperations.RevIncludeSearch) ? StandaloneShape(ObservationSubjectPatient) : null),
             FullPath(PatientOrganization),
         ]);
     }
@@ -27,7 +29,8 @@ public sealed class SearchPlannerChainTests
     [Fact]
     public void ReplacesAForwardChainWithAGeneratedTerminalByDefault()
     {
-        PlannedOccurrence occurrence = PlanOk("Observation", "code=1&subject:Patient.name=smith").Occurrences[1];
+        SearchCertification certification = Certification(paths: [FullPath(ObservationSubjectPatient, forwardShapes: ["Observation?code=1&@Observation.subject:Patient"])]);
+        PlannedOccurrence occurrence = PlanOk("Observation", "code=1&subject:Patient.name=smith", Planner(Capabilities(certification, certification))).Occurrences[1];
 
         occurrence.Kind.ShouldBe(OccurrenceKind.ForwardChain);
         occurrence.Action.ShouldBe(OccurrenceAction.Replace);
@@ -222,7 +225,9 @@ public sealed class SearchPlannerChainTests
     [Fact]
     public void ExactCountForADistributedChainUsesTheRewrittenShape()
     {
-        SearchCertification certified = Certification(exactCountShapes: ["Observation?subject=,"]);
+        SearchCertification certified = Certification(
+            exactCountShapes: ["Observation?subject=,"],
+            paths: [FullPath(ObservationSubjectPatient, forwardShapes: ["count:Observation?@Observation.subject:Patient"])]);
 
         QueryPlan plan = PlanOk("Observation", "subject:Patient.name=x&_summary=count", Planner(Capabilities(certified, certified)));
 

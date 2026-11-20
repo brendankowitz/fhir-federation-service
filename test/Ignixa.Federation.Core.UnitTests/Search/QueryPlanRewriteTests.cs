@@ -9,7 +9,14 @@ public sealed class QueryPlanRewriteTests
     [Fact]
     public void RequiresEveryDistributedOccurrenceBeforeBuildingBackendParameters()
     {
-        QueryPlan plan = PlanOk("Observation", "subject:Patient.name=Alice&code=%41&_count=10&subject:Patient.name=Bob");
+        SearchCertification certification = Certification(paths:
+        [
+            FullPath(ObservationSubjectPatient, forwardShapes: ["Observation?@Observation.subject:Patient&code=A&@Observation.subject:Patient"]),
+        ]);
+        QueryPlan plan = PlanOk(
+            "Observation",
+            "subject:Patient.name=Alice&code=%41&_count=10&subject:Patient.name=Bob",
+            Planner(Capabilities(certification, certification)));
 
         Should.Throw<ArgumentException>(() => plan.BuildBackendParameters(new Dictionary<int, string> { [0] = "Patient/a" }));
         Should.Throw<ArgumentException>(() => plan.BuildBackendParameters(new Dictionary<int, string>
