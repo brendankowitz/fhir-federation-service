@@ -343,6 +343,24 @@ public sealed class PrimarySearchFailureTests
     }
 
     [Fact]
+    public async Task LogicalFetchExhaustion_UsesElapsedDeadlineWithoutTimerDelivery()
+    {
+        var time = new ManualTimeProvider { TimersEnabled = false };
+        using var host = StartLogicalFetchBoundary(time, budget =>
+        {
+            time.Advance(TimeSpan.FromMinutes(1));
+            budget.Token.IsCancellationRequested.ShouldBeFalse();
+        });
+
+        SearchResult result = await host.GetAsync("/Patient?name=Orchid&_count=3");
+
+        result.StatusCode.ShouldBe(HttpStatusCode.GatewayTimeout);
+        result.IssueCode.ShouldBe("timeout");
+        result.Body.ShouldNotContain("Bundle");
+        host.Shards.Calls.Count.ShouldBe(2);
+    }
+
+    [Fact]
     public async Task LogicalFetchExhaustion_PropagatesCallerCancellation()
     {
         using var caller = new CancellationTokenSource();
