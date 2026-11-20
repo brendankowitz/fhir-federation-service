@@ -20,4 +20,46 @@ public enum SearchFailureCode
 
     /// <summary>A pair has nothing before its first <c>=</c>.</summary>
     EmptyKey,
+
+    /// <summary>A value is empty or malformed for its parameter, or names something R4 does not define for it.</summary>
+    InvalidValue,
+
+    /// <summary>A control that may appear once, such as <c>_count</c> or <c>_sort</c>, is repeated.</summary>
+    DuplicateControl,
+
+    /// <summary>A <c>ct</c> continuation token appears with other parameters.</summary>
+    ContinuationNotAlone,
+
+    /// <summary>An untyped chain hop crosses a reference R4 allows to point at more than one resource type.</summary>
+    ChainTargetAmbiguous,
+
+    /// <summary>Not every shard searches the resource type.</summary>
+    UnsupportedResourceType,
+
+    /// <summary>The parameter is unknown to R4, not understood, or not advertised by every shard.</summary>
+    UnsupportedParameter,
+
+    /// <summary>Not every shard certifies the modifier for the parameter's type.</summary>
+    UnsupportedModifier,
+
+    /// <summary>Not every shard certifies AND repetition for the parameter's type.</summary>
+    UnsupportedRepetition,
+
+    /// <summary>Not every shard certifies comma-separated OR alternatives for the parameter's type.</summary>
+    UnsupportedAlternatives,
+
+    /// <summary>The chain is deeper than one hop, has an unusable terminal, or its path is not certified on every shard.</summary>
+    UnsupportedChain,
+
+    /// <summary>The include or revinclude is not advertised, not certified, or iterates.</summary>
+    UnsupportedInclude,
+
+    /// <summary>The sort is not <c>_lastUpdated</c> ascending or descending with stable ties on every shard.</summary>
+    UnsupportedSort,
+
+    /// <summary>The requested format is not JSON.</summary>
+    UnsupportedFormat,
+
+    /// <summary>A count was requested but not every shard certifies an exact count for the query's shape.</summary>
+    ExactCountNotCertified,
 }

@@ -6,6 +6,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <PackageVersion Include="Ignixa.Search" Version="0.6.82" />
     <PackageVersion Include="Microsoft.AspNetCore.Mvc.Testing" Version="11.0.0" />
     <PackageVersion Include="Microsoft.Extensions.Configuration.Binder" Version="11.0.0" />
     <PackageVersion Include="Microsoft.Extensions.Configuration.Json" Version="11.0.0" />
