@@ -8,7 +8,7 @@ services:
       dockerfile: deploy/Dockerfile
     image: ghcr.io/brendankowitz/ignixa-federation:local
     ports:
-      - "5201:8080"
+      - "127.0.0.1:5201:8080"
     environment:
       Federation__Shards__0__Id: shard-a
       Federation__Shards__0__Alias: k7q2

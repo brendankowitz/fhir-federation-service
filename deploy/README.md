@@ -3,6 +3,7 @@
 - `Dockerfile` builds the `Ignixa.Federation.Api` host into a non-root ASP.NET image listening on port 8080.
   The build context is the repository root.
 - `compose.yaml` runs the federation on `localhost:5201` with two configured shards, `shard-a` and `shard-b`.
+  The port is published on the loopback interface only (`127.0.0.1:5201`), so the stack is not reachable from other hosts.
 
 Build the image:
 

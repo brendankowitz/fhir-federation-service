@@ -60,7 +60,7 @@ tools/     Dev scripts
 * Test projects are executables. `Directory.Build.props` sets `OutputType` to `Exe` for everything under `test/`. They need no `Microsoft.NET.Test.Sdk`.
 * Every test project needs at least one test. A test project with zero tests exits with code 8, "zero tests ran".
 * Test behaviour that a caller can observe, not implementation. A test should fail when the behaviour breaks and survive an internal refactor.
-* The suite has 13 tests today: Core 4, Shards 7, Integration 2.
+* The suite has 15 tests today: Core 4, Shards 7, Integration 4.
 
 ## Build, test, and run
 
@@ -87,10 +87,17 @@ dotnet test --project <csproj> -c Release --filter-method "*TagNames_AreTheDocum
 
 Do not combine a filter with `--solution`. Every project where nothing matches exits non-zero with code 8.
 
-Run the host and check health:
+Run the host and check health. The host runs in the foreground, so use two terminals.
+
+Terminal 1, run the host:
 
 ```sh
 dotnet run --project src/Ignixa.Federation.Api --urls http://localhost:5201
+```
+
+Terminal 2, check health:
+
+```sh
 curl http://localhost:5201/health/live
 curl http://localhost:5201/health/ready
 ```

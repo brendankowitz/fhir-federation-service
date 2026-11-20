@@ -45,6 +45,20 @@ jobs:
       - name: Test
         run: dotnet test --solution Ignixa.Federation.slnx -c Release --no-build
 
+      - name: Pack and check LICENSE in packages
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          for project in src/Ignixa.Federation.Core src/Ignixa.Federation.Shards; do
+            dotnet pack "$project" -c Release --no-build -o artifacts/packages
+          done
+          for package in artifacts/packages/*.nupkg; do
+            if ! unzip -l "$package" | grep -qE '\sLICENSE$'; then
+              echo "::error::$package has no LICENSE at the package root"
+              exit 1
+            fi
+          done
+
   docker:
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -63,4 +77,39 @@ jobs:
           context: .
           file: deploy/Dockerfile
           push: false
-          tags: ignixa-federation:ci
+          load: true
+          tags: ghcr.io/brendankowitz/ignixa-federation:local
+
+      - name: Check LICENSE is in the image
+        run: docker run --rm --entrypoint /bin/sh ghcr.io/brendankowitz/ignixa-federation:local -c 'test -s /app/LICENSE'
+
+      - name: Start compose stack
+        run: docker compose -f deploy/compose.yaml up -d --no-build
+
+      - name: Wait for liveness and readiness
+        run: |
+          set -u
+          for endpoint in live ready; do
+            url="http://127.0.0.1:5201/health/$endpoint"
+            ok=false
+            for attempt in $(seq 1 30); do
+              if curl --fail --silent --show-error --max-time 5 "$url" > /dev/null; then
+                echo "$url is healthy (attempt $attempt)"
+                ok=true
+                break
+              fi
+              sleep 2
+            done
+            if [ "$ok" != true ]; then
+              echo "::error::$url did not become healthy within 30 attempts"
+              exit 1
+            fi
+          done
+
+      - name: Show compose logs
+        if: failure()
+        run: docker compose -f deploy/compose.yaml logs
+
+      - name: Tear down compose stack
+        if: always()
+        run: docker compose -f deploy/compose.yaml down --volumes --remove-orphans

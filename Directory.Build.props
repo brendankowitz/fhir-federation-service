@@ -36,6 +36,11 @@
     <PackageTags>fhir;federation;search;gateway;ignixa</PackageTags>
   </PropertyGroup>
 
+  <!-- Packages carry the license text at the package root alongside the SPDX PackageLicenseExpression. -->
+  <ItemGroup Condition="'$(IsPackable)' == 'true'">
+    <None Include="$(MSBuildThisFileDirectory)LICENSE" Pack="true" PackagePath="\" Visible="false" />
+  </ItemGroup>
+
   <!-- Production code under src/: public API must be documented (CS1591 stays an error via TreatWarningsAsErrors). -->
   <PropertyGroup Condition="$(MSBuildProjectDirectory.StartsWith('$(MSBuildThisFileDirectory)src'))">
     <GenerateDocumentationFile>true</GenerateDocumentationFile>

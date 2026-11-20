@@ -21,6 +21,8 @@ LABEL org.opencontainers.image.title="ignixa-federation" \
       org.opencontainers.image.licenses="MIT" \
       org.opencontainers.image.source="https://github.com/brendankowitz/fhir-federation-service"
 WORKDIR /app
+# MIT requires the license text to travel with copies of the software.
+COPY LICENSE /app/LICENSE
 ENV ASPNETCORE_HTTP_PORTS=8080
 EXPOSE 8080
 # The official .NET images define a non-root user and expose its id as APP_UID; run as it, not root.

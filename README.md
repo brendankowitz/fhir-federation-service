@@ -122,10 +122,17 @@ dotnet build Ignixa.Federation.slnx -c Release
 dotnet test --solution Ignixa.Federation.slnx -c Release
 ```
 
-Run the host and check the health endpoints. Both return 200.
+Run the host and check the health endpoints. Both return 200. The host runs in the foreground, so use two terminals.
+
+Terminal 1, run the host:
 
 ```sh
 dotnet run --project src/Ignixa.Federation.Api --urls http://localhost:5201
+```
+
+Terminal 2, check health:
+
+```sh
 curl http://localhost:5201/health/live
 curl http://localhost:5201/health/ready
 ```
