@@ -18,12 +18,16 @@ internal sealed class RedeemedContinuation
         ContinuationDependencySet dependencies,
         long chainIssuedTicks,
         long chainDeadlineTicks,
+        long deadlineTicks,
+        string? cacheKey,
         ImmutableArray<byte> snapshot)
     {
         Binding = binding;
         Dependencies = dependencies;
         ChainIssuedTicks = chainIssuedTicks;
         ChainDeadlineTicks = chainDeadlineTicks;
+        DeadlineTicks = deadlineTicks;
+        CacheKey = cacheKey;
         Snapshot = snapshot;
     }
 
@@ -44,4 +48,13 @@ internal sealed class RedeemedContinuation
 
     /// <summary>Gets the absolute deadline set at the chain's original issue.</summary>
     internal long ChainDeadlineTicks { get; }
+
+    /// <summary>Gets the end of the redeemed token's own window: the earlier of its sliding and chain deadlines.</summary>
+    internal long DeadlineTicks { get; }
+
+    /// <summary>
+    /// Gets the store key of the cached entry the continuation was read from, or <see langword="null"/> when it was
+    /// redeemed from an inline token. A successor of a cached continuation shortens that entry once it is durable.
+    /// </summary>
+    internal string? CacheKey { get; }
 }

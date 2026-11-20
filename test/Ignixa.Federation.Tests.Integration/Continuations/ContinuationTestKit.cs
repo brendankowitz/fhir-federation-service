@@ -48,4 +48,43 @@ internal static class ContinuationTestKit
         redemption.IsRedeemed.ShouldBeFalse();
         redemption.Continuation.ShouldBeNull();
     }
+
+    public static string ShouldBeIssued(this ContinuationIssuance issuance)
+    {
+        issuance.Outcome.ShouldBe(ContinuationIssuanceOutcome.Issued);
+        issuance.IsIssued.ShouldBeTrue();
+        return issuance.Token.ShouldNotBeNull();
+    }
+
+    public static void ShouldBeRefused(this ContinuationIssuance issuance, ContinuationIssuanceOutcome expected)
+    {
+        expected.ShouldNotBe(ContinuationIssuanceOutcome.Issued);
+        issuance.Outcome.ShouldBe(expected);
+        issuance.IsIssued.ShouldBeFalse();
+        issuance.Token.ShouldBeNull();
+    }
+
+    /// <summary>Whether a token is a cached reference rather than an inline token.</summary>
+    public static bool IsReference(string token) => token.StartsWith(ContinuationTokenService.ReferencePrefix, StringComparison.Ordinal);
+
+    /// <summary>Asserts the task ends in cancellation (<see cref="OperationCanceledException"/> or a subtype).</summary>
+    public static async Task ShouldBeCanceledAsync(this Task task)
+    {
+        Exception? thrown = await Record(task);
+        thrown.ShouldNotBeNull("the task completed instead of being canceled");
+        thrown.ShouldBeAssignableTo<OperationCanceledException>();
+    }
+
+    private static async Task<Exception?> Record(Task task)
+    {
+        try
+        {
+            await task;
+            return null;
+        }
+        catch (OperationCanceledException cancelled)
+        {
+            return cancelled;
+        }
+    }
 }

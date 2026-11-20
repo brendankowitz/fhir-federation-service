@@ -17,6 +17,9 @@ internal sealed class ContinuationRedemption
     /// <summary>The gone (410) refusal.</summary>
     internal static readonly ContinuationRedemption Gone = new(ContinuationRedemptionOutcome.Gone, null);
 
+    /// <summary>The store unavailable (503) refusal.</summary>
+    internal static readonly ContinuationRedemption StoreUnavailable = new(ContinuationRedemptionOutcome.StoreUnavailable, null);
+
     private ContinuationRedemption(ContinuationRedemptionOutcome outcome, RedeemedContinuation? continuation)
     {
         Outcome = outcome;

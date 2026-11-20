@@ -23,4 +23,10 @@ internal enum ContinuationRedemptionOutcome
     /// shard or parameter definition it depends on changed or disappeared.
     /// </summary>
     Gone,
+
+    /// <summary>
+    /// A cached reference is authentic, bound to this caller, and inside its window, but the continuation store is
+    /// unavailable or did not answer in time (503); the same token may succeed later.
+    /// </summary>
+    StoreUnavailable,
 }

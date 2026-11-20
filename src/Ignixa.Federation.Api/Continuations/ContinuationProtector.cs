@@ -17,9 +17,9 @@ namespace Ignixa.Federation.Api.Continuations;
 /// <para>
 /// <b>Snapshot ingress.</b> The snapshot is trusted internal plan and replay data produced by the federation itself
 /// (cursor positions, scope, the resolved query). It must never contain resource or shard response bodies, bearer
-/// credentials, or the raw inbound token. Typed snapshot serialization, the distributed cache for oversize
-/// snapshots, the continuation route, and the per-page role recheck are separate components; this type only reports
-/// <see cref="ContinuationIssue.NeedsCachedReference"/> when a snapshot does not fit inline.
+/// credentials, or the raw inbound token. Typed snapshot serialization, the continuation route, and the per-page role
+/// recheck are separate components; this type only reports <see cref="ContinuationIssue.NeedsCachedReference"/> when a
+/// snapshot does not fit inline, and <see cref="ContinuationTokenService"/> stores such snapshots behind a reference.
 /// </para>
 /// <para>
 /// <b>Bounds.</b> <see cref="TokenOptions.MaxInlineTokenBytes"/> limits the plaintext, envelope included; a snapshot
@@ -150,7 +150,7 @@ internal sealed class ContinuationProtector
             return ContinuationRedemption.Gone;
         }
 
-        if (!TryDecode(token, out byte[]? protectedBytes))
+        if (!TryDecode(token, MaxTokenLength, out byte[]? protectedBytes))
         {
             return ContinuationRedemption.Invalid;
         }
@@ -182,8 +182,8 @@ internal sealed class ContinuationProtector
             return ContinuationRedemption.Gone;
         }
 
-        return ContinuationRedemption.Redeemed(
-            new RedeemedContinuation(caller, envelope.Dependencies, envelope.ChainIssuedTicks, envelope.ChainDeadlineTicks, [.. envelope.Snapshot]));
+        return ContinuationRedemption.Redeemed(new RedeemedContinuation(
+            caller, envelope.Dependencies, envelope.ChainIssuedTicks, envelope.ChainDeadlineTicks, envelope.DeadlineTicks, cacheKey: null, [.. envelope.Snapshot]));
     }
 
     private static long SaturatingAdd(long ticks, long duration) =>
@@ -215,13 +215,20 @@ internal sealed class ContinuationProtector
         return ContinuationIssue.Inline(Base64Url.EncodeToString(protectedBytes));
     }
 
-    // Accepts only canonical unpadded Base64Url within MaxTokenLength: the alphabet check refuses padding,
-    // whitespace, and other alphabets, and the decoder refuses length % 4 == 1 and non-zero unused trailing bits, so
-    // each protected payload has exactly one accepted spelling.
-    private bool TryDecode(string token, [NotNullWhen(true)] out byte[]? protectedBytes)
+    /// <summary>
+    /// Decodes presented token text, accepting only canonical unpadded Base64Url of at most
+    /// <paramref name="maxLength"/> characters: the alphabet check refuses padding, whitespace, and other alphabets,
+    /// and the decoder refuses length % 4 == 1 and non-zero unused trailing bits, so each protected payload has
+    /// exactly one accepted spelling.
+    /// </summary>
+    /// <param name="token">The presented text.</param>
+    /// <param name="maxLength">The longest text, in characters, that is decoded.</param>
+    /// <param name="protectedBytes">The decoded bytes when the text is accepted.</param>
+    /// <returns>Whether the text is accepted.</returns>
+    internal static bool TryDecode(ReadOnlySpan<char> token, int maxLength, [NotNullWhen(true)] out byte[]? protectedBytes)
     {
         protectedBytes = null;
-        if (token.Length == 0 || token.Length > MaxTokenLength || token.AsSpan().ContainsAnyExcept(Base64UrlAlphabet))
+        if (token.IsEmpty || token.Length > maxLength || token.ContainsAnyExcept(Base64UrlAlphabet))
         {
             return false;
         }
