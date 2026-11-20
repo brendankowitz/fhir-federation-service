@@ -19,6 +19,8 @@ namespace Ignixa.Federation.Core.Execution.ReverseChains;
 /// </remarks>
 public sealed class ReverseChainResolver
 {
+    private static readonly TimeSpan MaxSubqueryTimeout = TimeSpan.FromMilliseconds(uint.MaxValue - 1L);
+
     private readonly IShardClient _client;
     private readonly SearchCapabilities _capabilities;
     private readonly ReferenceClassifier _classifier;
@@ -37,7 +39,7 @@ public sealed class ReverseChainResolver
     /// <exception cref="ArgumentNullException"><paramref name="client"/> or <paramref name="capabilities"/> is <see langword="null"/>.</exception>
     /// <exception cref="ArgumentOutOfRangeException">
     /// <paramref name="maxChainKeys"/>, <paramref name="maxChainSourceRows"/>, <paramref name="maxParallelCalls"/>
-    /// or <paramref name="subqueryTimeout"/> is not positive.
+    /// or <paramref name="subqueryTimeout"/> is not positive, or the timeout exceeds the timer maximum of 4,294,967,294 milliseconds.
     /// </exception>
     public ReverseChainResolver(IShardClient client, SearchCapabilities capabilities, int maxChainKeys, int maxChainSourceRows, int maxParallelCalls, TimeSpan subqueryTimeout)
     {
@@ -47,6 +49,7 @@ public sealed class ReverseChainResolver
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxChainSourceRows);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxParallelCalls);
         ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(subqueryTimeout, TimeSpan.Zero);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(subqueryTimeout, MaxSubqueryTimeout);
         _client = client;
         _capabilities = capabilities;
         _classifier = new ReferenceClassifier(capabilities.Registry);

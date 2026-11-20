@@ -3,6 +3,7 @@ using Ignixa.Federation.Core.Identity;
 using Ignixa.Federation.Core.Search;
 using Ignixa.Federation.Core.Shards;
 using Ignixa.Federation.Core.UnitTests.Execution.Counts;
+using Ignixa.Federation.Core.UnitTests.Execution.Includes;
 using Ignixa.Federation.Core.UnitTests.Search;
 using Ignixa.Federation.Core.UnitTests.Shards;
 using Shouldly;
@@ -14,6 +15,19 @@ namespace Ignixa.Federation.Core.UnitTests.Execution.ReverseChains;
 public sealed class ReverseChainAdmissionTests
 {
     private readonly ReverseChainFixture _f = new();
+
+    [Fact]
+    public async Task SubqueryTimeoutAcceptsTheTimerMaximumButRejectsTheNextMillisecondAtConstruction()
+    {
+        var maximum = TimeSpan.FromMilliseconds(4_294_967_294L);
+        _f.Client.OnSearch(East, Page(null));
+        _f.Client.OnSearch(West, Page(null));
+
+        var result = await _f.Resolver(timeout: maximum).ResolveAsync(_f.Plan(), AllTypes, 2, TestContext.Current.CancellationToken);
+        result.Calls.ShouldBe(2);
+        var exception = Should.Throw<ArgumentOutOfRangeException>(() => _f.Resolver(timeout: maximum + TimeSpan.FromMilliseconds(1)));
+        exception.ParamName.ShouldBe("subqueryTimeout");
+    }
 
     [Fact]
     public async Task AlreadyCancelledCallerGetsNoNativePrimaryTargets()
