@@ -118,6 +118,39 @@ public sealed class ForwardIncludeOverflowTests
     }
 
     [Fact]
+    public async Task A_repeat_of_an_included_resource_cannot_prove_overflow()
+    {
+        var client = new FakeShardClient();
+        client.ServePages(East, TestShards.MicrosoftFhirServer, [Pat(East, "p1")], [Pat(East, "p1")]);
+
+        IncludeResult result = await Resolver(client, maxIncludesPerPage: 1).ResolveAsync([Obs("o1", "Patient/p1")], ObservationSubject);
+
+        result.Rendered().ShouldBe(["east/Patient/p1@1"]);
+        result.Outcomes.ShouldBeEmpty();
+        result.Fetches.ShouldBe(2);
+    }
+
+    [Fact]
+    public async Task An_unbounded_limit_asks_for_the_whole_group_capped_by_the_backend()
+    {
+        ShardEntry[] matches = [Obs("o1", "Patient/p1"), Obs("o2", "Patient/p2"), Obs("o3", "Patient/p3")];
+        var client = new FakeShardClient();
+        client.ServeIds(East, Pat(East, "p1"), Pat(East, "p2"), Pat(East, "p3"));
+        var small = new FakeShardClient();
+        small.ServePages(East, Fixture.SmallPages, [Pat(East, "p1"), Pat(East, "p2")], [Pat(East, "p3")]);
+
+        IncludeResult byGroup = await Resolver(client, maxIncludesPerPage: int.MaxValue).ResolveAsync(matches, ObservationSubject);
+        IncludeResult byBackend = await Resolver(small, Registry(Fixture.SmallPages), int.MaxValue).ResolveAsync(matches, ObservationSubject);
+
+        client.Calls.Single().Search!.PageSize.ShouldBe(3);
+        small.Calls[0].Search!.PageSize.ShouldBe(2);
+        byGroup.Rendered().ShouldBe(["east/Patient/p1@1", "east/Patient/p2@1", "east/Patient/p3@1"]);
+        byBackend.Rendered().ShouldBe(byGroup.Rendered());
+        byGroup.Outcomes.ShouldBeEmpty();
+        byBackend.Outcomes.ShouldBeEmpty();
+    }
+
+    [Fact]
     public async Task A_next_link_and_a_larger_total_do_not_prove_overflow()
     {
         var client = new FakeShardClient();

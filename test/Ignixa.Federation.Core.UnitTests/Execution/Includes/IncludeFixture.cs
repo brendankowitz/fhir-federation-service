@@ -42,14 +42,9 @@ internal static class IncludeFixture
     /// Gets the planned <c>Observation:has-member:Observation</c> include, a reference from a type to itself, planned by the
     /// real planner over shards that also advertise and certify it.
     /// </summary>
-    public static PlannedOccurrence ObservationHasMember { get; } = HasMember();
-
-    public static PlannedOccurrence Include(string type, string include) =>
-        TestSearch.PlanOk(type, "_include=" + include).Occurrences.Single(o => o.Kind == OccurrenceKind.Include);
-
-    private static PlannedOccurrence HasMember()
-    {
-        ResourceSearchSupport[] resources =
+    public static PlannedOccurrence ObservationHasMember { get; } = Certified(
+        "Observation:has-member:Observation",
+        TestSearch.Path("Observation", "has-member", "Observation"),
         [
             .. TestSearch.AllResources.Select(r => r.Type == Observation
                 ? new ResourceSearchSupport(
@@ -58,13 +53,32 @@ internal static class IncludeFixture
                     [.. r.SearchIncludes, "Observation:has-member"],
                     r.SearchRevIncludes)
                 : r),
-        ];
-        SearchCertification certification = TestSearch.Certification(
-            paths: [.. TestSearch.AllPaths, TestSearch.FullPath(TestSearch.Path("Observation", "has-member", "Observation"))]);
+        ]);
+
+    /// <summary>
+    /// Gets the planned <c>Observation:patient:Patient</c> include, whose packaged expression filters with
+    /// <c>resolve() is Patient</c>, planned by the real planner over shards that certify it. Observation already advertises
+    /// the parameter and the searchInclude. Typed, because the planner refuses the untyped form as an unsupported include.
+    /// </summary>
+    public static PlannedOccurrence ObservationPatient { get; } = Certified(
+        "Observation:patient:Patient",
+        TestSearch.Path("Observation", "patient", "Patient"),
+        TestSearch.AllResources);
+
+    public static PlannedOccurrence Include(string type, string include) =>
+        TestSearch.PlanOk(type, "_include=" + include).Occurrences.Single(o => o.Kind == OccurrenceKind.Include);
+
+    /// <summary>
+    /// Plans an Observation <paramref name="include"/> with the real planner over east and west shards that advertise
+    /// <paramref name="resources"/> and also certify <paramref name="path"/>.
+    /// </summary>
+    private static PlannedOccurrence Certified(string include, ReferencePath path, IReadOnlyList<ResourceSearchSupport> resources)
+    {
+        SearchCertification certification = TestSearch.Certification(paths: [.. TestSearch.AllPaths, TestSearch.FullPath(path)]);
         var capabilities = new SearchCapabilities(
             TestSearch.Registry(),
             [new ShardSearchCapability(East, resources, certification), new ShardSearchCapability(West, resources, certification)]);
-        return TestSearch.PlanOk("Observation", "_include=Observation:has-member:Observation", TestSearch.Planner(capabilities))
+        return TestSearch.PlanOk("Observation", "_include=" + include, TestSearch.Planner(capabilities))
             .Occurrences.Single(o => o.Kind == OccurrenceKind.Include);
     }
 

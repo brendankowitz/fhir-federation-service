@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using Ignixa.FhirPath.Expressions;
 using Ignixa.Federation.Core.Identity;
 using Ignixa.Federation.Core.Search;
 using Ignixa.Federation.Core.Shards;
@@ -170,7 +171,8 @@ public sealed class ForwardIncludeResolver
     /// <summary>
     /// Reads every authorized include's references from the matches of its source type and groups the routable ones of
     /// its target type by owning shard and type, in first-discovery order, each target once. A target that is itself a
-    /// match is left out, so a group exists only when it has a target to request.
+    /// match is left out, so a group exists only when it has a target to request. Each include's expression is parsed
+    /// once, not once per match.
     /// </summary>
     private List<TargetGroup> Discover(
         IReadOnlyList<ShardEntry> matches,
@@ -178,12 +180,18 @@ public sealed class ForwardIncludeResolver
         List<IncludeOutcome> outcomes,
         CancellationToken cancellationToken)
     {
+        var parsed = new (ReferenceHop Hop, Expression Expression)[hops.Count];
+        for (int i = 0; i < parsed.Length; i++)
+        {
+            parsed[i] = (hops[i], IncludeReferenceExtractor.ParseExpression(hops[i]));
+        }
+
         var matchKeys = new HashSet<ResourceKey>(matches.Select(match => match.Key));
         var groups = new List<TargetGroup>();
         var byTarget = new Dictionary<(ShardId, ResourceType), TargetGroup>();
         foreach (ShardEntry match in matches)
         {
-            foreach (ReferenceHop hop in hops)
+            foreach ((ReferenceHop hop, Expression expression) in parsed)
             {
                 if (match.Key.Type != hop.Path.Source)
                 {
@@ -191,7 +199,7 @@ public sealed class ForwardIncludeResolver
                 }
 
                 cancellationToken.ThrowIfCancellationRequested();
-                foreach (string literal in IncludeReferenceExtractor.Extract(match, hop))
+                foreach (string literal in IncludeReferenceExtractor.Extract(match, expression))
                 {
                     ReferenceClassification classification = _classifier.Classify(match.Key.Shard, literal);
                     if (classification is not { Kind: ReferenceKind.Relative or ReferenceKind.KnownAbsolute, Target: { } target }

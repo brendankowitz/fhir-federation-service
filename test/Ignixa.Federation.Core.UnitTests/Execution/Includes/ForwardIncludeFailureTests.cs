@@ -70,6 +70,23 @@ public sealed class ForwardIncludeFailureTests
     }
 
     [Fact]
+    public async Task Caller_cancellation_during_a_call_that_still_returns_a_page_is_cancellation()
+    {
+        var client = new FakeShardClient();
+        using var caller = new CancellationTokenSource();
+        client.OnSearch(East, async (_, _) =>
+        {
+            await caller.CancelAsync();
+            return Page(null, Pat(East, "p1"));
+        });
+
+        await Should.ThrowAsync<OperationCanceledException>(() =>
+            Resolver(client).ResolveAsync([Obs("o1", "Patient/p1")], [ObservationSubject], AllTypes, 10, caller.Token));
+
+        client.Calls.Count.ShouldBe(1);
+    }
+
+    [Fact]
     public async Task A_follow_beyond_the_budget_exhausts_it()
     {
         var client = new FakeShardClient();

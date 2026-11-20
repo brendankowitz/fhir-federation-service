@@ -118,6 +118,28 @@ public sealed class ForwardIncludeExtractionTests
     }
 
     [Fact]
+    public async Task A_resolve_is_filter_keeps_patient_references_and_drops_others()
+    {
+        ObservationPatient.Hop!.Expression.ShouldContain("resolve() is Patient");
+        var client = new FakeShardClient();
+        client.ServeIds(East, Pat(East, "p1"));
+        client.ServeIds(West, Pat(West, "p2"), Pat(West, "p3"));
+
+        IncludeResult result = await Resolver(client, Registry("https://alias.example/fhir")).ResolveAsync(
+            [
+                Obs("o1", "Patient/p1"),
+                Obs("o2", "https://west.example/fhir/Patient/p2"),
+                Obs("o3", "https://alias.example/fhir/Patient/p3"),
+                Obs("o4", "Group/g1"),
+            ],
+            ObservationPatient);
+
+        client.Searches().ShouldBe(["east Patient?_id=p1", "west Patient?_id=p2,p3"]);
+        result.Rendered().ShouldBe(["east/Patient/p1@1", "west/Patient/p2@1", "west/Patient/p3@1"]);
+        result.Outcomes.ShouldBeEmpty();
+    }
+
+    [Fact]
     public async Task A_typed_include_skips_references_to_other_types()
     {
         var client = new FakeShardClient();
@@ -230,6 +252,9 @@ public sealed class ForwardIncludeExtractionTests
     [InlineData("{\"resourceType\":\"Observation\"")]
     [InlineData("{}")]
     [InlineData("{\"resourceType\":\"Patient\",\"id\":\"o1\"}")]
+    [InlineData("{\"resourceType\":5,\"id\":\"o1\"}")]
+    [InlineData("null")]
+    [InlineData("{\"resourceType\":\"Observation\",\"id\":\"o1\",\"subject\":{\"reference\":\"Patient/p1\"},\"subject\":{\"reference\":\"Patient/p2\"}}")]
     public async Task A_match_that_is_not_its_keys_resource_is_a_contract_violation_of_its_shard(string json)
     {
         var client = new FakeShardClient();

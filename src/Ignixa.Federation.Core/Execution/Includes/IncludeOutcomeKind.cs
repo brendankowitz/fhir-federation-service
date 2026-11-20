@@ -10,7 +10,7 @@ public enum IncludeOutcomeKind
     Truncated,
 
     /// <summary>
-    /// A reference named a specific version. The current version was fetched instead; a versioned read is never made.
+    /// A reference named a specific version. Versioned reads are not made; the target, if included, is its current version.
     /// </summary>
     VersionedReference,
 
