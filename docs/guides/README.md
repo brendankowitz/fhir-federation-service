@@ -1,10 +1,10 @@
 # Guides
 
-No guide is written yet. These are the planned guides.
+One guide is written. The others are planned.
 
 | Guide | Audience | Status |
 |---|---|---|
-| Developer guide: build a client against the federation (PR p11) | Client developers | Planned |
+| [Developer guide: build a client against the federation](client-developer-guide.md) | Client developers | Written; live search not available yet |
 | Run the federation locally | Contributors | Planned |
 | Add a backend profile | Contributors | Planned |
 | Operate the federation | Operators | Planned |
