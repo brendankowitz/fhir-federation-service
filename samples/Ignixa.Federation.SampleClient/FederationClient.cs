@@ -29,7 +29,9 @@ internal sealed class FederationClient : IDisposable
     [SuppressMessage(
         "Reliability",
         "CA2000:Dispose objects before losing scope",
-        Justification = "NoRedirects returns the handler, and ScopedEndpoint takes ownership of it and disposes it.")]
+        Justification = "NoRedirects returns the handler and ScopedEndpoint takes ownership of it and disposes it. Ownership "
+            + "transfers only on success: if this constructor throws, handlers already created are not disposed, an accepted "
+            + "limitation of this sample.")]
     public FederationClient(
         FederationClientOptions options,
         HttpMessageHandler? federationHandler = null,
@@ -113,6 +115,9 @@ internal sealed class FederationClient : IDisposable
         return await shard.GetAsync(entry.FullUrl, cancellationToken);
     }
 
+    /// <summary>The transports actually in use: the federation's, then each shard's. For tests.</summary>
+    internal IEnumerable<HttpMessageHandler> Transports => [_federation.Handler, .. _shards.Select(s => s.Handler)];
+
     public void Dispose()
     {
         _federation.Dispose();
@@ -162,7 +167,7 @@ internal sealed class FederationClient : IDisposable
     }
 
     /// <summary>The transport used when the caller supplies none: a plain handler that never follows redirects.</summary>
-    internal static SocketsHttpHandler CreateDefaultHandler() => new() { AllowAutoRedirect = false };
+    private static SocketsHttpHandler CreateDefaultHandler() => new() { AllowAutoRedirect = false };
 
     private static HttpMessageHandler NoRedirects(HttpMessageHandler? handler) => handler switch
     {

@@ -379,10 +379,19 @@ public class CredentialConfinementTests
     }
 
     [Fact]
-    public void The_default_transport_does_not_follow_redirects()
+    public void The_default_transports_of_the_federation_and_every_shard_do_not_follow_redirects()
     {
-        using var handler = FederationClient.CreateDefaultHandler();
+        var options = new FederationClientOptions
+        {
+            FederationBaseUrl = new Uri(Fed),
+            DirectReadShards = [Shard(East, "a"), Shard(West, "b")],
+        };
 
-        handler.AllowAutoRedirect.ShouldBeFalse();
+        // No handlers supplied: these are the transports the client builds for itself. Nothing is sent.
+        using var client = new FederationClient(options);
+
+        var transports = client.Transports.ToList();
+        transports.Count.ShouldBe(3);
+        transports.Where(t => t is not SocketsHttpHandler { AllowAutoRedirect: false }).ShouldBeEmpty();
     }
 }

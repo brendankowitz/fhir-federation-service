@@ -134,7 +134,7 @@ records every request (URI and `Authorization` header). The data is synthetic (`
 They show that, for the responses the spec describes, the client:
 
 - treats `fullUrl` as identity (colliding `Patient/123` stay two entries) and de-duplicates repeated includes;
-- follows `next` verbatim, stops when it is absent, and refuses a repeated link;
+- follows `next` as given (as parsed by `System.Uri`), stops when it is absent, and refuses a repeated link;
 - surfaces `outcome` entries as data and turns HTTP failures into exceptions without the body, `ct` or tokens;
 - sends nothing after a 410, and never follows a redirect;
 - keeps each token on its own endpoint and rejects out-of-scope links before sending;

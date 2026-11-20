@@ -28,10 +28,14 @@ internal sealed class ScopedEndpoint : IDisposable
         // Ending the base path with '/' makes the scope check below a segment-boundary check.
         BaseUrl = baseUrl.AbsolutePath.EndsWith('/', StringComparison.Ordinal) ? baseUrl : new Uri(baseUrl.AbsoluteUri + "/");
         _accessToken = accessToken;
+        Handler = handler;
         _http = new HttpClient(handler);
     }
 
     public Uri BaseUrl { get; }
+
+    /// <summary>The transport this endpoint sends through; exposed so tests can inspect the real wiring.</summary>
+    internal HttpMessageHandler Handler { get; }
 
     /// <summary>
     /// True if <paramref name="target"/> is https, has no user info, and has the same host and effective port as the
