@@ -66,7 +66,7 @@ These are design goals from the spec, not shipped behaviour. The [status table](
 | `_lastUpdated` merge ordering and `_total` | Planned | [§7.3](docs/superpowers/specs/2026-11-19-fhir-federation-service-design.md#73-merge-sorted), [§7.2](docs/superpowers/specs/2026-11-19-fhir-federation-service-design.md#72-count-only) |
 | Ignixa backend profile | Planned | [§9.2](docs/superpowers/specs/2026-11-19-fhir-federation-service-design.md#92-backend-profiles) |
 | Load tests (16 and 50 shards) | Planned | [§15](docs/superpowers/specs/2026-11-19-fhir-federation-service-design.md#15-testing) item 6 |
-| Sample client | Planned | [samples/README.md](samples/README.md) |
+| Sample client | Done (scripted tests only) | [samples/README.md](samples/README.md) |
 | Developer guide | Planned | [docs/guides/README.md](docs/guides/README.md) |
 | vNext (import and export, writes, shard balancing) | Planned | [§13](docs/superpowers/specs/2026-11-19-fhir-federation-service-design.md#13-extension-path-v2) |
 
@@ -137,6 +137,8 @@ curl http://localhost:5201/health/live
 curl http://localhost:5201/health/ready
 ```
 
+The sample client builds with the solution. Print its usage with `dotnet run --project samples/Ignixa.Federation.SampleClient -c Release -- --help`; its tests run with `dotnet test --project test/Ignixa.Federation.SampleClient.UnitTests/Ignixa.Federation.SampleClient.UnitTests.csproj -c Release`. The federation does not search yet, so there is nothing for the sample to run against. See [samples/README.md](samples/README.md).
+
 Docker instructions are in [deploy/README.md](deploy/README.md).
 
 ## Configuration
@@ -169,13 +171,14 @@ The host does not read the `Federation` section today. `Core` defines and valida
 assets/        Logo
 deploy/        Dockerfile and compose.yaml
 docs/          Documentation, including the design spec
-samples/       Planned sample client
+samples/       Standalone sample client (scripted tests only)
 src/
   Ignixa.Federation.Core/     Domain logic, no HTTP or hosting
   Ignixa.Federation.Shards/   HTTP access to backends
   Ignixa.Federation.Api/      ASP.NET Core host
 test/
   Ignixa.Federation.Core.UnitTests/
+  Ignixa.Federation.SampleClient.UnitTests/
   Ignixa.Federation.Shards.UnitTests/
   Ignixa.Federation.Tests.Integration/
 tools/         Dev scripts, empty today

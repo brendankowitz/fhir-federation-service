@@ -8,8 +8,9 @@ The wire contract is `docs/superpowers/specs/2026-11-19-fhir-federation-service-
 
 ## What it demonstrates
 
-- **Search and paging.** `GET [base]/[type]?…`, then each `Bundle.link[relation=next]` followed exactly as given.
-  The link is opaque: the client never edits or prints its `ct` value; the CLI only looks at it to hide echoes.
+- **Search and paging.** `GET [base]/[type]?…`, then each `Bundle.link[relation=next]` followed as the federation gave it (as parsed by `System.Uri`, which can normalise
+  unreserved escapes such as `%7e` to `~`).
+  The link is opaque: the client never decodes, edits or rebuilds it or prints its `ct` value; the CLI only looks at it to hide echoes.
 - **match / include / outcome.** `search.mode` separates matches from included resources and from `outcome`
   entries (for example "included resources truncated", `incomplete`). Outcomes are data, not errors.
 - **Identity is `fullUrl`.** Resource ids are only unique per shard, so `Patient/123` can exist on
@@ -118,11 +119,11 @@ The summary counts distinct matches and includes by `fullUrl`.
 ## Tests
 
 ```powershell
-dotnet run --project test/Ignixa.Federation.SampleClient.UnitTests
+dotnet test --project test/Ignixa.Federation.SampleClient.UnitTests/Ignixa.Federation.SampleClient.UnitTests.csproj -c Release
 ```
 
-It is an executable xunit.v3 project; `dotnet run` uses xunit's own runner. `dotnet test` (MTP) works once the
-repository opts into MTP.
+`dotnet test --solution Ignixa.Federation.slnx -c Release` runs it too. It is an xunit.v3 project on
+Microsoft.Testing.Platform, like the other test projects.
 
 ### Public-wire unit tests (this repository)
 
