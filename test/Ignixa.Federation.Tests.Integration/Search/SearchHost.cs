@@ -9,6 +9,7 @@ using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -65,6 +66,11 @@ internal sealed class SearchHost : IDisposable
                 if (setup.RegisterTransport)
                 {
                     services.AddSingleton<IShardClientFactory>(setup.Shards);
+                }
+
+                if (setup.MaxRequestLineSize is { } maxRequestLine)
+                {
+                    services.Configure<KestrelServerOptions>(options => options.Limits.MaxRequestLineSize = maxRequestLine);
                 }
 
                 services.Configure<JwtBearerOptions>(
@@ -175,6 +181,9 @@ internal sealed class SearchHostSetup
 
     /// <summary>Gets or sets the clock registered for the host, or <see langword="null"/> for the host's default.</summary>
     public TimeProvider? Time { get; set; }
+
+    /// <summary>Gets or sets the Kestrel request-line limit the host is configured with, or <see langword="null"/> for Kestrel's default.</summary>
+    public int? MaxRequestLineSize { get; set; }
 
     /// <summary>Removes every <c>Federation:Host</c> key, leaving the host unconfigured for search.</summary>
     public void Unconfigure()

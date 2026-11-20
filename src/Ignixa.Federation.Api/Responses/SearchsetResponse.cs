@@ -49,8 +49,10 @@ public static class SearchsetResponse
     /// <exception cref="ArgumentNullException">A required argument is <see langword="null"/>.</exception>
     /// <exception cref="ArgumentOutOfRangeException"><paramref name="total"/> is negative.</exception>
     /// <exception cref="ArgumentException">
-    /// An entry's shard is not in <paramref name="registry"/>, or a resource or outcome is not a single JSON object in
-    /// valid UTF-8.
+    /// An entry's shard is not in <paramref name="registry"/>, or an outcome is not a single JSON object in valid UTF-8.
+    /// </exception>
+    /// <exception cref="SearchsetEntryException">
+    /// A match's or include's resource is not a single JSON object in valid UTF-8; it names that entry's key.
     /// </exception>
     public static IResult Create(
         ShardRegistry registry,
@@ -102,7 +104,7 @@ public static class SearchsetResponse
                 {
                     writer.WriteStartObject();
                     writer.WriteString("fullUrl", $"urn:uuid:{Guid.NewGuid():D}");
-                    WriteResource(writer, outcomes[i].Span, nameof(outcomes), i);
+                    WriteResource(writer, outcomes[i].Span, nameof(outcomes), i, key: null);
                     WriteSearchMode(writer, "outcome");
                     writer.WriteEndObject();
                 }
@@ -158,7 +160,7 @@ public static class SearchsetResponse
             }
 
             writer.WriteString("fullUrl", registry.FullUrl(key));
-            WriteResource(writer, entry.Resource.Span, sequence, i);
+            WriteResource(writer, entry.Resource.Span, sequence, i, key);
             WriteSearchMode(writer, mode);
             writer.WriteEndObject();
         }
@@ -171,17 +173,18 @@ public static class SearchsetResponse
         writer.WriteEndObject();
     }
 
-    private static void WriteResource(Utf8JsonWriter writer, ReadOnlySpan<byte> json, string sequence, int index)
+    // A shard entry passes its key, so a rejection names the shard (a SearchsetEntryException); an outcome passes null.
+    private static void WriteResource(Utf8JsonWriter writer, ReadOnlySpan<byte> json, string sequence, int index, ResourceKey? key)
     {
         if (!StartsWithObject(json))
         {
-            throw new ArgumentException($"{sequence}[{index}] must be a JSON object.", sequence);
+            throw Rejected(key, $"{sequence}[{index}] must be a JSON object.", sequence, null);
         }
 
         // WriteRawValue checks JSON syntax but can accept invalid UTF-8 inside strings.
         if (!Utf8.IsValid(json))
         {
-            throw new ArgumentException($"{sequence}[{index}] is not valid UTF-8.", sequence);
+            throw Rejected(key, $"{sequence}[{index}] is not valid UTF-8.", sequence, null);
         }
 
         writer.WritePropertyName("resource");
@@ -191,9 +194,14 @@ public static class SearchsetResponse
         }
         catch (JsonException ex)
         {
-            throw new ArgumentException($"{sequence}[{index}] is not a single valid JSON value.", sequence, ex);
+            throw Rejected(key, $"{sequence}[{index}] is not a single valid JSON value.", sequence, ex);
         }
     }
+
+    private static ArgumentException Rejected(ResourceKey? key, string message, string sequence, Exception? innerException) =>
+        key is null
+            ? new ArgumentException(message, sequence, innerException)
+            : new SearchsetEntryException(key, message, sequence, innerException);
 
     private static bool StartsWithObject(ReadOnlySpan<byte> json)
     {

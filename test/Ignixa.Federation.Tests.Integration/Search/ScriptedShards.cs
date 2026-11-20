@@ -32,6 +32,12 @@ internal sealed class ScriptedShards : IShardClientFactory
     /// <summary>Gets or sets the shard whose calls return an entry of the wrong type.</summary>
     public string? MalformedShard { get; set; }
 
+    /// <summary>
+    /// Gets or sets the shard whose entries keep a valid key but whose raw JSON is cut short, so only the searchset
+    /// writer can reject them.
+    /// </summary>
+    public string? UnshapeableShard { get; set; }
+
     /// <summary>Gets or sets a value indicating whether calls wait for cancellation instead of answering.</summary>
     public bool Hang { get; set; }
 
@@ -43,6 +49,9 @@ internal sealed class ScriptedShards : IShardClientFactory
 
     /// <summary>Gets or sets an action run after the budget is charged and before the answer (for example, moving a clock).</summary>
     public Action? DuringCall { get; set; }
+
+    /// <summary>Gets or sets an action run once a page has been answered, as it is returned (for example, letting a deadline pass after the response).</summary>
+    public Action? Answered { get; set; }
 
     public IShardClient CreateClient(SearchCapabilities view, RequestBudget budget)
     {
@@ -62,7 +71,7 @@ internal sealed class ScriptedShards : IShardClientFactory
                 Target: null));
             await SendAsync(request.Shard, cancellationToken);
             ShardDescriptor shard = Shard(request.Shard);
-            return Answer(shard, request.Type, 0, request.PageSize, target => ShardCursor.Next(request, shard.Profile, target));
+            return Answered(Answer(shard, request.Type, 0, request.PageSize, target => ShardCursor.Next(request, shard.Profile, target)));
         }
 
         public async Task<ShardPage> ContinueAsync(ShardCursor cursor, CancellationToken cancellationToken)
@@ -74,7 +83,13 @@ internal sealed class ScriptedShards : IShardClientFactory
                 .ToDictionary(p => p[0], p => p[1], StringComparer.Ordinal);
             int offset = int.Parse(query["_offset"], CultureInfo.InvariantCulture);
             int count = int.Parse(query["_count"], CultureInfo.InvariantCulture);
-            return Answer(Shard(cursor.Shard), cursor.Type, offset, count, target => new ShardCursor(cursor.Shard, cursor.Type, target, cursor.Redemption));
+            return Answered(Answer(Shard(cursor.Shard), cursor.Type, offset, count, target => new ShardCursor(cursor.Shard, cursor.Type, target, cursor.Redemption)));
+        }
+
+        private ShardPage Answered(ShardPage page)
+        {
+            script.Answered?.Invoke();
+            return page;
         }
 
         private ShardDescriptor Shard(ShardId id) =>
@@ -117,7 +132,8 @@ internal sealed class ScriptedShards : IShardClientFactory
             {
                 budget.OnResponseBytesConsumed(resource.Json.Length);
                 ResourceType entryType = shard.Id.Value == script.MalformedShard ? ResourceType.Parse("Observation") : type;
-                entries.Add(new ShardEntry(new ResourceKey(shard.Id, entryType, ResourceId.Parse(resource.Id)), null, null, resource.Json));
+                byte[] json = shard.Id.Value == script.UnshapeableShard ? resource.Json[..^1] : resource.Json;
+                entries.Add(new ShardEntry(new ResourceKey(shard.Id, entryType, ResourceId.Parse(resource.Id)), null, null, json));
             }
 
             int end = offset + count;

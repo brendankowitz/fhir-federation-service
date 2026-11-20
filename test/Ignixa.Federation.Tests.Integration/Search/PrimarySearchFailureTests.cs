@@ -118,6 +118,22 @@ public sealed class PrimarySearchFailureTests
     }
 
     [Fact]
+    public async Task ShardResourceOnlyTheSearchsetWriterRejects_FailsTheWholeRequestNamingItsAlias()
+    {
+        using var host = SearchHost.Start(setup => setup.Shards.UnshapeableShard = "west");
+
+        SearchResult result = await host.GetAsync("/Patient?name=Orchid");
+
+        result.StatusCode.ShouldBe(HttpStatusCode.BadGateway);
+        result.MediaType.ShouldBe("application/fhir+json");
+        result.Body.ShouldContain("p9xm");
+        result.Body.ShouldNotContain("k7q2");
+        result.Body.ShouldNotContain("Orchid");
+        result.Body.ShouldNotContain("fhir-west.example.org");
+        result.Body.ShouldNotContain("Bundle");
+    }
+
+    [Fact]
     public async Task OverlongQuery_IsRejectedBeforeParsing()
     {
         using var host = SearchHost.Start();
@@ -200,17 +216,35 @@ public sealed class PrimarySearchFailureTests
     }
 
     [Fact]
-    public async Task AdmittedPredicateTheDiscoveryProjectionCannotPin_IsNotImplemented_WithoutAnyShardCall()
+    public async Task ReferenceMissingPredicate_PagesAndFollows_SendingOnlyThatPredicateToEveryShard()
     {
-        // The planner admits `organization:missing`, but the published projection never lists a reference parameter, so a
-        // continuation could not pin its definition. The host refuses the search rather than guess or omit the dependency.
+        // The discovery projection never lists a reference parameter, but the planner admits `organization:missing` and the
+        // view resolves its definition, so the search is pinned, paged and followed. Only the presence test reaches the
+        // shards: no reference value is admitted, rewritten or resolved to a shard identity.
         using var host = SearchHost.Start(setup => setup.Capabilities = SearchWorld.Capabilities(organizationMissing: true));
 
-        SearchResult result = await host.GetAsync("/Patient?organization:missing=true&_count=1");
+        SearchResult first = await host.GetAsync("/Patient?organization:missing=true&_count=1");
+        SearchResult second = await host.FollowAsync(first.Link("next")!);
 
-        result.StatusCode.ShouldBe(HttpStatusCode.NotImplemented);
+        first.StatusCode.ShouldBe(HttpStatusCode.OK);
+        first.Entries.ShouldHaveSingleItem();
+        second.StatusCode.ShouldBe(HttpStatusCode.OK);
+        second.Entries.ShouldHaveSingleItem();
+        second.Entries.Single().FullUrl.ShouldNotBe(first.Entries.Single().FullUrl);
+        host.Shards.Calls.Where(c => c.Method is not null).ShouldNotBeEmpty();
+        host.Shards.Calls.Where(c => c.Method is not null)
+            .ShouldAllBe(c => c.Parameters == "organization:missing=true" && c.PageSize == 1);
+    }
+
+    [Fact]
+    public async Task ReferenceMissingCapability_DoesNotAdmitAReferenceIdentityFilter()
+    {
+        using var host = SearchHost.Start(setup => setup.Capabilities = SearchWorld.Capabilities(organizationMissing: true));
+
+        SearchResult result = await host.GetAsync("/Patient?organization=Organization/dup");
+
+        result.StatusCode.ShouldBe(HttpStatusCode.BadRequest);
         result.IssueCode.ShouldBe("not-supported");
-        result.Body.ShouldNotContain("organization");
         host.Shards.Calls.ShouldBeEmpty();
     }
 
@@ -291,6 +325,26 @@ public sealed class PrimarySearchFailureTests
         result.Body.ShouldNotContain("Bundle");
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task ExpiredEndpointBudgetStopsAfterAuthentication_BeforeChallengeOrQueryHandling(bool authenticated)
+    {
+        var time = new DeadlineArmingTimeProvider(TimeSpan.FromSeconds(17), expireWhenArmed: true);
+        using var host = SearchHost.Start(setup =>
+        {
+            setup.Time = time;
+            setup.Settings["Federation:Timeouts:Request"] = "00:00:17";
+        });
+
+        SearchResult result = await host.GetAsync("/Patient?unsupported=Orchid", authenticated ? host.Token() : null);
+
+        result.StatusCode.ShouldBe(HttpStatusCode.GatewayTimeout);
+        result.IssueCode.ShouldBe("timeout");
+        result.Challenges.ShouldBeEmpty();
+        host.Shards.Calls.ShouldBeEmpty();
+    }
+
     [Fact]
     public async Task RequestDeadline_BoundsASlowAuthenticatedBody_WithoutAnyShardCall()
     {
@@ -355,6 +409,52 @@ public sealed class PrimarySearchFailureTests
         result.Body.ShouldNotContain("Bundle");
     }
 
+    [Fact]
+    public async Task NextLinkWithinTheInlineTokenButBeyondTheQueryLimit_IsUnavailable()
+    {
+        using var host = SearchHost.Start(setup =>
+        {
+            setup.Settings["Federation:Tokens:MaxInlineTokenBytes"] = "32768";
+            setup.MaxRequestLineSize = 65536;
+        });
+
+        SearchResult control = await host.GetAsync("/Patient?name=Orchid&_count=1");
+        SearchResult result = await host.GetAsync("/Patient?_count=1&name=" + new string('a', 6200));
+
+        control.StatusCode.ShouldBe(HttpStatusCode.OK);
+        (await host.FollowAsync(control.Link("next")!)).StatusCode.ShouldBe(HttpStatusCode.OK);
+        result.StatusCode.ShouldBe(HttpStatusCode.ServiceUnavailable);
+        result.Body.ShouldNotContain("aaaa");
+        result.Body.ShouldNotContain("Bundle");
+    }
+
+    [Fact]
+    public async Task NextLinkRequestLine_MustFitTheServersRequestLineLimit_IncludingTheBasePath()
+    {
+        string query = "/Patient?name=Orchid&_count=1";
+        int lineBytes;
+        using (var measure = SearchHost.Start())
+        {
+            var next = new Uri((await measure.GetAsync(query)).Link("next")!);
+            lineBytes = System.Text.Encoding.UTF8.GetByteCount($"GET {next.PathAndQuery} HTTP/1.1\r\n");
+        }
+
+        using var fits = SearchHost.Start(setup => setup.MaxRequestLineSize = lineBytes);
+        using var longerBase = SearchHost.Start(setup =>
+        {
+            setup.MaxRequestLineSize = lineBytes;
+            setup.Settings["Federation:Host:PublicBaseUrl"] = SearchWorld.PublicBase + "x";
+        });
+
+        SearchResult fitting = await fits.GetAsync(query);
+        SearchResult overflowing = await longerBase.GetAsync(query);
+
+        fitting.StatusCode.ShouldBe(HttpStatusCode.OK);
+        fitting.Link("next").ShouldNotBeNull();
+        overflowing.StatusCode.ShouldBe(HttpStatusCode.ServiceUnavailable);
+        overflowing.Body.ShouldNotContain("Bundle");
+    }
+
     /// <summary>Sends a prefix of a body, then nothing until released; never declares a length.</summary>
     private sealed class StallingContent(byte[] prefix, CancellationToken release) : HttpContent
     {
@@ -376,7 +476,7 @@ public sealed class PrimarySearchFailureTests
     /// A <see cref="ManualTimeProvider"/> that reports when a timer is armed for exactly the request deadline, which is
     /// the request budget starting; only then can advancing the clock past the deadline be observed by that request.
     /// </summary>
-    private sealed class DeadlineArmingTimeProvider(TimeSpan deadline) : TimeProvider
+    private sealed class DeadlineArmingTimeProvider(TimeSpan deadline, bool expireWhenArmed = false) : TimeProvider
     {
         private readonly ManualTimeProvider _inner = new();
 
@@ -399,6 +499,11 @@ public sealed class PrimarySearchFailureTests
         {
             if (dueTime == deadline)
             {
+                if (expireWhenArmed)
+                {
+                    Advance(deadline);
+                }
+
                 Armed.TrySetResult();
             }
         }

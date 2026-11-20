@@ -1,8 +1,15 @@
 using System.Net;
 using Ignixa.Federation.Api.Continuations;
+using Ignixa.Federation.Api.Search;
 using Ignixa.Federation.Core.Configuration;
+using Ignixa.Federation.Core.Execution;
+using Ignixa.Federation.Core.Identity;
+using Ignixa.Federation.Core.Search;
+using Ignixa.Federation.Core.Shards;
 using Ignixa.Federation.Tests.Integration.Authentication;
+using Ignixa.Federation.Tests.Integration.Budgets;
 using Ignixa.Federation.Tests.Integration.Continuations;
+using Microsoft.AspNetCore.DataProtection;
 using Shouldly;
 
 namespace Ignixa.Federation.Tests.Integration.Search;
@@ -172,6 +179,211 @@ public sealed class PrimarySearchContinuationTests
     }
 
     [Fact]
+    public async Task DifferentRevisionOfAnAdmittedDefinition_IsGone_BeforeAnyShardCall()
+    {
+        using var ring = new IsolatedKeyRing();
+        SearchCapabilities view = SearchWorld.Capabilities();
+        using var issuer = SearchHost.Start(setup => setup.Protection = ring.CreateProvider());
+        using var redeemer = SearchHost.Start(setup => setup.Protection = ring.CreateProvider());
+        string next = await FirstNextAsync(issuer);
+        string token = new Uri(next).Query["?ct=".Length..];
+        var protector = new ContinuationProtector(ring.CreateProvider(), new TokenOptions(), TimeProvider.System);
+        var caller = ContinuationBinding.Create(SyntheticIdentityProvider.TrustedIssuer, "synthetic-subject",
+            SearchWorld.CallerObjectId, null, [SearchWorld.ReaderRole]);
+        var revisions = view.Registry.Shards.ToDictionary(s => s.Id.Value, s => view.Registry.ComputeVersion([s.Id]), StringComparer.Ordinal);
+        string revision = view.GetResolvedDefinitionRevision(ResourceType.Parse("Patient"), "name").ShouldNotBeNull();
+        RedeemedContinuation issued = protector.Redeem(token, caller, (group, key) =>
+            group == ContinuationDependencyGroup.Shard ? revisions.GetValueOrDefault(key) : key == "Patient.name" ? revision : null)
+            .Continuation.ShouldNotBeNull();
+
+        var stale = ContinuationDependencySet.Create(revisions, [KeyValuePair.Create("Patient.name", "prior-expression-revision")]);
+        ContinuationIssue previous = protector.Issue(caller, stale, issued.Snapshot.AsSpan());
+        SearchResult result = await redeemer.GetAsync("/Patient?ct=" + previous.InlineToken.ShouldNotBeNull());
+
+        result.StatusCode.ShouldBe(HttpStatusCode.Gone);
+        redeemer.Shards.Calls.ShouldBeEmpty();
+        (await redeemer.FollowAsync(next)).StatusCode.ShouldBe(HttpStatusCode.OK);
+    }
+
+    [Theory]
+    [InlineData("omitted")]
+    [InlineData("extra")]
+    public async Task AuthenticatedButInconsistentDependencyManifest_IsInvalid_WithoutAnyShardCall(string shape)
+    {
+        // Every carried revision is current, so this is not drift: the same replay simply does not depend on that set.
+        using var ring = new IsolatedKeyRing();
+        using var issuer = SearchHost.Start(setup => setup.Protection = ring.CreateProvider());
+        using var redeemer = SearchHost.Start(setup => setup.Protection = ring.CreateProvider());
+        string next = await FirstNextAsync(issuer);
+        (ContinuationProtector protector, RedeemedContinuation issued) = RedeemOutsideTheRoute(ring, next);
+        SearchCapabilities view = SearchWorld.Capabilities();
+        KeyValuePair<string, string>[] definitions = shape == "extra"
+            ? [CurrentDefinition(view, "Patient", "name"), CurrentDefinition(view, "Patient", "family")]
+            : [];
+
+        var manifest = ContinuationDependencySet.Create(ShardRevisions(view), definitions);
+        ContinuationIssue forged = protector.Issue(issued.Binding, manifest, issued.Snapshot.AsSpan());
+        SearchResult result = await redeemer.GetAsync("/Patient?ct=" + forged.InlineToken.ShouldNotBeNull());
+
+        result.StatusCode.ShouldBe(HttpStatusCode.BadRequest);
+        result.IssueCode.ShouldBe("invalid");
+        redeemer.Shards.Calls.ShouldBeEmpty();
+        (await redeemer.FollowAsync(next)).StatusCode.ShouldBe(HttpStatusCode.OK);
+    }
+
+    [Theory]
+    [InlineData(1, HttpStatusCode.Gone)]
+    [InlineData(2, HttpStatusCode.OK)]
+    public async Task SuccessorReachingTheChainDeadline_IsGone_WithoutABundle(int millisecondsBeforeDeadline, HttpStatusCode expected)
+    {
+        // The page is served while the chain is live, but its successor would be issued at (or past) the chain deadline,
+        // where it can never be redeemed. The control is one millisecond earlier and remains followable.
+        DateTimeOffset start = DateTimeOffset.UtcNow;
+        var clock = new SettableClock(start);
+        using var host = SearchHost.Start(setup =>
+        {
+            setup.Time = clock;
+            setup.Settings["Federation:Tokens:SlidingLifetime"] = "00:01:00";
+            setup.Settings["Federation:Tokens:AbsoluteLifetime"] = "00:01:00";
+        });
+        string next = await FirstNextAsync(host);
+        DateTimeOffset deadline = start + TimeSpan.FromMinutes(1);
+        DateTimeOffset served = deadline - TimeSpan.FromMilliseconds(millisecondsBeforeDeadline - 1);
+
+        clock.Now = deadline - TimeSpan.FromMilliseconds(millisecondsBeforeDeadline);
+        host.Shards.DuringCall = () => clock.Now = served;
+        SearchResult result = await host.FollowAsync(next);
+
+        result.StatusCode.ShouldBe(expected);
+        if (expected == HttpStatusCode.Gone)
+        {
+            result.Body.ShouldNotContain("Bundle");
+            return;
+        }
+
+        result.Entries.Single().FullUrl.ShouldBe("https://fhir-east.example.org/Patient/east-only");
+        (await host.FollowAsync(result.Link("next").ShouldNotBeNull())).StatusCode.ShouldBe(HttpStatusCode.OK);
+    }
+
+    [Theory]
+    [InlineData(false, 999, HttpStatusCode.OK)]
+    [InlineData(false, 1000, HttpStatusCode.Gone)]
+    [InlineData(true, 999, HttpStatusCode.OK)]
+    [InlineData(true, 1000, HttpStatusCode.Gone)]
+    public async Task StagedPageDoesNotPublishAnExpiredInlineLink(bool successor, int protectionMilliseconds, HttpStatusCode expected)
+    {
+        var clock = new SettableClock(DateTimeOffset.UtcNow);
+        using var ring = new IsolatedKeyRing();
+        using var host = SearchHost.Start(setup =>
+        {
+            setup.Time = clock;
+            setup.Protection = new AfterProtectProvider(ring.CreateProvider(),
+                () => clock.Now += TimeSpan.FromMilliseconds(protectionMilliseconds));
+            setup.Settings["Federation:Tokens:SlidingLifetime"] = "00:00:01";
+        });
+        using var issuer = SearchHost.Start(setup =>
+        {
+            setup.Time = clock;
+            setup.Protection = ring.CreateProvider();
+        });
+
+        SearchResult result = successor
+            ? await host.FollowAsync(await FirstNextAsync(issuer))
+            : await host.GetAsync(PagedQuery);
+
+        result.StatusCode.ShouldBe(expected);
+        if (expected == HttpStatusCode.OK)
+        {
+            (await issuer.FollowAsync(result.Link("next").ShouldNotBeNull())).StatusCode.ShouldBe(HttpStatusCode.OK);
+        }
+        else
+        {
+            result.Body.ShouldNotContain("Bundle");
+        }
+    }
+
+    [Theory]
+    [InlineData(true, HttpStatusCode.GatewayTimeout)]
+    [InlineData(false, HttpStatusCode.Gone)]
+    public async Task MissingReplayAnchor_IsGone_UnlessTheRequestDeadlinePassedFirst(bool deadlinePasses, HttpStatusCode expected)
+    {
+        // The anchor is found missing only once the replayed page is back; a deadline that passed by then is the outcome.
+        var time = new ManualTimeProvider();
+        using var ring = new IsolatedKeyRing();
+        using var host = SearchHost.Start(setup =>
+        {
+            setup.Time = time;
+            setup.Protection = ring.CreateProvider();
+        });
+        string next = await FirstNextAsync(host);
+        (ContinuationProtector protector, RedeemedContinuation issued) = RedeemOutsideTheRoute(ring, next);
+        SearchContinuationFrame.TryRead(issued.Snapshot.AsSpan(), out SearchContinuationFrame? read).ShouldBe(UnsortedSnapshotOutcome.Success);
+        SearchContinuationFrame frame = read.ShouldNotBeNull();
+        var codec = new UnsortedSnapshotCodec(new TokenOptions().MaxInlineTokenBytes, SearchWorld.Capabilities().Registry);
+        codec.Decode(frame.Snapshot, out UnsortedContinuationSnapshot? decoded).ShouldBe(UnsortedSnapshotOutcome.Success);
+        UnsortedContinuationSnapshot snapshot = decoded.ShouldNotBeNull();
+        ShardSearchRequest stream = snapshot.Streams[0];
+        var absent = new UnsortedContinuationSnapshot(snapshot.Streams, snapshot.PageSize,
+            UnsortedContinuation.AtSearch(stream, new ResourceKey(stream.Shard, stream.Type, ResourceId.Parse("absent"))));
+        codec.Encode(absent, out byte[]? encoded).ShouldBe(UnsortedSnapshotOutcome.Success);
+        ContinuationIssue successor = protector.IssueSuccessor(
+            issued, new SearchContinuationFrame(frame.Post, frame.RawQuery, encoded.ShouldNotBeNull()).ToArray());
+        int calls = host.Shards.Calls.Count;
+        if (deadlinePasses)
+        {
+            host.Shards.Answered = () => time.Advance(TimeSpan.FromMinutes(1));
+        }
+
+        SearchResult result = await host.GetAsync("/Patient?ct=" + successor.InlineToken.ShouldNotBeNull());
+
+        result.StatusCode.ShouldBe(expected);
+        result.Body.ShouldNotContain("Bundle");
+        host.Shards.Calls.Count.ShouldBeGreaterThan(calls);
+    }
+
+    [Fact]
+    public async Task UnrelatedDefinitionChange_StillReplaysTheContinuation()
+    {
+        // Only the definitions the query's predicates resolved to are pinned: a view that also searches
+        // `organization` changes nothing the `name` continuation depends on.
+        using var ring = new IsolatedKeyRing();
+        using var issuer = SearchHost.Start(setup => setup.Protection = ring.CreateProvider());
+        using var changed = SearchHost.Start(setup =>
+        {
+            setup.Protection = ring.CreateProvider();
+            setup.Capabilities = SearchWorld.Capabilities(organizationMissing: true);
+        });
+        string next = await FirstNextAsync(issuer);
+
+        SearchResult result = await changed.FollowAsync(next);
+
+        result.StatusCode.ShouldBe(HttpStatusCode.OK);
+        result.Entries.Single().FullUrl.ShouldBe("https://fhir-east.example.org/Patient/east-only");
+        changed.Shards.Calls.ShouldNotBeEmpty();
+    }
+
+    [Theory]
+    [InlineData("/Patient?_count=1")]
+    [InlineData(PagedQuery)]
+    public async Task ContinuationForATypeTheCurrentViewNoLongerSearches_IsGone_BeforeAnyShardCall(string query)
+    {
+        using var ring = new IsolatedKeyRing();
+        using var issuer = SearchHost.Start(setup => setup.Protection = ring.CreateProvider());
+        using var drifted = SearchHost.Start(setup =>
+        {
+            setup.Protection = ring.CreateProvider();
+            setup.Capabilities = SearchWorld.Capabilities(patient: false);
+        });
+        string next = (await issuer.GetAsync(query)).Link("next")!;
+
+        SearchResult result = await drifted.FollowAsync(next);
+
+        result.StatusCode.ShouldBe(HttpStatusCode.Gone);
+        result.IssueCode.ShouldNotBe("invalid");
+        drifted.Shards.Calls.ShouldBeEmpty();
+    }
+
+    [Fact]
     public async Task ChangedPageSizeLimit_IsGone_BeforeAnyShardCall()
     {
         using var ring = new IsolatedKeyRing();
@@ -299,10 +511,51 @@ public sealed class PrimarySearchContinuationTests
     private static SyntheticTokenRequest AppCaller(Dictionary<string, string[]> extra) =>
         new() { Roles = [SearchWorld.ReaderRole], ObjectId = null, ExtraClaims = extra };
 
+    /// <summary>Redeems a genuine token as its issuing caller, outside any host, against the default view's revisions.</summary>
+    private static (ContinuationProtector Protector, RedeemedContinuation Issued) RedeemOutsideTheRoute(IsolatedKeyRing ring, string next)
+    {
+        SearchCapabilities view = SearchWorld.Capabilities();
+        Dictionary<string, string> shards = ShardRevisions(view).ToDictionary(StringComparer.Ordinal);
+        var protector = new ContinuationProtector(ring.CreateProvider(), new TokenOptions(), TimeProvider.System);
+        var caller = ContinuationBinding.Create(SyntheticIdentityProvider.TrustedIssuer, "synthetic-subject",
+            SearchWorld.CallerObjectId, null, [SearchWorld.ReaderRole]);
+        RedeemedContinuation issued = protector.Redeem(new Uri(next).Query["?ct=".Length..], caller, (group, key) =>
+            group == ContinuationDependencyGroup.Shard
+                ? shards.GetValueOrDefault(key)
+                : key.Split('.', 2) is [string type, string code] ? view.GetResolvedDefinitionRevision(ResourceType.Parse(type), code) : null)
+            .Continuation.ShouldNotBeNull();
+        return (protector, issued);
+    }
+
+    private static IEnumerable<KeyValuePair<string, string>> ShardRevisions(SearchCapabilities view) =>
+        view.Registry.Shards.Select(s => KeyValuePair.Create(s.Id.Value, view.Registry.ComputeVersion([s.Id])));
+
+    private static KeyValuePair<string, string> CurrentDefinition(SearchCapabilities view, string type, string code) =>
+        KeyValuePair.Create($"{type}.{code}", view.GetResolvedDefinitionRevision(ResourceType.Parse(type), code).ShouldNotBeNull());
+
     private static async Task<string> FirstNextAsync(SearchHost host)
     {
         SearchResult first = await host.GetAsync(PagedQuery);
         first.StatusCode.ShouldBe(HttpStatusCode.OK);
         return first.Link("next").ShouldNotBeNull();
+    }
+
+    private sealed class AfterProtectProvider(IDataProtectionProvider inner, Action afterProtect) : IDataProtectionProvider
+    {
+        public IDataProtector CreateProtector(string purpose) => new AfterProtect(inner.CreateProtector(purpose), afterProtect);
+
+        private sealed class AfterProtect(IDataProtector inner, Action afterProtect) : IDataProtector
+        {
+            public IDataProtector CreateProtector(string purpose) => new AfterProtect(inner.CreateProtector(purpose), afterProtect);
+
+            public byte[] Protect(byte[] plaintext)
+            {
+                byte[] ciphertext = inner.Protect(plaintext);
+                afterProtect();
+                return ciphertext;
+            }
+
+            public byte[] Unprotect(byte[] protectedData) => inner.Unprotect(protectedData);
+        }
     }
 }

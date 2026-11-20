@@ -74,31 +74,36 @@ internal static class SearchWorld
     /// Whether <c>Patient.organization:missing</c> is searchable. The planner admits it, but the published
     /// <see cref="SearchCapabilities.Resources"/> projection never lists a reference parameter.
     /// </param>
+    /// <param name="patient">Whether <c>Patient</c> is searchable at all.</param>
     public static SearchCapabilities Capabilities(
         bool patientName = true,
         IEnumerable<string>? exactCountShapes = null,
-        bool organizationMissing = false)
+        bool organizationMissing = false,
+        bool patient = true)
     {
-        List<SearchParameterSupport> patient =
+        List<SearchParameterSupport> patientParameters =
         [
             new("_id", SearchParamType.Token, null),
             new("family", SearchParamType.String, null),
         ];
         if (patientName)
         {
-            patient.Add(new("name", SearchParamType.String, null));
+            patientParameters.Add(new("name", SearchParamType.String, null));
         }
 
         if (organizationMissing)
         {
-            patient.Add(new("organization", SearchParamType.Reference, null));
+            patientParameters.Add(new("organization", SearchParamType.Reference, null));
         }
 
-        ResourceSearchSupport[] resources =
+        List<ResourceSearchSupport> resources =
         [
-            new(ResourceType.Parse("Patient"), patient, [], []),
             new(ResourceType.Parse("Observation"), [new("_id", SearchParamType.Token, null), new("code", SearchParamType.Token, null)], [], []),
         ];
+        if (patient)
+        {
+            resources.Insert(0, new(ResourceType.Parse("Patient"), patientParameters, [], []));
+        }
         var certification = new SearchCertification(
             new Dictionary<SearchParamType, IReadOnlyCollection<string>> { [SearchParamType.String] = ["exact"], [SearchParamType.Reference] = ["missing"] },
             [SearchParamType.String, SearchParamType.Token],
