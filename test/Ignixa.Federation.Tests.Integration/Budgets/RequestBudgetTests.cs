@@ -306,12 +306,14 @@ public sealed class RequestBudgetTests
     }
 
     [Fact]
-    public void Deadline_ContainsThrowingRegistrationsAndRecordsAnUntaggedFault()
+    public void Deadline_ContainsThrowingRegistrationsAndLeavesFaultDeliveryToCollection()
     {
         var time = new ManualTimeProvider();
         using RequestBudget budget = Create(time: time);
         using var listener = new MeterListener();
         var measurements = new List<(long Count, int TagCount)>();
+        var listenerFault = new InvalidOperationException("Synthetic measurement listener fault.");
+        bool throwFromListener = false;
         listener.InstrumentPublished = (instrument, meterListener) =>
         {
             if (ReferenceEquals(instrument.Meter, FederationTelemetry.Meter)
@@ -320,20 +322,35 @@ public sealed class RequestBudgetTests
                 meterListener.EnableMeasurementEvents(instrument);
             }
         };
-        listener.SetMeasurementEventCallback<long>((_, count, tags, _) => measurements.Add((count, tags.Length)));
+        listener.SetMeasurementEventCallback<long>((_, count, tags, _) =>
+        {
+            measurements.Add((count, tags.Length));
+            if (throwFromListener)
+            {
+                throw listenerFault;
+            }
+        });
         listener.Start();
+        listener.RecordObservableInstruments();
+        long baseline = measurements.Count == 0 ? 0 : measurements.Single().Count;
+        measurements.Clear();
 
         bool peerNotified = false;
         using CancellationTokenRegistration peer = budget.Token.Register(() => peerNotified = true);
         using CancellationTokenRegistration faulty = budget.Token.Register(
             () => throw new InvalidOperationException("Synthetic callback detail."));
 
+        throwFromListener = true;
         Should.NotThrow(() => time.Advance(RequestDeadline));
 
         budget.Token.IsCancellationRequested.ShouldBeTrue();
         peerNotified.ShouldBeTrue();
         Should.Throw<RequestDeadlineExceededException>(budget.Checkpoint);
-        measurements.ShouldBe([(1L, 0)]);
+        measurements.ShouldBeEmpty();
+
+        Should.Throw<AggregateException>(listener.RecordObservableInstruments)
+            .InnerExceptions.ShouldBe([listenerFault]);
+        measurements.ShouldBe([(baseline + 1, 0)]);
     }
 
     [Fact]

@@ -1,5 +1,4 @@
 using System.Diagnostics.CodeAnalysis;
-using System.Diagnostics.Metrics;
 using Ignixa.Federation.Core.Configuration;
 using Ignixa.Federation.Core.Diagnostics;
 
@@ -53,8 +52,7 @@ public sealed class RequestBudget : IDisposable
 {
     private const double MaxTimerMilliseconds = uint.MaxValue - 1;
 
-    private static readonly Counter<long> DeadlineCallbackFaults =
-        FederationTelemetry.Meter.CreateCounter<long>("federation.request.deadline_callback_faults");
+    private static long _deadlineCallbackFaults;
 
     private readonly object _gate = new();
     private readonly long _callAllowance;
@@ -74,6 +72,10 @@ public sealed class RequestBudget : IDisposable
     // The terminal timer callback is cancelling _linked. A source must not be disposed while it cancels, so Dispose hands
     // the disposal to that callback instead.
     private bool _cancelling;
+
+    // Publish the instrument before any request can arm its timer: publishing can also invoke listeners.
+    static RequestBudget() => FederationTelemetry.Meter.CreateObservableCounter(
+        "federation.request.deadline_callback_faults", static () => Interlocked.Read(ref _deadlineCallbackFaults));
 
     /// <summary>Initializes a new instance of the <see cref="RequestBudget"/> class and starts the request deadline.</summary>
     /// <param name="limits">The validated limits; <c>BackendCallsPerShard</c> and <c>MaxResponseBytes</c> are read once.</param>
@@ -271,8 +273,8 @@ public sealed class RequestBudget : IDisposable
         }
         catch (AggregateException)
         {
-            // Cancel has notified the registrations. Count the fault without exporting callback exception details.
-            DeadlineCallbackFaults.Add(1);
+            // Count without invoking measurement listeners on the timer or exporting exception details.
+            Interlocked.Increment(ref _deadlineCallbackFaults);
         }
         finally
         {
