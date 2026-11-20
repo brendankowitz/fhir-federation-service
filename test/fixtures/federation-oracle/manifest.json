@@ -1,0 +1,119 @@
+{
+  "formatVersion": 1,
+  "fhirVersion": "4.0.1",
+  "description": "Hand-authored answers for the federation differential oracle. See README.md. Match and include identities are oracle identities (Type/id) for the unique-id corpus.",
+  "shards": [
+    {"id": "east", "ordinal": 0, "baseUrl": "https://fhir-east.example.org/"},
+    {"id": "west", "ordinal": 1, "baseUrl": "https://fhir-west.example.org/"}
+  ],
+  "corpora": {
+    "unique-id": {
+      "idsUnique": true,
+      "oracle": "seeds/unique-id/oracle.json",
+      "placements": {
+        "colocated": {"east": "seeds/unique-id/colocated/east.json", "west": "seeds/unique-id/colocated/west.json"},
+        "cross-shard": {"east": "seeds/unique-id/cross-shard/east.json", "west": "seeds/unique-id/cross-shard/west.json"}
+      },
+      "crossShardVariant": {
+        "basePlacement": "colocated",
+        "variantPlacement": "cross-shard",
+        "movedResource": "Observation/obs-orchid-2",
+        "fromShard": "east",
+        "toShard": "west",
+        "subjectReference": "https://fhir-east.example.org/Patient/p-orchid"
+      }
+    },
+    "collision": {
+      "idsUnique": false,
+      "placements": {
+        "per-shard": {"east": "seeds/collision/east.json", "west": "seeds/collision/west.json"}
+      }
+    }
+  },
+  "cases": [
+    {
+      "id": "chain.colocated.passthrough",
+      "kind": "chain-forward",
+      "corpus": "unique-id",
+      "placement": "colocated",
+      "mode": "Passthrough",
+      "role": "oracle-equivalence",
+      "chainPath": "Observation.subject:Patient",
+      "query": "Observation?subject:Patient.name=Orchid",
+      "perShardMatches": {"east": ["Observation/obs-orchid-1", "Observation/obs-orchid-2"], "west": []},
+      "expectedMatches": ["Observation/obs-orchid-1", "Observation/obs-orchid-2"]
+    },
+    {
+      "id": "chain.colocated.distributed",
+      "kind": "chain-forward",
+      "corpus": "unique-id",
+      "placement": "colocated",
+      "mode": "Distributed",
+      "role": "oracle-equivalence",
+      "chainPath": "Observation.subject:Patient",
+      "query": "Observation?subject:Patient.name=Orchid",
+      "expectedMatches": ["Observation/obs-orchid-1", "Observation/obs-orchid-2"]
+    },
+    {
+      "id": "chain.cross-shard.passthrough-control",
+      "kind": "chain-forward",
+      "corpus": "unique-id",
+      "placement": "cross-shard",
+      "mode": "Passthrough",
+      "role": "negative-control",
+      "chainPath": "Observation.subject:Patient",
+      "query": "Observation?subject:Patient.name=Orchid",
+      "perShardMatches": {"east": ["Observation/obs-orchid-1"], "west": []},
+      "expectedMatches": ["Observation/obs-orchid-1"],
+      "missedVsOracle": ["Observation/obs-orchid-2"]
+    },
+    {
+      "id": "chain.cross-shard.distributed",
+      "kind": "chain-forward",
+      "corpus": "unique-id",
+      "placement": "cross-shard",
+      "mode": "Distributed",
+      "role": "oracle-equivalence",
+      "chainPath": "Observation.subject:Patient",
+      "query": "Observation?subject:Patient.name=Orchid",
+      "expectedMatches": ["Observation/obs-orchid-1", "Observation/obs-orchid-2"]
+    },
+    {
+      "id": "collision.tagged-union",
+      "kind": "identity-union",
+      "corpus": "collision",
+      "placement": "per-shard",
+      "comparison": "tagged-union",
+      "query": "Patient?name=Orchid",
+      "perShardMatches": {"east": ["Patient/dup"], "west": ["Patient/dup"]},
+      "expectedFullUrls": ["https://fhir-east.example.org/Patient/dup", "https://fhir-west.example.org/Patient/dup"]
+    },
+    {
+      "id": "include.forward",
+      "kind": "include-forward",
+      "corpus": "unique-id",
+      "placements": ["colocated", "cross-shard"],
+      "query": "Observation?_include=Observation:subject:Patient&_count=1",
+      "count": 1,
+      "expectedMatches": ["Observation/obs-cedar-1", "Observation/obs-orchid-1", "Observation/obs-orchid-2"],
+      "includeRelations": {
+        "Observation/obs-cedar-1": ["Patient/p-cedar"],
+        "Observation/obs-orchid-1": ["Patient/p-orchid"],
+        "Observation/obs-orchid-2": ["Patient/p-orchid"]
+      }
+    },
+    {
+      "id": "include.reverse",
+      "kind": "include-reverse",
+      "corpus": "unique-id",
+      "placements": ["colocated", "cross-shard"],
+      "query": "Patient?_revinclude=Observation:subject:Patient&_count=1",
+      "count": 1,
+      "expectedMatches": ["Patient/p-cedar", "Patient/p-orchid"],
+      "includeRelations": {
+        "Patient/p-cedar": ["Observation/obs-cedar-1"],
+        "Patient/p-orchid": ["Observation/obs-orchid-1", "Observation/obs-orchid-2"]
+      }
+    }
+  ]
+}

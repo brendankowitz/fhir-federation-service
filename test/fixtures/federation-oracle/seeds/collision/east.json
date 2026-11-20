@@ -1,0 +1,4 @@
+[
+  {"resourceType": "Patient", "id": "dup", "active": true, "name": [{"family": "Orchid", "given": ["Eli"]}]},
+  {"resourceType": "Patient", "id": "east-only", "active": true, "name": [{"family": "Cedar", "given": ["Fay"]}]}
+]
