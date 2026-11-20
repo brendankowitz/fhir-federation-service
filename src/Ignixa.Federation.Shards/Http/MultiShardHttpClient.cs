@@ -14,6 +14,9 @@ namespace Ignixa.Federation.Shards.Http;
 /// <para><b>Clients.</b> One <see cref="HttpShardClient"/> per registered shard is built at construction and reused for every
 /// call, so each shard keeps its own connection pool and circuit breaker. Every other behaviour (deadline, response size
 /// limit, metering, cancellation, failures and the read result) is that client's, unchanged.</para>
+/// <para><b>Per-request metering.</b> <see cref="ForRequest"/> lends a view that charges one request's meter instead of the
+/// router's own, over the same clients, pools and breakers. Calls made directly on the router or through
+/// <see cref="GetClient"/> keep using the router's meter, so a router built without one leaves background work uncharged.</para>
 /// <para><b>Lifetime.</b> Register one instance for the life of the process and dispose it at teardown, after use has
 /// stopped. It disposes only the clients it created; the credential provider and the transfer meter belong to the caller.
 /// A call that starts after disposal throws <see cref="ObjectDisposedException"/>.</para>
@@ -103,11 +106,8 @@ public sealed class MultiShardHttpClient : IShardClient, IDisposable
     /// The exchange failed, the response was not an exact answer to the request, or the request does not fit the shard's
     /// <see cref="ShardRequestLimits"/> (<see cref="ShardCallFailure.RequestTooLarge"/>, nothing sent).
     /// </exception>
-    public Task<ShardPage> SearchAsync(ShardSearchRequest request, CancellationToken cancellationToken)
-    {
-        ArgumentNullException.ThrowIfNull(request);
-        return OwnerOf(request.Shard, nameof(request)).SearchAsync(request, cancellationToken);
-    }
+    public Task<ShardPage> SearchAsync(ShardSearchRequest request, CancellationToken cancellationToken) =>
+        SearchMeteredAsync(request, meter: null, cancellationToken);
 
     /// <inheritdoc/>
     /// <exception cref="ArgumentNullException"><paramref name="cursor"/> is <see langword="null"/>.</exception>
@@ -120,11 +120,8 @@ public sealed class MultiShardHttpClient : IShardClient, IDisposable
     /// The exchange failed or the response was not a readable page, or the redemption does not fit the shard's
     /// <see cref="ShardRequestLimits"/> (<see cref="ShardCallFailure.InvalidNextLink"/>, nothing sent).
     /// </exception>
-    public Task<ShardPage> ContinueAsync(ShardCursor cursor, CancellationToken cancellationToken)
-    {
-        ArgumentNullException.ThrowIfNull(cursor);
-        return OwnerOf(cursor.Shard, nameof(cursor)).ContinueAsync(cursor, cancellationToken);
-    }
+    public Task<ShardPage> ContinueAsync(ShardCursor cursor, CancellationToken cancellationToken) =>
+        ContinueMeteredAsync(cursor, meter: null, cancellationToken);
 
     /// <summary>Reads the current version of one resource from the shard its key names; see <see cref="HttpShardClient.ReadAsync"/>.</summary>
     /// <param name="key">The qualified resource to read.</param>
@@ -137,11 +134,8 @@ public sealed class MultiShardHttpClient : IShardClient, IDisposable
     /// The exchange failed, or the shard reported <see cref="ShardCallFailure.ResourceNotFound"/> or
     /// <see cref="ShardCallFailure.ResourceGone"/>.
     /// </exception>
-    public Task<ShardReadResult> ReadAsync(ResourceKey key, CancellationToken cancellationToken)
-    {
-        ArgumentNullException.ThrowIfNull(key);
-        return OwnerOf(key.Shard, nameof(key)).ReadAsync(key, cancellationToken);
-    }
+    public Task<ShardReadResult> ReadAsync(ResourceKey key, CancellationToken cancellationToken) =>
+        ReadMeteredAsync(key, meter: null, cancellationToken);
 
     /// <summary>
     /// Lends the router's client for one registered shard, so a component such as the metadata worker uses the same
@@ -165,6 +159,49 @@ public sealed class MultiShardHttpClient : IShardClient, IDisposable
         return _clients.TryGetValue(shard.Id, out HttpShardClient? client) && client.IsFor(shard)
             ? client
             : throw new ArgumentException("The descriptor is not one of this router's registered shards.", nameof(shard));
+    }
+
+    /// <summary>
+    /// Borrows a view of this router whose calls are charged to <paramref name="meter"/> instead of the router's own meter,
+    /// so one request's transfer budget sees only that request's sends and response bytes.
+    /// </summary>
+    /// <param name="meter">
+    /// The request's meter. It must be thread-safe because parallel shard calls can invoke it concurrently.
+    /// </param>
+    /// <returns>
+    /// A lightweight view over this router's own clients, so it adds no HTTP client, connection pool or circuit breaker, and
+    /// shares their state with every other view and with the router. The view is not disposable and must not outlive the router.
+    /// Search, continuation and read each charge only <paramref name="meter"/>, including every retry, never both meters.
+    /// </returns>
+    /// <remarks>
+    /// Build the router with no meter (<see langword="null"/>) when the host wants background work, such as metadata
+    /// discovery through <see cref="GetClient"/>, to stay uncharged: the router's own meter is the only one those calls use.
+    /// </remarks>
+    /// <exception cref="ArgumentNullException"><paramref name="meter"/> is <see langword="null"/>.</exception>
+    /// <exception cref="ObjectDisposedException">The router is disposed.</exception>
+    public RequestShardClient ForRequest(IShardTransferMeter meter)
+    {
+        ArgumentNullException.ThrowIfNull(meter);
+        ThrowIfDisposed();
+        return new RequestShardClient(this, meter);
+    }
+
+    internal Task<ShardPage> SearchMeteredAsync(ShardSearchRequest request, IShardTransferMeter? meter, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        return OwnerOf(request.Shard, nameof(request)).SearchMeteredAsync(request, meter, cancellationToken);
+    }
+
+    internal Task<ShardPage> ContinueMeteredAsync(ShardCursor cursor, IShardTransferMeter? meter, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(cursor);
+        return OwnerOf(cursor.Shard, nameof(cursor)).ContinueMeteredAsync(cursor, meter, cancellationToken);
+    }
+
+    internal Task<ShardReadResult> ReadMeteredAsync(ResourceKey key, IShardTransferMeter? meter, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(key);
+        return OwnerOf(key.Shard, nameof(key)).ReadMeteredAsync(key, meter, cancellationToken);
     }
 
     /// <summary>Disposes the clients the router created, and not the credential provider or the transfer meter. Calling it again has no effect.</summary>

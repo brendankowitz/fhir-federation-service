@@ -7,8 +7,8 @@ namespace Ignixa.Federation.Shards.Http;
 /// accounting (design spec §7.8) counts measured traffic rather than estimating it from resources.
 /// </summary>
 /// <remarks>
-/// <para>Calls happen on the caller's asynchronous flow, so an implementation can attribute them to an ambient request
-/// scope. The per-call byte and time limits are enforced by the client whether or not a meter is present.</para>
+/// <para>Use <see cref="MultiShardHttpClient.ForRequest"/> to bind a meter to one request. Implementations shared by
+/// parallel calls must be thread-safe. The client's per-call byte and time limits apply whether or not a meter is present.</para>
 /// <para>What is counted is what the client itself does: one logical send attempt per exchange, so a retried GET is two
 /// sends, and the response body bytes it consumes. The client builds every request so the
 /// runtime does not silently re-send it on a connection closed before any response, because such a re-send would be an

@@ -61,8 +61,11 @@ internal sealed class MultiShardRig : IAsyncDisposable
             [ShardHarness.Follow]);
 
     /// <summary>Another router over <paramref name="registry"/> on this rig's credentials and meter, trusting only the loopback leaf.</summary>
-    public MultiShardHttpClient CreateRouter(ShardRegistry registry) =>
-        new(registry, Credentials, _callTimeout, _maxResponseBytes, _limits, Meter, LoopbackCertificate.Trust);
+    public MultiShardHttpClient CreateRouter(ShardRegistry registry) => CreateRouter(registry, Meter);
+
+    /// <summary>Another router over <paramref name="registry"/> on this rig's credentials, with <paramref name="meter"/> as its default meter (or none), trusting only the loopback leaf.</summary>
+    public MultiShardHttpClient CreateRouter(ShardRegistry registry, IShardTransferMeter? meter) =>
+        new(registry, Credentials, _callTimeout, _maxResponseBytes, _limits, meter, LoopbackCertificate.Trust);
 
     /// <summary>A GET search for <c>name=Sarah</c>, page size 10, of <paramref name="shard"/>.</summary>
     public static ShardSearchRequest Search(ShardId shard) =>
