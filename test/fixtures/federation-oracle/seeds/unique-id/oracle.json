@@ -1,0 +1,13 @@
+[
+  {"resourceType": "Patient", "id": "p-orchid", "active": true, "name": [{"family": "Orchid", "given": ["Ada"]}]},
+  {"resourceType": "Patient", "id": "p-cedar", "active": true, "name": [{"family": "Cedar", "given": ["Ben"]}]},
+  {"resourceType": "Observation", "id": "obs-orchid-1", "status": "final",
+     "code": {"coding": [{"system": "https://example.org/fhir/CodeSystem/oracle", "code": "oracle-code"}]},
+   "subject": {"reference": "Patient/p-orchid"}},
+  {"resourceType": "Observation", "id": "obs-orchid-2", "status": "final",
+     "code": {"coding": [{"system": "https://example.org/fhir/CodeSystem/oracle", "code": "oracle-code"}]},
+   "subject": {"reference": "Patient/p-orchid"}},
+  {"resourceType": "Observation", "id": "obs-cedar-1", "status": "final",
+     "code": {"coding": [{"system": "https://example.org/fhir/CodeSystem/oracle", "code": "oracle-code"}]},
+   "subject": {"reference": "Patient/p-cedar"}}
+]
