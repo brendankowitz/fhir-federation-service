@@ -80,6 +80,8 @@ public sealed class CapabilitySearchParameterTests
     [InlineData("http://example.org/sp#fragment|1")]
     [InlineData("|1")]
     [InlineData("http://example.org/sp%zz")]
+    [InlineData("https://")]
+    [InlineData("https://[|1.2#fragment")]
     public void ASuppliedDefinitionThatIsNotACanonical_IsRefusedNotTreatedAsOne(string definition)
     {
         Should.Throw<FormatException>(() => ReadPatient(Params(Param("name", "string", definition))));

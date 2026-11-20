@@ -12,8 +12,8 @@ namespace Ignixa.Federation.Shards.Capabilities;
 /// <para>Only the fields the evidence needs are read and checked; this is not a schema validator. What it does read is read
 /// strictly and fails closed: a relevant field of the wrong shape, a duplicate JSON property, a second server block, a
 /// repeated resource declaration or two parameters of one code that disagree is refused with a
-/// <see cref="FormatException"/>, never resolved by first-wins, last-wins or union. Wildcard include declarations are
-/// dropped, never expanded; any other include value the reader cannot use is refused, so it can never add evidence.</para>
+/// <see cref="FormatException"/>, never resolved by first-wins, last-wins or union. The reader drops wildcard include
+/// values without expanding them and refuses malformed explicit values.</para>
 /// <para>The exception message is fixed text naming a location by member names and indexes only. It never contains input
 /// text, and there is no inner exception, so it is safe to log. The caller bounds the size of the body.</para>
 /// </remarks>
@@ -212,7 +212,9 @@ public static class CapabilityStatementReader
                 throw Malformed(path, "A searchParam name is not a URL search parameter token.");
             }
 
-            RejectModifierExtension(element, path);            SearchParameterType type = ParseType(RequiredString(element, "type", path), path);
+            RejectModifierExtension(element, path);
+
+            SearchParameterType type = ParseType(RequiredString(element, "type", path), path);
             var parameter = new SearchParameterEvidence(code, type, ReadDefinition(element, path));
 
             // Two entries of one code are one fact only when they agree; otherwise neither can be trusted over the other.
@@ -262,13 +264,13 @@ public static class CapabilityStatementReader
 
         int bar = beforeFragment.IndexOf('|', StringComparison.Ordinal);
         string url = bar < 0 ? beforeFragment : beforeFragment[..bar];
-        if (bar < 0)
+        if (url.Length == 0 || !Uri.IsWellFormedUriString(url, UriKind.RelativeOrAbsolute))
         {
-            return url.Length > 0;
+            return false;
         }
 
-        string version = beforeFragment[(bar + 1)..];
-        return url.Length > 0 && version.Length > 0 && !version.Contains('|', StringComparison.Ordinal);
+        return bar < 0
+            || (bar + 1 < beforeFragment.Length && !beforeFragment.AsSpan(bar + 1).Contains('|'));
     }
 
     private static SearchParameterType ParseType(string code, string path) => code switch
