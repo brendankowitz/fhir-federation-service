@@ -12,6 +12,25 @@ namespace Ignixa.Federation.Core.UnitTests.Execution.ReverseChains;
 public sealed class ReverseChainRoutingTests
 {
     [Theory]
+    [InlineData(Has + "=1&" + Has + "=2", "_id=a&_id=a", ShardSearchMethod.Get)]
+    [InlineData(Has + "=1&_id=a", "_id=a&_id=a", ShardSearchMethod.Get)]
+    [InlineData(Has + "=1", "_id=a", ShardSearchMethod.PostSearch)]
+    [InlineData(Has + "=1&_id=b", "_id=a&_id=b", ShardSearchMethod.PostSearch)]
+    [InlineData(Has + "=1&name=a", "_id=a&name=a", ShardSearchMethod.PostSearch)]
+    public async Task PostCapableTargetUsesGetOnlyForIdenticalPreparedPairs(string query, string wire, ShardSearchMethod method)
+    {
+        var fixture = new ReverseChainFixture();
+        fixture.Client.OnSearch(East, Page(null, Obs("witness", "Patient/a")));
+        fixture.Client.OnSearch(West, Page(null));
+
+        var result = await fixture.ResolveAsync(fixture.Plan(query));
+        var target = result.Targets.ShouldHaveSingleItem();
+        QueryRewriter.Render(target.Parameters).ShouldBe(wire);
+        target.Method.ShouldBe(method);
+        target.Request(5).Method.ShouldBe(method);
+    }
+
+    [Theory]
     [InlineData("overlap", 4)]
     [InlineData("different owners", 4)]
     [InlineData("empty first", 2)]
