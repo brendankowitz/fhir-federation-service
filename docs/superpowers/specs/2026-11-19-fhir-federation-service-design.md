@@ -55,7 +55,7 @@ The 2025 prototype (≈14.5K LOC) proved the execution patterns but was coupled 
 - .NET 11, ASP.NET Core Minimal APIs, central package management, warnings-as-errors, nullable, xUnit + Shouldly + NSubstitute — Ignixa conventions (`brendankowitz/ignixa-fhir` `AGENTS.md`).
 - Ignixa consumed **only via published NuGet** (`0.6.82` at time of writing): `Ignixa.Abstractions`, `Ignixa.Specification`, `Ignixa.Serialization`, `Ignixa.Search`, `Ignixa.FhirPath`. `Ignixa.Api`, `.Application`, `.Domain`, `.DataLayer.*` are not published and must not be depended on. (`Ignixa.Search` references `Microsoft.AspNetCore.Http.Abstractions`; acceptable.)
 - Shards are standard FHIR R4 REST servers over HTTPS. **v1 certified backends: Microsoft FHIR Server / Azure Health Data Services (primary), then Ignixa** (D3). Each certified backend has a verified `BackendProfile` (§9.2) and a compatibility run.
-- **Size envelope (D6):** designed, tested and documented for up to 16 shards; load-tested at 16 and 50. 16 is a soft, documented limit (configurable), not a hard cap: sorted, chained and include queries need every shard, so all-shard availability is ≈98.4% at 16 shards and ≈95% at 50 (at 99.9% per shard), and each such page costs one backend call per shard. For scale, with storage items 1–4 roughly 4 shards of 128 TB hold 1 PiB, so 16 shards cover ≈4 PiB. One federation per deployment; no multi-tenancy.
+- **Size envelope (D6):** 16 shards is the soft, configurable design limit, not a hard cap. The load-test targets are 16 and 50 shards (§15); they are not measured results. As the shard count grows, all-shard queries need more backend calls and are more likely to encounter an unavailable shard. At 99.9% availability per shard, assuming independent failures, modeled all-shard availability is about 98.4% at 16 shards and 95.1% at 50. Four 128 TB shards provide 512 TB of raw storage; sixteen provide 2.048 PB (decimal), or about 1.82 PiB, before allowing for indexes, headroom and replicas. Reaching 1 PiB of raw storage takes at least nine 128 TB shards or eight 128 TiB shards. These figures describe physical storage, not usable FHIR payload capacity or query throughput. One federation per deployment; no multi-tenancy.
 
 ## 4. Identity and references
 
@@ -188,7 +188,7 @@ Each chain occurrence is an **independent existential test**; two occurrences of
 **Resolution mode.** Both modes send the primary search to every shard; they differ in **where the join happens**.
 
 - **`Passthrough`** — *join inside each shard.* The chain parameter is forwarded unchanged; each shard resolves it against its own data; results are merged. One call per shard, no sub-queries, no key cap. Exact **only** if every reference on that path stays on the shard; a cross-shard absolute reference on a Passthrough path is a silently missed match.
-- **`Distributed`** — *join in the federation.* Sub-query the target on all shards, then send each shard a rewritten query with relative forms for its own keys and absolute forms for other shards' keys (below). Exact for same-shard and cross-shard references; costs an extra round, the `MaxChainKeys` cap and large request bodies.
+- **`Distributed`** — *join in the federation.* Sub-query the target on all shards, then send each shard a rewritten query with its **own-side forms** for its own keys and **registered-base absolute forms** for other shards' keys (below). Exact for same-shard and cross-shard references; costs an extra round, the `MaxChainKeys` cap and large request bodies.
 
 **Mode is chosen per reference path, not per deployment**, because placement is usually path-specific: with patient-compartment placement `Observation.subject → Patient` never leaves the shard, while `Observation.performer → Practitioner` may. Configuration (`ChainResolution`):
 
@@ -202,9 +202,14 @@ Examples, with Sarah as `Patient/p1` on shard A and `Patient/p2` on shard B:
 | Query | Mode | Backend calls |
 |---|---|---|
 | `Observation?subject:Patient.name=Sarah` | Passthrough (`Observation.subject:Patient` listed) | every shard gets the query unchanged |
-| same | Distributed | `Patient?name=Sarah` on all shards → A: `Observation?subject=Patient/p1,https://B/Patient/p2`; B: `Observation?subject=Patient/p2,https://A/Patient/p1` |
+| same | Distributed | `Patient?name=Sarah` on all shards → A: `Observation?subject=` own-side form(s) of `p1` plus the registered-base absolute form of `p2` on B (e.g. `https://B/Patient/p2`); B: `Observation?subject=` own-side form(s) of `p2` plus the registered-base absolute form of `p1` on A (see *Search-value forms*) |
 | `Patient?_has:Observation:subject:code=X` | Passthrough | every shard gets the query unchanged |
 | same | Distributed | `Observation?code=X` on all shards → resolve each `subject` to its owning shard → `Patient?_id=…` only on owning shards |
+
+**Search-value forms.** A backend matches search values against the references it *stores*; a relative value such as `Patient/p1` does not by itself restrict a match to the local shard.
+
+- **Own-side forms** are the search values used to select keys owned by the shard being queried. The backend profile must prove that the values match all supported local reference encodings (relative, canonical absolute, and approved aliases) without matching a foreign-base reference with the same type and id. This proof is specific to the path and query shape. A relative search value can be used only if proven safe; the own-absolute form (`{BaseUrl}/Type/id`) on Microsoft FHIR Server is a **candidate**, not certified, until the compatibility run (§15) passes. If a rewrite needs own-side forms and lacks this proof, reject the request with 400.
+- **Foreign keys** use proven absolute search forms drawn from the owning shard's canonical `BaseUrl` and approved `LinkBaseAliases` (§4.2), never an authority taken from the caller's request (Host or forwarding headers). The emitted forms must cover every supported stored form for that owner without matching local or other-owner references with the same type and id. Certify the emitted forms and stored coverage together for the exact typed path, rewrite operation, queried shard, and current registry; emitting a canonical absolute alone is sufficient only if that coverage is proven.
 
 **Admission rules:**
 - Target type unambiguous per hop (explicit type modifier or single-target reference parameter); else 400 asking for a type modifier.
@@ -215,7 +220,7 @@ Examples, with Sarah as `Patient/p1` on shard A and `Patient/p2` on shard B:
 **Distributed forward chain** — `Observation?subject:Patient.name=Sarah`:
 1. Sub-query `Patient?name=Sarah&_elements=id` on all shards in parallel, paging to exhaustion → set of `(shard, Patient, id)`.
 2. Cap `MaxChainKeys` = 1000 distinct keys (exactly 1000 valid; proven overflow → 400 `too-costly`). Zero keys → empty result.
-3. **Per-shard rewrite.** For backend shard X, replace the occurrence with one occurrence whose OR-list holds the **relative** form for keys on X and the **absolute** form(s) (`BaseUrl` and certified `LinkBaseAliases`) for keys on other shards: `subject=Patient/a,https://fhir-west.internal/Patient/b`. Each shard therefore receives a different rewritten query. AND with other occurrences is preserved.
+3. **Per-shard rewrite.** For backend shard X, replace the occurrence with one occurrence whose OR-list holds the proven **own-side** form(s) for keys on X and the proven **absolute** form(s) for keys on other shards (see *Search-value forms*), for example `subject=<own-side form of a>,https://fhir-west.internal/Patient/b`. Each shard therefore receives a different rewritten query. AND with other occurrences is preserved.
 
 **Distributed reverse chain** — `Patient?_has:Observation:subject:code=1234-5`:
 1. Sub-query `Observation?code=1234-5` on all shards, fetching the elements the reference parameter's FHIRPath expression depends on (full resources when not provably a single element) **[call]**.
@@ -229,7 +234,7 @@ Examples, with Sarah as `Patient/p1` on shard A and `Patient/p2` on shard B:
 
 - Computed from **this page's matches only**, after the page cut. Includes never consume `_count` or a match cursor; a resource included on page 1 is included again on page 3 if it belongs there.
 - **`_include=Observation:subject[:Patient]`:** extract references (§7.7); each resolves to exactly one shard. Group by `(shard, type)` and fetch `POST [shard]/[type]/_search` with `_id=…` — **only the shards actually referenced**. Optional target type honoured.
-- **`_revinclude=Observation:subject[:Patient]`:** for page matches owned by shard X, query X with the relative forms (`subject=Patient/a,…`) and every other shard with the absolute forms (`subject=https://X/Patient/a,…`), in parallel.
+- **`_revinclude=Observation:subject[:Patient]`:** for page matches owned by shard X, query X with its proven own-side forms and every other shard with its proven registered-base absolute forms of X (`subject=https://X/Patient/a,…`), in parallel. See *Search-value forms* (§7.5).
 - `MaxIncludesPerPage` = 1000. On overflow: emit what was fetched, add `search.mode=outcome` (`code=incomplete`, "included resources truncated").
 - Dedup per page by `(shard, type, id, versionId)`; a resource that is a match is not repeated as an include.
 - Versioned references (`Patient/p/_history/2`): v1 includes the **current** version and adds an outcome warning **[call]** (vread includes are v2).
@@ -392,7 +397,7 @@ Config key names; token envelope wire format; exact default limits within the st
 | D3 | Microsoft FHIR Server primary; Ignixa second. |
 | D4 | Backends are not hidden: `fullUrl` is the real backend URL; no content rewriting; proxied read is an optional convenience. |
 | D5 | Retryable best-effort pages over live data; mostly stateless tokens. |
-| D6 | 16 shards is a documented soft limit, load-tested at 16 and 50. |
+| D6 | 16 shards is a documented soft limit; load-test targets are 16 and 50 shards. |
 | D7 | Unsupported parameters → 400 even under lenient handling. |
 
 ## 19. Review log

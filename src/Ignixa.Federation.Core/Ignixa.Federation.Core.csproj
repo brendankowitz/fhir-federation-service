@@ -5,4 +5,9 @@
     <Description>Pure domain model and instrumentation contracts for Ignixa Federation, a read-only FHIR R4 search federation gateway.</Description>
   </PropertyGroup>
 
+  <ItemGroup>
+    <!-- R4 search definitions and the public per-parameter trace the planner compiles against (design spec §6.1). -->
+    <PackageReference Include="Ignixa.Search" />
+  </ItemGroup>
+
 </Project>
