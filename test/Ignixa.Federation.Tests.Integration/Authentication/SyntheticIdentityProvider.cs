@@ -48,9 +48,19 @@ internal sealed class SyntheticIdentityProvider : HttpMessageHandler
         {
             ["iss"] = request.Issuer,
             ["aud"] = request.Audience,
-            ["sub"] = "synthetic-subject",
+            ["sub"] = request.Subject,
             ["nbf"] = new DateTimeOffset(request.NotBefore).ToUnixTimeSeconds(),
         };
+
+        if (request.ObjectId is { } objectId)
+        {
+            payload["oid"] = objectId;
+        }
+
+        if (request.ClientId is { } clientId)
+        {
+            payload["azp"] = clientId;
+        }
 
         if (request.Expires is { } expires)
         {
@@ -70,6 +80,11 @@ internal sealed class SyntheticIdentityProvider : HttpMessageHandler
         if (request.Scope is { } scope)
         {
             payload["scope"] = scope;
+        }
+
+        foreach ((string name, string[] values) in request.ExtraClaims ?? new Dictionary<string, string[]>())
+        {
+            payload[name] = values is [string single] ? JsonValue.Create(single) : new JsonArray([.. values.Select(v => JsonValue.Create(v))]);
         }
 
         using RSA? untrustedSigner = request.UntrustedSigner ? RSA.Create(2048) : null;

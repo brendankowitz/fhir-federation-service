@@ -18,6 +18,20 @@ internal sealed class SyntheticTokenRequest
 
     public string? Scope { get; init; }
 
+    public string Subject { get; init; } = "synthetic-subject";
+
+    /// <summary>Gets the Entra object id (<c>oid</c>) to emit, or <see langword="null"/> to omit it.</summary>
+    public string? ObjectId { get; init; }
+
+    /// <summary>Gets the client id (<c>azp</c>) to emit, or <see langword="null"/> to omit it.</summary>
+    public string? ClientId { get; init; }
+
+    /// <summary>
+    /// Gets further claims to emit, written after the others and replacing any of the same exact name: one value as a
+    /// string, more as an array.
+    /// </summary>
+    public IReadOnlyDictionary<string, string[]>? ExtraClaims { get; init; }
+
     /// <summary>Gets whether to sign with a key the identity provider does not publish (reusing the published key id).</summary>
     public bool UntrustedSigner { get; init; }
 }
