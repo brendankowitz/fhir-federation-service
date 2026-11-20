@@ -5,9 +5,11 @@ namespace Ignixa.Federation.Api.Continuations;
 
 /// <summary>
 /// The native Redis <see cref="IContinuationCache"/> (design spec §7.4) over a caller-owned
-/// <see cref="IDatabase"/>, which it borrows and never disposes. It requires Redis 7.0 or later (<c>PEXPIRETIME</c>);
-/// an older server fails closed as unavailable. Every member runs one command on the primary, so each is atomic and
-/// linearizable per key on a standalone primary; see the provider validation notes for replicated topologies.
+/// <see cref="IDatabase"/>, which it borrows and never disposes. It requires Redis 7.0 or later (<c>PEXPIRETIME</c>),
+/// which the host must verify before use: against an older server reads and shortens fail as unavailable, but writes
+/// and removals can still succeed, so the adapter does not reject such a server by itself. Every member runs one
+/// command on the primary, so each is atomic and linearizable per key on a standalone primary; see the provider
+/// validation notes for replicated topologies.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -23,12 +25,12 @@ namespace Ignixa.Federation.Api.Continuations;
 /// <para>
 /// <b>Policy.</b> Values are written only by <see cref="Set"/> and <see cref="SetAsync"/>, as strings with an absolute
 /// expiry. A key holding anything else (no expiry, or not a string) is out of policy and reported as unavailable,
-/// never as a miss, and is left untouched. A stored value over <see cref="MaxValueBytes"/> is refused by the server
-/// before it is sent.
+/// never as a miss, and is left untouched. So is a live value over <see cref="MaxValueBytes"/>: a read refuses it on
+/// the server before it is sent, and a shorten refuses it without changing its expiry.
 /// </para>
 /// <para>
 /// <b>Failures.</b> Client and server failures (<see cref="RedisException"/>, <see cref="RedisTimeoutException"/>,
-/// <see cref="RedisCommandException"/>) and nonconforming replies become a payload-free
+/// <see cref="RedisCommandException"/>) and replies of any other wire type or value become a payload-free
 /// <see cref="ContinuationCacheUnavailableException"/>; the client's messages name endpoints and keys. Anything else,
 /// such as use after the caller disposed the connection, is a defect and propagates.
 /// </para>
@@ -67,16 +69,19 @@ internal sealed class RedisContinuationCache : IContinuationCache
         return 1
         """;
 
-    // ARGV[1]: the limit in whole milliseconds. Returns 1 when live (and now expiring no later than the limit), 0 for
-    // no live entry. The target is formatted as an integer because Redis may render a Lua number in exponent form.
+    // ARGV[1]: the limit in whole milliseconds; ARGV[2]: the maximum value length. Returns 1 when live (and now expiring
+    // no later than the limit), 0 for no live entry. The same policy as a read: an entry the read script would refuse
+    // (no expiry, not a string, or over the maximum) is refused here too, before anything changes. The target is
+    // formatted as an integer because Redis may render a Lua number in exponent form.
     private const string ShortenScript = $"""
         local expiry = redis.call('PEXPIRETIME', KEYS[1])
         if expiry == -2 then return 0 end
-        if expiry == -1 or redis.call('TYPE', KEYS[1]).ok ~= 'string' then
-            return redis.error_reply('ERR continuation entry out of policy')
-        end
+        if expiry == -1 then return redis.error_reply('ERR continuation entry out of policy') end
         {Now}
         if expiry <= now then return 0 end
+        if redis.call('STRLEN', KEYS[1]) > tonumber(ARGV[2]) then
+            return redis.error_reply('ERR continuation entry over the maximum')
+        end
         local target = now + tonumber(ARGV[1])
         if target < expiry then redis.call('PEXPIREAT', KEYS[1], string.format('%.0f', target)) end
         return 1
@@ -137,7 +142,8 @@ internal sealed class RedisContinuationCache : IContinuationCache
 
         // Truncated, so the clamp is never later than the limit; under a millisecond, the entry ends now.
         long limit = maximumRemainingLifetime.Ticks / TimeSpan.TicksPerMillisecond;
-        return ToConfirmation(await CallAsync(() => _database.ScriptEvaluateAsync(ShortenScript, [key], [limit], OnPrimary), cancellationToken)
+        return ToConfirmation(await CallAsync(
+                () => _database.ScriptEvaluateAsync(ShortenScript, [key], [limit, MaxValueBytes], OnPrimary), cancellationToken)
             .ConfigureAwait(false));
     }
 
@@ -150,16 +156,18 @@ internal sealed class RedisContinuationCache : IContinuationCache
         return Task.CompletedTask;
     }
 
+    // A raw one-key DEL (routed by its key) so the reply is checked here: the client's KeyDelete decoder also accepts
+    // the strings "0" and "1".
     public void Remove(string key)
     {
         ArgumentNullException.ThrowIfNull(key);
-        Call(() => _database.KeyDelete(key, OnPrimary));
+        _ = ToConfirmation(Call(() => _database.Execute("DEL", [(RedisKey)key], OnPrimary)));
     }
 
     public async Task RemoveAsync(string key, CancellationToken token = default)
     {
         ArgumentNullException.ThrowIfNull(key);
-        await CallAsync(() => _database.KeyDeleteAsync(key, OnPrimary), token).ConfigureAwait(false);
+        _ = ToConfirmation(await CallAsync(() => _database.ExecuteAsync("DEL", [(RedisKey)key], OnPrimary), token).ConfigureAwait(false));
     }
 
     private long ExpiryOf(string key, byte[] value, DistributedCacheEntryOptions options)
@@ -180,20 +188,18 @@ internal sealed class RedisContinuationCache : IContinuationCache
 
     private byte[]? ToValue(RedisResult reply)
     {
-        if (reply.Resp2Type != ResultType.BulkString)
+        // Exact wire types: the client folds a RESP3 verbatim string into RESP2 BulkString, so Resp2Type is not enough.
+        // Both legitimate miss replies, a RESP2 null bulk string and a RESP3 null, arrive as a null single value.
+        return reply.Resp3Type switch
         {
-            throw new ContinuationCacheUnavailableException();
-        }
-
-        if (reply.IsNull)
-        {
-            return null;
-        }
-
-        return (byte[]?)reply is { } value && value.Length <= MaxValueBytes ? value : throw new ContinuationCacheUnavailableException();
+            ResultType.BulkString when (byte[]?)reply is { } value && value.Length <= MaxValueBytes => value,
+            ResultType.Null when reply.Resp2Type == ResultType.BulkString => null,
+            _ => throw new ContinuationCacheUnavailableException(),
+        };
     }
 
-    private static bool ToConfirmation(RedisResult reply) => reply.Resp2Type == ResultType.Integer && !reply.IsNull
+    // Only a wire integer 0 or 1; the client folds a RESP3 Boolean into RESP2 Integer.
+    private static bool ToConfirmation(RedisResult reply) => reply.Resp3Type == ResultType.Integer
         ? (long)reply switch
         {
             0 => false,

@@ -21,6 +21,7 @@ public sealed class RedisInteropFixture : IAsyncLifetime
 
     private ConnectionMultiplexer? _first;
     private ConnectionMultiplexer? _second;
+    private ConnectionMultiplexer? _resp3;
     private ConnectionMultiplexer? _inspector;
     private RedisInteropServer? _server;
     private string? _refusal;
@@ -56,13 +57,21 @@ public sealed class RedisInteropFixture : IAsyncLifetime
         try
         {
             // INFO is an admin command to the client, so it has its own connection; the adapter's two are not admin.
-            _inspector = await ConnectAsync(portNumber, password, allowAdmin: true);
+            _inspector = await ConnectAsync(portNumber, password, allowAdmin: true, RedisProtocol.Resp2);
             _refusal = await VerifyAsync(_inspector.GetDatabase(), portNumber);
             if (_refusal is null)
             {
-                _first = await ConnectAsync(portNumber, password, allowAdmin: false);
-                _second = await ConnectAsync(portNumber, password, allowAdmin: false);
-                _server = new RedisInteropServer(_first.GetDatabase(), _second.GetDatabase(), _inspector.GetDatabase(), _version!);
+                _first = await ConnectAsync(portNumber, password, allowAdmin: false, RedisProtocol.Resp2);
+                _second = await ConnectAsync(portNumber, password, allowAdmin: false, RedisProtocol.Resp2);
+                _resp3 = await ConnectAsync(portNumber, password, allowAdmin: false, RedisProtocol.Resp3);
+                if (_first.GetServers().Any(s => s.Protocol != RedisProtocol.Resp2) || _resp3.GetServers().Any(s => s.Protocol != RedisProtocol.Resp3))
+                {
+                    _refusal = "The interop connections did not negotiate the requested RESP2 and RESP3 protocols.";
+                    return;
+                }
+
+                _server = new RedisInteropServer(
+                    _first.GetDatabase(), _second.GetDatabase(), _resp3.GetDatabase(), _inspector.GetDatabase(), _version!);
             }
         }
         catch (Exception exception) when (exception is RedisException or RedisTimeoutException or RedisCommandException)
@@ -74,7 +83,7 @@ public sealed class RedisInteropFixture : IAsyncLifetime
 
     public async ValueTask DisposeAsync()
     {
-        foreach (ConnectionMultiplexer? connection in new[] { _first, _second, _inspector })
+        foreach (ConnectionMultiplexer? connection in new[] { _first, _second, _resp3, _inspector })
         {
             if (connection is not null)
             {
@@ -101,12 +110,13 @@ public sealed class RedisInteropFixture : IAsyncLifetime
         return null!;
     }
 
-    private static async Task<ConnectionMultiplexer> ConnectAsync(int port, string password, bool allowAdmin)
+    private static async Task<ConnectionMultiplexer> ConnectAsync(int port, string password, bool allowAdmin, RedisProtocol protocol)
     {
         var options = new ConfigurationOptions
         {
             EndPoints = { new IPEndPoint(IPAddress.Loopback, port) },
             Password = password,
+            Protocol = protocol,
             AbortOnConnectFail = true,
             ConnectRetry = 1,
             ConnectTimeout = 5000,
@@ -175,7 +185,7 @@ public sealed class RedisInteropFixture : IAsyncLifetime
 }
 
 /// <summary>
-/// A verified interop server: two independent, non-admin connections for adapters, and an admin connection used only
-/// to inspect the server (<c>INFO</c>).
+/// A verified interop server: two independent, non-admin RESP2 connections and a non-admin RESP3 connection for
+/// adapters, and an admin connection used only to inspect the server (<c>INFO</c>).
 /// </summary>
-public sealed record RedisInteropServer(IDatabase First, IDatabase Second, IDatabase Inspector, string Version);
+public sealed record RedisInteropServer(IDatabase First, IDatabase Second, IDatabase Resp3, IDatabase Inspector, string Version);

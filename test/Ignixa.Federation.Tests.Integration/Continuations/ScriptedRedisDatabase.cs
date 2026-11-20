@@ -9,8 +9,9 @@ internal sealed record RedisCall(string Method, IReadOnlyList<RedisKey> Keys, Co
 
 /// <summary>
 /// A scripted <see cref="IDatabase"/> for deterministic fault control at the provider boundary: every call is recorded
-/// and answered by <see cref="Respond"/>, which returns the reply (a <see cref="RedisResult"/> or <see cref="bool"/>), a
-/// task of it (to hold or fault an in-flight call), or throws (a synchronous client failure). It runs no Lua and is not
+/// and answered by <see cref="Respond"/>, which returns the reply (a <see cref="RedisResult"/> built as the pinned client
+/// types a RESP2 or RESP3 reply), a task of it (to hold or fault an in-flight call), or throws (a synchronous client
+/// failure). It runs no Lua and is not
 /// Redis: it is evidence about the adapter's reply and failure handling only. Real semantics need the interop tests.
 /// </summary>
 [SuppressMessage("Performance", "CA1852:Seal internal types", Justification = "DispatchProxy requires a non-sealed proxy type.")]
@@ -49,7 +50,19 @@ internal class ScriptedRedisDatabase : DispatchProxy
 
     public static RedisResult Bulk(byte[] value) => RedisResult.Create(value, ResultType.BulkString);
 
+    // The client gives a RESP2 null bulk string ($-1) and a RESP3 null (_) the same shape: Resp3Type Null, Resp2Type
+    // BulkString. A null array (*-1) is Resp3Type Null, Resp2Type Array.
     public static RedisResult NullBulk() => RedisResult.Create(RedisValue.Null, ResultType.BulkString);
+
+    public static RedisResult Resp3Null() => RedisResult.Create(RedisValue.Null, ResultType.Null);
+
+    public static RedisResult NullArray() => RedisResult.Create((RedisResult[])null!);
+
+    public static RedisResult Boolean(bool value) => RedisResult.Create(value ? 1 : 0, ResultType.Boolean);
+
+    public static RedisResult Verbatim(string value) => RedisResult.Create(value, ResultType.VerbatimString);
+
+    public static RedisResult Simple(string value) => RedisResult.Create(value, ResultType.SimpleString);
 
     protected override object? Invoke(MethodInfo? targetMethod, object?[]? args)
     {
@@ -59,8 +72,10 @@ internal class ScriptedRedisDatabase : DispatchProxy
         {
             nameof(IDatabase.ScriptEvaluate) or nameof(IDatabase.ScriptEvaluateAsync) when args is [string, RedisKey[] keys, RedisValue[], CommandFlags flags] =>
                 new RedisCall(targetMethod.Name, keys, flags),
-            nameof(IDatabase.KeyDelete) or nameof(IDatabase.KeyDeleteAsync) when args is [RedisKey key, CommandFlags flags] =>
-                new RedisCall(targetMethod.Name, [key], flags),
+            // Only a raw one-key DEL, whose reply the adapter interprets itself; the client's KeyDelete decoder coerces.
+            nameof(IDatabase.Execute) or nameof(IDatabase.ExecuteAsync)
+                when args is ["DEL", ICollection<object> commandArgs, CommandFlags flags] && commandArgs.All(a => a is RedisKey) =>
+                new RedisCall($"{targetMethod.Name} DEL", [.. commandArgs.Cast<RedisKey>()], flags),
             _ => throw new NotSupportedException("The adapter called an unscripted IDatabase member."),
         };
 

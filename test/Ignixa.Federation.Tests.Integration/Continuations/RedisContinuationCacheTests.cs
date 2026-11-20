@@ -34,8 +34,8 @@ public sealed class RedisContinuationCacheTests
         ["Set"] = (c => { c.Set(Key, [1], Later); return Task.CompletedTask; }, ScriptedRedisDatabase.Integer(1)),
         ["SetAsync"] = (c => c.SetAsync(Key, [1], Later, Ct), ScriptedRedisDatabase.Integer(1)),
         ["TryShortenExpiryAsync"] = (c => c.TryShortenExpiryAsync(Key, TimeSpan.FromSeconds(60), Ct), ScriptedRedisDatabase.Integer(1)),
-        ["Remove"] = (c => { c.Remove(Key); return Task.CompletedTask; }, true),
-        ["RemoveAsync"] = (c => c.RemoveAsync(Key, Ct), true),
+        ["Remove"] = (c => { c.Remove(Key); return Task.CompletedTask; }, ScriptedRedisDatabase.Integer(1)),
+        ["RemoveAsync"] = (c => c.RemoveAsync(Key, Ct), ScriptedRedisDatabase.Integer(1)),
     };
 
     public static TheoryData<string> MemberNames => [.. Members.Keys];
@@ -167,6 +167,10 @@ public sealed class RedisContinuationCacheTests
         cache.Get(Key).ShouldBeNull();
         (await cache.GetAsync(Key, Ct)).ShouldBeNull();
 
+        script.Respond = _ => ScriptedRedisDatabase.Resp3Null();
+        cache.Get(Key).ShouldBeNull();
+        (await cache.GetAsync(Key, Ct)).ShouldBeNull();
+
         script.Respond = _ => ScriptedRedisDatabase.Bulk([]);
         cache.Get(Key).ShouldBe([]);
         (await cache.GetAsync(Key, Ct)).ShouldBe([]);
@@ -188,14 +192,21 @@ public sealed class RedisContinuationCacheTests
     [InlineData("integer")]
     [InlineData("status")]
     [InlineData("array")]
+    [InlineData("null-array")]
+    [InlineData("verbatim")]
+    [InlineData("boolean-true")]
+    [InlineData("boolean-false")]
     public async Task Get_NonconformingReply_IsUnavailable(string shape)
     {
         RedisResult reply = shape switch
         {
             "oversize" => ScriptedRedisDatabase.Bulk(new byte[Limit + 1]),
             "integer" => ScriptedRedisDatabase.Integer(0),
-            "status" => RedisResult.Create((RedisValue)"OK", ResultType.SimpleString),
-            _ => RedisResult.Create([ScriptedRedisDatabase.Bulk([1])]),
+            "status" => ScriptedRedisDatabase.Simple("OK"),
+            "array" => RedisResult.Create([ScriptedRedisDatabase.Bulk([1])]),
+            "null-array" => ScriptedRedisDatabase.NullArray(),
+            "verbatim" => ScriptedRedisDatabase.Verbatim("txt:value"),
+            _ => ScriptedRedisDatabase.Boolean(shape == "boolean-true"),
         };
         (IDatabase database, _) = ScriptedRedisDatabase.Create(_ => reply);
         var cache = new RedisContinuationCache(database, Limit);
@@ -215,10 +226,7 @@ public sealed class RedisContinuationCacheTests
     }
 
     [Theory]
-    [InlineData("two")]
-    [InlineData("negative")]
-    [InlineData("bulk")]
-    [InlineData("null")]
+    [MemberData(nameof(NonconformingConfirmations))]
     public async Task Set_NonconformingReply_IsUnavailable(string shape)
     {
         RedisResult reply = Nonconforming(shape);
@@ -242,10 +250,7 @@ public sealed class RedisContinuationCacheTests
     }
 
     [Theory]
-    [InlineData("two")]
-    [InlineData("negative")]
-    [InlineData("bulk")]
-    [InlineData("null")]
+    [MemberData(nameof(NonconformingConfirmations))]
     public async Task TryShorten_NonconformingReply_IsUnavailable(string shape)
     {
         RedisResult reply = Nonconforming(shape);
@@ -254,6 +259,32 @@ public sealed class RedisContinuationCacheTests
 
         ShouldBeUnavailable(await Should.ThrowAsync<ContinuationCacheUnavailableException>(
             () => cache.TryShortenExpiryAsync(Key, TimeSpan.FromSeconds(60), Ct)));
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
+    public async Task Remove_AcceptsAnIntegerDeleteCountOfZeroOrOne(long deleted)
+    {
+        (IDatabase database, ScriptedRedisDatabase script) = ScriptedRedisDatabase.Create(_ => ScriptedRedisDatabase.Integer(deleted));
+        var cache = new RedisContinuationCache(database, Limit);
+
+        cache.Remove(Key);
+        await cache.RemoveAsync(Key, Ct);
+
+        script.Calls.Select(call => call.Method).ShouldBe(["Execute DEL", "ExecuteAsync DEL"]);
+    }
+
+    [Theory]
+    [MemberData(nameof(NonconformingConfirmations))]
+    public async Task Remove_NonconformingReply_IsUnavailable(string shape)
+    {
+        RedisResult reply = Nonconforming(shape);
+        (IDatabase database, _) = ScriptedRedisDatabase.Create(_ => reply);
+        var cache = new RedisContinuationCache(database, Limit);
+
+        ShouldBeUnavailable(Should.Throw<ContinuationCacheUnavailableException>(() => cache.Remove(Key)));
+        ShouldBeUnavailable(await Should.ThrowAsync<ContinuationCacheUnavailableException>(() => cache.RemoveAsync(Key, Ct)));
     }
 
     [Theory]
@@ -322,7 +353,7 @@ public sealed class RedisContinuationCacheTests
 
         await Should.ThrowAsync<OperationCanceledException>(() => call.WaitAsync(TimeSpan.FromSeconds(10), Ct));
         pending.Task.IsCompleted.ShouldBeFalse();
-        pending.SetResult(member == "RemoveAsync" ? true : ScriptedRedisDatabase.Integer(1));
+        pending.SetResult(ScriptedRedisDatabase.Integer(1));
     }
 
     [Fact]
@@ -380,12 +411,23 @@ public sealed class RedisContinuationCacheTests
         _ => cache.RemoveAsync(Key, token),
     };
 
+    // Shapes a 0-or-1 acknowledgement must not be taken from: other integers, RESP3 Booleans (which the client reports
+    // as RESP2 integers), the strings "0" and "1" (which the client's KeyDelete decoder accepts), and nulls.
+    public static TheoryData<string> NonconformingConfirmations =>
+        ["two", "negative", "boolean-true", "boolean-false", "simple-one", "bulk-one", "bulk-zero", "verbatim-one", "null", "null-array"];
+
     private static RedisResult Nonconforming(string shape) => shape switch
     {
         "two" => ScriptedRedisDatabase.Integer(2),
         "negative" => ScriptedRedisDatabase.Integer(-1),
-        "bulk" => ScriptedRedisDatabase.Bulk([1]),
-        _ => ScriptedRedisDatabase.NullBulk(),
+        "boolean-true" => ScriptedRedisDatabase.Boolean(true),
+        "boolean-false" => ScriptedRedisDatabase.Boolean(false),
+        "simple-one" => ScriptedRedisDatabase.Simple("1"),
+        "bulk-one" => ScriptedRedisDatabase.Bulk("1"u8.ToArray()),
+        "bulk-zero" => ScriptedRedisDatabase.Bulk("0"u8.ToArray()),
+        "verbatim-one" => ScriptedRedisDatabase.Verbatim("txt:1"),
+        "null" => ScriptedRedisDatabase.NullBulk(),
+        _ => ScriptedRedisDatabase.NullArray(),
     };
 
     private static void ShouldBeUnavailable(ContinuationCacheUnavailableException exception)
