@@ -1,0 +1,42 @@
+name: Bug report
+description: Something behaves differently from the spec or returns a wrong result.
+title: "bug: "
+labels: [bug]
+body:
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: The actual behaviour, including the request and the response status or Bundle.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behaviour
+      description: What should have happened, with a link to the spec section if one applies.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: The smallest request sequence and shard data that shows the problem.
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Version or commit, and the backend profile of each shard involved.
+      placeholder: |
+        Version/commit:
+        Backend profile(s): MicrosoftFhirServer
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Relevant log output or traces. Remove tokens, credentials and patient data first.
+      render: text

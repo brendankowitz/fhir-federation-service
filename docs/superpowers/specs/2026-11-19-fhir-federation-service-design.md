@@ -1,4 +1,4 @@
-# FHIR Federation Service — Design
+# Ignixa Federation — Design
 
 **Status:** Draft v4 — two review rounds by GPT-6.2 Astra (FHIR semantics, algorithms) and Claude Fable 5.2 (scope, architecture, security, operability), then owner decisions D1–D7 (§18). Awaiting final approval.
 **Date:** 2026-11-19
@@ -52,7 +52,7 @@ The 2025 prototype (≈14.5K LOC) proved the execution patterns but was coupled 
 
 ## 3. Constraints
 
-- .NET 10, ASP.NET Core Minimal APIs, central package management, warnings-as-errors, nullable, xUnit + Shouldly + NSubstitute — Ignixa conventions (`brendankowitz/ignixa-fhir` `AGENTS.md`).
+- .NET 11, ASP.NET Core Minimal APIs, central package management, warnings-as-errors, nullable, xUnit + Shouldly + NSubstitute — Ignixa conventions (`brendankowitz/ignixa-fhir` `AGENTS.md`).
 - Ignixa consumed **only via published NuGet** (`0.6.82` at time of writing): `Ignixa.Abstractions`, `Ignixa.Specification`, `Ignixa.Serialization`, `Ignixa.Search`, `Ignixa.FhirPath`. `Ignixa.Api`, `.Application`, `.Domain`, `.DataLayer.*` are not published and must not be depended on. (`Ignixa.Search` references `Microsoft.AspNetCore.Http.Abstractions`; acceptable.)
 - Shards are standard FHIR R4 REST servers over HTTPS. **v1 certified backends: Microsoft FHIR Server / Azure Health Data Services (primary), then Ignixa** (D3). Each certified backend has a verified `BackendProfile` (§9.2) and a compatibility run.
 - **Size envelope (D6):** designed, tested and documented for up to 16 shards; load-tested at 16 and 50. 16 is a soft, documented limit (configurable), not a hard cap: sorted, chained and include queries need every shard, so all-shard availability is ≈98.4% at 16 shards and ≈95% at 50 (at 99.9% per shard), and each such page costs one backend call per shard. For scale, with storage items 1–4 roughly 4 shards of 128 TB hold 1 PiB, so 16 shards cover ≈4 PiB. One federation per deployment; no multi-tenancy.
@@ -169,7 +169,12 @@ Goal: retry-safe and scale-out-safe without a page cache, distributed locks, or 
 
 - **Snapshot:** each token is an immutable, Data-Protection-encrypted snapshot: format version, issued-at, binding hash, effective plan (classified parameters, rewritten parameters per shard, resolved chain key sets), page size, registry hash, hash of the parameter definitions the query resolved, and per stream `(replayable backend request, lastEmittedKey, exhausted)`. `lastEmittedKey` = `(lastUpdated, type/id)` for sorted streams, `type/id` for unsorted.
 - **Redemption is re-execution:** re-issue each stream's backend request, skip entries up to and including `lastEmittedKey`, continue. Redeeming twice performs the same computation. If `lastEmittedKey` is no longer on the re-fetched backend page → 410 "restart the search" **[call]**.
-- **Replayable backend requests are required** and certified per profile. Microsoft FHIR Server's keyset `ct` is stateless and replayable. For streams started with POST `_search`, the shard client re-POSTs the parameters of the backend's `next` link to `[type]/_search` after the origin check (`NextLinkRedemption`), because certified backends render `next` as a GET URL carrying every parameter (≈45 KB for 1,000 chain keys, past Kestrel's 8 KB request-line default).
+- **Replayable backend requests are required** and certified per profile. Microsoft FHIR Server's keyset `ct` is stateless and replayable. A stream's `next` links are redeemed according to how the stream started and the profile's `NextLinkRedemption` policy (`BackendProfile.RedemptionFor`); the result is fixed in every cursor of that stream:
+  - **Started with GET:** follow `next` with GET, whatever the policy.
+  - **Started with POST `_search`, policy `FollowGet`:** follow `next` with GET. A profile declares this only for query shapes whose GET `next` links it certifies as usable (within the backend's request-line limit).
+  - **Started with POST `_search`, policy `RepostToSearch`:** after the origin check, re-POST the parameters of the backend's `next` link to `[type]/_search`, because certified backends render `next` as a GET URL carrying every parameter (≈45 KB for 1,000 chain keys, past Kestrel's 8 KB request-line default).
+
+  A profile can declare `RepostToSearch` only if it supports POST `_search`.
 - **Storage:** snapshots ≤ `MaxInlineTokenBytes` (2 KB) travel in the token — no server state. Larger ones (chain key sets) are stored encrypted in `IDistributedCache` under a random id; they hold ids and timestamps only. On successor issue, the predecessor's TTL drops to 60 s.
 - **Binding:** hash of (`iss`, `sub`, `oid`/`client_id`, sorted role claims). Mismatch → 403.
 - **Lifetime:** 15 min sliding, 60 min absolute **[call]** (D5). Expired or missing → 410. Unprotect failure → 400.
@@ -295,7 +300,7 @@ Clients that follow `fullUrl` directly authenticate to the shard with their own 
 
 - **`entry.fullUrl = {shardBaseUrl}/{type}/{id}`** — the resource's real URL. Relative references inside the entry resolve against its shard, matching §4.1, so `_include`d targets (same-shard or cross-shard by absolute reference) resolve in-Bundle by exact `fullUrl` match.
 - **`entry.link`** `relation=alternate`, `url=[base]/shards/{alias}/{type}/{id}` — present only when `ProxyReads` is on, for clients without shard access.
-- **`entry.extension[source-shard]`** `valueString = alias` (`https://github.com/brendankowitz/fhir-federation-service/StructureDefinition/source-shard`).
+- **`entry.extension[source-shard]`** `valueString = alias` (`http://ignixa.io/federation/StructureDefinition/source-shard`; a stable identifier that need not resolve, defined as one constant in Core).
 - `search.mode` = `match` / `include` / `outcome`; `search.score` dropped.
 - Resources returned byte-for-byte as the shard returned them.
 - `Bundle.link`: `self` (applied predicates), `next` (`[base]/[type]?ct=…`). No `previous`/`last`.
@@ -323,18 +328,19 @@ flowchart LR
 ### 12.1 Projects
 
 ```text
+Ignixa.Federation.slnx
 src/
-  Fhir.Federation.Core/      # planner, rewriter, reference classifier, merge, budget, token snapshot model
-  Fhir.Federation.Shards/    # registry, IShardClient (HTTP), backend profiles, auth handlers, resilience, capability fetch
-  Fhir.Federation.Api/       # host: minimal APIs, authN/Z, shaping, DI, OpenTelemetry
+  Ignixa.Federation.Core/      # immutable shard registry and IShardClient contract (Core.Shards), parameter occurrences (Core.Search), planner, rewriter, reference classifier, merge, budget, token snapshot model
+  Ignixa.Federation.Shards/    # IShardClient HTTP implementation, backend profile definitions, auth handlers, resilience, capability fetch
+  Ignixa.Federation.Api/       # host: minimal APIs, authN/Z, shaping, DI, OpenTelemetry
 test/
-  Fhir.Federation.Core.UnitTests/
-  Fhir.Federation.Shards.UnitTests/
-  Fhir.Federation.Tests.Integration/   # federation + backend containers + oracle
-  Fhir.Federation.Tests.Compatibility/ # certified backend profile runs
+  Ignixa.Federation.Core.UnitTests/
+  Ignixa.Federation.Shards.UnitTests/
+  Ignixa.Federation.Tests.Integration/   # federation + backend containers + oracle
+  Ignixa.Federation.Tests.Compatibility/ # certified backend profile runs
 ```
 
-`IShardClient` takes parameter occurrence lists and returns entries plus an opaque stream cursor. No mediator.
+`IShardClient` is defined in Core (`Ignixa.Federation.Core.Shards`): it takes parameter occurrence lists and returns entries plus an opaque stream cursor. Shards implements it over HTTP. No mediator.
 
 ## 13. Extension path (v2+)
 
@@ -420,6 +426,9 @@ Config key names; token envelope wire format; exact default limits within the st
 | Deployment-wide chain mode doesn't match path-specific placement (owner, 2026-11-19) | §7.5 per-path `Passthrough` list, `Distributed` default |
 | Standalone vs Ignixa-hosted (Fable) | Standalone: Ignixa's seam hands over `SearchOptions.Expression`, reintroducing expression→string serialisation; Application layer unpublished |
 | Topology hiding & content rewriting (Astra, Fable) | Dropped by D4 |
+| Rename (2026-11-20, Forge) | Rename-only: product Ignixa Federation, .NET 11, Ignixa.Federation.* projects, source-shard extension URL; no design change |
+| Registry and IShardClient contract placement (2026-11-20, Forge/Astra) | §12.1: the shard registry and IShardClient contract (Core.Shards), ParameterOccurrence (Core.Search) and options (Core.Configuration) are in Core; Shards holds the HTTP implementation and concrete profiles; v1 behaviour unchanged |
+| Next-link redemption by start method (2026-11-20, Forge, review R5/R5b) | §7.4: GET starts follow GET; POST starts follow GET or re-POST per the profile's `NextLinkRedemption`; re-POST requires POST `_search` support. Matches `BackendProfile.RedemptionFor` |
 
 ## 20. Prior art
 
