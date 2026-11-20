@@ -22,4 +22,9 @@ public sealed class PlannedOccurrence
 
     /// <summary>Gets the reference hop of a chain, include or reverse include; <see langword="null"/> for predicates and controls.</summary>
     public ReferenceHop? Hop { get; }
+
+    /// <summary>Gets the decoded backend parameter key for a distributed replacement; otherwise <see langword="null"/>.</summary>
+    public string? ReplacementKey => Action == OccurrenceAction.Replace
+        ? Kind == OccurrenceKind.ReverseChain ? "_id" : Hop!.Path.Code
+        : null;
 }

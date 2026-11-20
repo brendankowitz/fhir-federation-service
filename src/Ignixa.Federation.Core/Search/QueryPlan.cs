@@ -27,7 +27,7 @@ public sealed class QueryPlan
     /// <summary>Gets the searched resource type.</summary>
     public ResourceType Type { get; }
 
-    /// <summary>Gets the query as parsed, the template for the self link and backend requests.</summary>
+    /// <summary>Gets the original query for the self link. Use <see cref="BuildBackendParameters"/> for shard requests.</summary>
     public SearchQuery Query { get; }
 
     /// <summary>Gets one planned occurrence per query occurrence, in ordinal order.</summary>
@@ -50,4 +50,40 @@ public sealed class QueryPlan
     /// parameter keys sorted ordinally and joined by <c>&amp;</c>, each followed by <c>=,</c> when it lists alternatives.
     /// </summary>
     public string CountShape { get; }
+
+    /// <summary>Builds backend search parameters after all rewrites for one shard have been resolved.</summary>
+    /// <param name="decodedReplacements">One nonempty decoded value for each Replace ordinal. For an empty match set, the executor skips that shard rather than building a request.</param>
+    /// <returns>Backend predicates in original order, plus the certified sort when requested. The executor adds pagination and count controls.</returns>
+    /// <exception cref="ArgumentException">A replacement is missing, empty, or supplied for an occurrence that is not replaced.</exception>
+    public IReadOnlyList<ParameterOccurrence> BuildBackendParameters(IReadOnlyDictionary<int, string> decodedReplacements)
+    {
+        ArgumentNullException.ThrowIfNull(decodedReplacements);
+        var rewriter = new QueryRewriter(Query);
+        int required = 0;
+        foreach (PlannedOccurrence planned in Occurrences)
+        {
+            int ordinal = planned.Occurrence.Ordinal;
+            if (planned.ReplacementKey is { } key)
+            {
+                if (!decodedReplacements.TryGetValue(ordinal, out string? value) || string.IsNullOrEmpty(value))
+                {
+                    throw new ArgumentException("Every distributed occurrence requires a nonempty replacement.", nameof(decodedReplacements));
+                }
+
+                rewriter.Replace(ordinal, QueryRewriter.Encode(key, value));
+                required++;
+            }
+            else if (planned.Action == OccurrenceAction.Remove)
+            {
+                rewriter.Drop(ordinal);
+            }
+        }
+
+        if (required != decodedReplacements.Count)
+        {
+            throw new ArgumentException("A replacement ordinal does not identify a distributed occurrence.", nameof(decodedReplacements));
+        }
+
+        return rewriter.Build();
+    }
 }
