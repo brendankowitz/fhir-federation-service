@@ -63,6 +63,47 @@ internal static class SearchsetJson
 
     public static BackendEvidenceException Incomplete(string detail) => new(BackendFailureKind.IncompleteSearch, detail);
 
+    /// <summary>
+    /// The decoded name and value of every parameter in the single self link, in order and with multiplicity.
+    /// The query is split on <c>&amp;</c> and <c>=</c> before decoding, so an encoded delimiter stays data, and
+    /// the URL is never requested. The caller passes the root of a document parsed by
+    /// <see cref="ParseCompleteSearchset"/> with <c>countOnly</c>, so every link has a URL.
+    /// </summary>
+    public static List<(string Name, string Value)> SelfQueryPairs(JsonElement root)
+    {
+        string[] selfUrls = [.. Array(root, "link")
+            .Where(link => StringMember(link, "relation") == "self")
+            .Select(link => StringMember(link, "url")!)];
+        if (selfUrls.Length != 1)
+        {
+            throw Incomplete($"the searchset holds {selfUrls.Length} self links, not exactly one");
+        }
+
+        string url = selfUrls[0];
+        if (!Uri.IsWellFormedUriString(url, UriKind.RelativeOrAbsolute))
+        {
+            throw Incomplete("the self link is not a well-formed URI reference");
+        }
+
+        int fragmentStart = url.IndexOf('#', StringComparison.Ordinal);
+        int queryStart = url.IndexOf('?', StringComparison.Ordinal);
+        int queryEnd = fragmentStart < 0 ? url.Length : fragmentStart;
+        string query = queryStart >= 0 && queryStart < queryEnd ? url[(queryStart + 1)..queryEnd] : string.Empty;
+
+        List<(string Name, string Value)> pairs = [];
+        foreach (string parameter in query.Split('&', StringSplitOptions.RemoveEmptyEntries))
+        {
+            int separator = parameter.IndexOf('=', StringComparison.Ordinal);
+            pairs.Add((
+                Decode(separator < 0 ? parameter : parameter[..separator]),
+                Decode(separator < 0 ? string.Empty : parameter[(separator + 1)..])));
+        }
+
+        return pairs;
+    }
+
+    private static string Decode(string formComponent) => Uri.UnescapeDataString(formComponent.Replace('+', ' '));
+
     public static string? StringMember(JsonElement element, string name) =>
         element.ValueKind == JsonValueKind.Object
         && element.TryGetProperty(name, out JsonElement value)

@@ -99,36 +99,14 @@ public sealed class RepeatedIdEvidence
     {
         using JsonDocument document = SearchsetJson.ParseCompleteSearchset(json, countOnly: true);
 
-        string[] selfUrls = [.. SearchsetJson.Array(document.RootElement, "link")
-            .Where(link => SearchsetJson.StringMember(link, "relation") == "self")
-            .Select(link => SearchsetJson.StringMember(link, "url")!)];
-        if (selfUrls.Length != 1)
-        {
-            throw SearchsetJson.Incomplete($"the searchset holds {selfUrls.Length} self links, not exactly one");
-        }
-
-        string url = selfUrls[0];
-        if (!Uri.IsWellFormedUriString(url, UriKind.RelativeOrAbsolute))
-        {
-            throw SearchsetJson.Incomplete("the self link is not a well-formed URI reference");
-        }
-
-        int fragmentStart = url.IndexOf('#', StringComparison.Ordinal);
-        int queryStart = url.IndexOf('?', StringComparison.Ordinal);
-        int queryEnd = fragmentStart < 0 ? url.Length : fragmentStart;
-        string query = queryStart >= 0 && queryStart < queryEnd ? url[(queryStart + 1)..queryEnd] : string.Empty;
-
         int occurrences = 0;
-        foreach (string parameter in query.Split('&', StringSplitOptions.RemoveEmptyEntries))
+        foreach ((string name, string value) in SearchsetJson.SelfQueryPairs(document.RootElement))
         {
-            int separator = parameter.IndexOf('=', StringComparison.Ordinal);
-            string name = Decode(separator < 0 ? parameter : parameter[..separator]);
             if (!string.Equals(name, "_id", StringComparison.Ordinal))
             {
                 continue;
             }
 
-            string value = Decode(separator < 0 ? string.Empty : parameter[(separator + 1)..]);
             if (!string.Equals(value, expectedId, StringComparison.Ordinal))
             {
                 throw SearchsetJson.Incomplete("the self link holds an _id occurrence whose decoded value is not the seeded id");
@@ -141,6 +119,4 @@ public sealed class RepeatedIdEvidence
             ? occurrences
             : throw SearchsetJson.Incomplete($"the self link holds {occurrences} decoded _id occurrences, not one or two");
     }
-
-    private static string Decode(string formComponent) => Uri.UnescapeDataString(formComponent.Replace('+', ' '));
 }

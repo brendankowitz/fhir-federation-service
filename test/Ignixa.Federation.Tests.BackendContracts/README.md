@@ -120,6 +120,58 @@ No live outcome is recorded yet: the match and echo results for GET and POST are
 run. Offline tests (`RepeatedIdEvidenceTests`, no Docker) cover the parser, sanitized reporting, and
 the actual request target and form body sent by the client.
 
+## Patient.given witness (`PatientGivenContractTests`)
+
+A fourth witness records how the backend handles `Patient.given` string search: a default match, a second
+value, the AND of a repeated parameter, the OR of a comma list, and `:exact`. It has its own disposable seed
+and its own live fixture and collection (`PatientGivenBackendFixture`, `LiveGivenBackendDefinition`), so it
+adds one more SQL start and the count, exact-id and reference seeds are unchanged. The six seeded Patients are
+synthetic, each with one `name.given` list:
+
+| id | given |
+| --- | --- |
+| `given-both` | Quartz, Mica |
+| `given-left` | Quartz |
+| `given-right` | Mica |
+| `given-long` | Quartzite |
+| `given-case` | QUARTZ |
+| `given-neither` | Topaz |
+
+Twelve live cases: each of the six below, as GET and as a form POST.
+
+| Case | Selection text (escapes literal) | Required matches |
+| --- | --- | --- |
+| `left` | `given=Quartz` | `given-both`, `given-case`, `given-left`, `given-long` |
+| `right` | `given=Mica` | `given-both`, `given-right` |
+| `and` | `given=Quartz&given=Mica` | `given-both` |
+| `or` | `given=Quartz%2CMica` | `given-both`, `given-case`, `given-left`, `given-long`, `given-right` |
+| `exact` | `given%3Aexact=Quartz` | `given-both`, `given-left` |
+| `exact-upper` | `given%3Aexact=QUARTZ` | `given-case` |
+
+The expected ids are literals derived from FHIR R4 string search, never from a response. Every request appends
+`&_count=100&_total=accurate` and sends `Prefer: handling=strict`. GET is `Patient?<selection>&<controls>`; POST
+is `Patient/_search` with the same text as an `application/x-www-form-urlencoded` body. Both are sent raw, so
+`%2C` and `%3A` reach the wire as written (the GET target disables .NET query canonicalization, and an offline
+test captures the real request through a loopback server).
+
+Each case is a contract on two things, reported apart:
+
+- **Match**: the sorted ids of one complete page (no next link, total equal to the entries, Patient matches
+  only) equal the literal expectation as a multiset. A different set is `[contract]`; an answer that cannot be
+  accounted for is `[incomplete-search]`; HTTP 400, 422 or 501 is `[unsupported-capability]`.
+- **`Bundle.self` echo**: the decoded name/value pairs of the single self link, ignoring `_count` and
+  `_total`, equal the decoded selection pairs with multiplicity, so a dropped, altered, added or collapsed
+  predicate fails even when the match is correct, and a correct echo never excuses a wrong match. Any spelling
+  that decodes the same is accepted.
+
+Reports print reserved ids and the expected pairs only, plus a count of unexpected pairs, never the response
+body or a server link. Offline tests (`PatientGivenEvidenceTests`, no Docker) cover the pinned matrix, the seed,
+readiness, the parser, wrong multisets, broken echoes and the request wire shape.
+
+The Ignixa R4 host reference run (Microsoft FHIR Server for Azure, 1.0.0) historically matched and echoed all six
+shapes in GET and POST. That native run is a separate reference for the literal cases only; it is not a result of
+this harness and not a substitute for the Linux Docker run. No live outcome of this witness is recorded yet.
+
 ## Run it
 
 Requires .NET SDK 11.0.100. The live tests also require a local Docker engine for `linux/amd64` containers.
@@ -127,12 +179,12 @@ The harness uses `/var/run/docker.sock` on Linux and the Docker Desktop Linux en
 Run the same two commands as CI from the repository root:
 
 ```text
-dotnet run --project test/Ignixa.Federation.Tests.BackendContracts/Ignixa.Federation.Tests.BackendContracts.csproj --configuration Release -- --show-live-output on --progress off --fail-skips on --filter-class '*EvidenceTests' --minimum-expected-tests 150
-dotnet run --project test/Ignixa.Federation.Tests.BackendContracts/Ignixa.Federation.Tests.BackendContracts.csproj --configuration Release --no-build -- --show-live-output on --progress off --fail-skips on --filter-class '*ContractTests' --minimum-expected-tests 13
+dotnet run --project test/Ignixa.Federation.Tests.BackendContracts/Ignixa.Federation.Tests.BackendContracts.csproj --configuration Release -- --show-live-output on --progress off --fail-skips on --filter-class '*EvidenceTests' --minimum-expected-tests 265
+dotnet run --project test/Ignixa.Federation.Tests.BackendContracts/Ignixa.Federation.Tests.BackendContracts.csproj --configuration Release --no-build -- --show-live-output on --progress off --fail-skips on --filter-class '*ContractTests' --minimum-expected-tests 25
 ```
 
-The first command builds the project and runs the 150 offline tests. The second runs the thirteen live cases
-(three reference, six count, four repeated `_id`) using that build. The separate filters and minimum test counts prevent
+The first command builds the project and runs the 265 offline tests. The second runs the twenty-five live cases
+(three reference, six count, four repeated `_id`, twelve Patient.given) using that build. The separate filters and minimum test counts prevent
 offline tests from satisfying the live gate. Failed or skipped cases make their command exit non-zero.
 
 The first live run can take several minutes to pull images and initialize the SQL schema.
@@ -187,10 +239,11 @@ base and can include foreign references, so it is not an exact-local query.
 ## Evidence status
 
 - Local (Windows, no Docker engine): the project builds with the .NET 11.0.100 SDK. The offline tests pass.
-  The thirteen live cases (three reference, six count, four repeated `_id`) run and fail with
-  `[prerequisite]`, as they should without Docker: the offline run is 150 passed, 0 failed, 0 skipped,
-  and the live run is 13 total, 0 passed, 13 failed, 0 skipped.
-- Pending Docker or CI: startup, port binding, match sets, the Patient count totals and the repeated
-  `_id` match and echo outcomes have not been verified against a live backend; no outcome is recorded
-  here and none is assumed. The first Linux run in `.github/workflows/backend-contracts.yml`
-  supplies that evidence. Until then the count witness is not accepted.
+  The twenty-five live cases (three reference, six count, four repeated `_id`, twelve Patient.given) run and fail
+  with `[prerequisite]`, as they should without Docker: the offline run is 265 passed, 0 failed, 0 skipped,
+  and the live run is 25 total, 0 passed, 25 failed, 0 skipped.
+- Pending Docker or CI: startup, port binding, match sets, the Patient count totals, the repeated
+  `_id` match and echo outcomes, and the Patient.given match and echo outcomes have not been verified against a
+  live backend; no outcome is recorded here and none is assumed. The first Linux run in
+  `.github/workflows/backend-contracts.yml` supplies that evidence. Until then the count and Patient.given
+  witnesses are not accepted.

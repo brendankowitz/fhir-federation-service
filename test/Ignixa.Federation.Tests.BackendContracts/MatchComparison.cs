@@ -20,15 +20,17 @@ public sealed class MatchComparison
 
     private readonly EvidenceLabel _label;
     private readonly string _query;
+    private readonly Func<string, bool> _isReservedId;
     private readonly string[] _expected;
     private readonly string[] _actual;
     private readonly string[] _missing;
     private readonly string[] _unexpected;
 
-    private MatchComparison(EvidenceLabel label, string query, string[] expected, string[] actual)
+    private MatchComparison(EvidenceLabel label, string query, Func<string, bool> isReservedId, string[] expected, string[] actual)
     {
         _label = label;
         _query = query;
+        _isReservedId = isReservedId;
         _expected = expected;
         _actual = actual;
         _missing = MultisetExcept(expected, actual);
@@ -37,14 +39,17 @@ public sealed class MatchComparison
 
     public bool IsEqual => _missing.Length == 0 && _unexpected.Length == 0;
 
+    /// <param name="isReservedId">Whether an id is a reserved synthetic id that a report may print. Defaults to the reference Observations.</param>
     internal static MatchComparison Compare(
         EvidenceLabel label,
         string queryDescription,
         IReadOnlyCollection<string> expected,
-        SearchsetEvidence actual) =>
+        SearchsetEvidence actual,
+        Func<string, bool>? isReservedId = null) =>
         new(
             label,
             queryDescription,
+            isReservedId ?? SeedData.IsReservedObservationId,
             [.. expected.Order(StringComparer.Ordinal)],
             [.. actual.MatchIds]);
 
@@ -56,11 +61,13 @@ public sealed class MatchComparison
             + $"missing: {Format(_missing)}; unexpected: {Format(_unexpected)}";
     }
 
-    private static string[] MultisetExcept(string[] from, string[] remove)
+    /// <summary>The elements of <paramref name="from"/> left after removing <paramref name="remove"/>, as multisets.</summary>
+    internal static T[] MultisetExcept<T>(T[] from, T[] remove)
+        where T : notnull
     {
-        var remaining = remove.GroupBy(id => id, StringComparer.Ordinal).ToDictionary(g => g.Key, g => g.Count(), StringComparer.Ordinal);
-        var result = new List<string>();
-        foreach (string id in from)
+        var remaining = remove.GroupBy(id => id).ToDictionary(g => g.Key, g => g.Count());
+        var result = new List<T>();
+        foreach (T id in from)
         {
             if (remaining.TryGetValue(id, out int count) && count > 0)
             {
@@ -75,9 +82,9 @@ public sealed class MatchComparison
         return [.. result];
     }
 
-    private static string Format(string[] ids)
+    private string Format(string[] ids)
     {
-        IEnumerable<string> shown = ids.Take(MaxListedIds).Select(id => SeedData.IsReservedObservationId(id) ? id : "<unreserved id>");
+        IEnumerable<string> shown = ids.Take(MaxListedIds).Select(id => _isReservedId(id) ? id : "<unreserved id>");
         string extra = ids.Length > MaxListedIds ? $", +{ids.Length - MaxListedIds} more" : string.Empty;
         return $"[{string.Join(", ", shown)}{extra}]";
     }

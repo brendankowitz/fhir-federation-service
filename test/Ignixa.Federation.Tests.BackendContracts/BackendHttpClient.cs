@@ -234,8 +234,22 @@ internal sealed class BackendHttpClient : IDisposable
     internal static HttpRequestMessage BuildRepeatedIdRequest(HttpMethod method, RepeatedIdShape shape, Uri baseAddress)
     {
         string controls = shape == RepeatedIdShape.Primary ? "_count=100&_total=accurate" : "_count=0";
-        string query = $"{PlainIdSpelling}&{EncodedIdSpelling}&{controls}";
+        return BuildLiteralPatientRequest(method, $"{PlainIdSpelling}&{EncodedIdSpelling}&{controls}", baseAddress);
+    }
 
+    /// <summary>
+    /// Builds a Patient.given request whose selection text is sent exactly as written, followed by
+    /// <c>_count=100&amp;_total=accurate</c>: in the GET target, and in the body of <c>POST Patient/_search</c>.
+    /// Escapes such as <c>%2C</c> and <c>%3A</c> reach the wire literally in both. Strict handling is requested.
+    /// </summary>
+    /// <param name="method">GET or POST.</param>
+    /// <param name="given">The case whose <see cref="GivenCase.WireQuery"/> is sent.</param>
+    /// <param name="baseAddress">The backend base address, ending in a slash.</param>
+    internal static HttpRequestMessage BuildGivenRequest(HttpMethod method, GivenCase given, Uri baseAddress) =>
+        BuildLiteralPatientRequest(method, $"{given.WireQuery}&_count=100&_total=accurate", baseAddress);
+
+    private static HttpRequestMessage BuildLiteralPatientRequest(HttpMethod method, string query, Uri baseAddress)
+    {
         HttpRequestMessage request;
         if (method == HttpMethod.Get)
         {
@@ -254,11 +268,26 @@ internal sealed class BackendHttpClient : IDisposable
         }
         else
         {
-            throw new ArgumentOutOfRangeException(nameof(method), "Only GET and POST have a repeated _id request shape.");
+            throw new ArgumentOutOfRangeException(nameof(method), "Only GET and POST have a literal Patient request shape.");
         }
 
         request.Headers.TryAddWithoutValidation("Prefer", "handling=strict");
         return request;
+    }
+
+    /// <summary>
+    /// Sends <see cref="BuildGivenRequest"/> and accounts for the response. Failures name only the method, the
+    /// case label, the HTTP status and fixed text, never a response body, a server link or the request.
+    /// </summary>
+    public async Task<GivenEvidence> SearchGivenAsync(HttpMethod method, GivenCase given, CancellationToken cancellationToken)
+    {
+        using HttpRequestMessage request = BuildGivenRequest(method, given, _http.BaseAddress!);
+        return await SendForEvidenceAsync(
+            request,
+            $"the {method.Method} {given.Label} Patient.given search",
+            "a result",
+            GivenEvidence.Parse,
+            cancellationToken);
     }
 
     /// <summary>
