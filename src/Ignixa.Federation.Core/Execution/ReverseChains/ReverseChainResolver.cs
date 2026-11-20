@@ -27,7 +27,18 @@ public sealed class ReverseChainResolver
     private readonly int _maxParallelCalls;
     private readonly TimeSpan _subqueryTimeout;
 
-    /// <summary>Creates a resolver with positive key, row and concurrency limits and a positive sub-query timeout.</summary>
+    /// <summary>Initializes a new instance of the <see cref="ReverseChainResolver"/> class.</summary>
+    /// <param name="client">The client that searches source shards and follows their continuations.</param>
+    /// <param name="capabilities">The current path certifications and the registry used to route references.</param>
+    /// <param name="maxChainKeys">The most distinct physical target keys one distributed clause may witness across all shards.</param>
+    /// <param name="maxChainSourceRows">The most source entries one distributed clause may scan across all shards and pages.</param>
+    /// <param name="maxParallelCalls">The most shard calls one resolution may have in flight at once.</param>
+    /// <param name="subqueryTimeout">The deadline for one distributed clause's fan-out, including continuations.</param>
+    /// <exception cref="ArgumentNullException"><paramref name="client"/> or <paramref name="capabilities"/> is <see langword="null"/>.</exception>
+    /// <exception cref="ArgumentOutOfRangeException">
+    /// <paramref name="maxChainKeys"/>, <paramref name="maxChainSourceRows"/>, <paramref name="maxParallelCalls"/>
+    /// or <paramref name="subqueryTimeout"/> is not positive.
+    /// </exception>
     public ReverseChainResolver(IShardClient client, SearchCapabilities capabilities, int maxChainKeys, int maxChainSourceRows, int maxParallelCalls, TimeSpan subqueryTimeout)
     {
         ArgumentNullException.ThrowIfNull(client);
@@ -46,8 +57,29 @@ public sealed class ReverseChainResolver
     }
 
     /// <summary>Resolves reverse chains without issuing any primary search.</summary>
+    /// <param name="plan">The planned search. Only distributed reverse chains may require replacements.</param>
+    /// <param name="authorizedTypes">The types the caller may read; both ends of every reverse-chain path must be authorized.</param>
+    /// <param name="fetchBudget">
+    /// The most backend calls this resolution may start across all clauses and shards, counting each initial search
+    /// and each continuation. Zero is sufficient when no distributed clause needs a call.
+    /// </param>
+    /// <param name="cancellationToken">Cancels the resolution. Caller cancellation takes precedence over a shard failure.</param>
+    /// <returns>
+    /// The prepared primary targets in registry order and the number of sub-query calls spent. Empty targets mean
+    /// no shard can match: return an empty result without a primary search.
+    /// </returns>
+    /// <exception cref="ArgumentNullException"><paramref name="plan"/> or <paramref name="authorizedTypes"/> is <see langword="null"/>.</exception>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="fetchBudget"/> is negative.</exception>
+    /// <exception cref="ArgumentException"><paramref name="plan"/> requires a distributed forward-chain replacement.</exception>
+    /// <exception cref="ReverseChainRefusedException">
+    /// <see cref="ReverseChainRefusal.UnauthorizedType"/>: the caller cannot read a source or target type;
+    /// <see cref="ReverseChainRefusal.NotCertified"/>: the operation is no longer certified on exactly the planned shards;
+    /// <see cref="ReverseChainRefusal.TooCostly"/>: a distributed clause exceeded its source-row or distinct-key limit.
+    /// </exception>
+    /// <exception cref="FetchBudgetExhaustedException">Another sub-query call would exceed <paramref name="fetchBudget"/>.</exception>
     /// <exception cref="ShardFailureException">A participating shard failed, timed out, or broke its search contract.</exception>
     /// <exception cref="TimeoutException">The sub-query deadline expired without a failure attributable to a shard.</exception>
+    /// <exception cref="OperationCanceledException"><paramref name="cancellationToken"/> was cancelled.</exception>
     public async Task<ReverseChainResolution> ResolveAsync(QueryPlan plan, IReadOnlySet<ResourceType> authorizedTypes, int fetchBudget, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(plan);
