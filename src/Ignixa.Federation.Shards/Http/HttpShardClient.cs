@@ -14,6 +14,7 @@ using Ignixa.Federation.Core.Identity;
 using Ignixa.Federation.Core.Search;
 using Ignixa.Federation.Core.Shards;
 using Ignixa.Federation.Shards.Capabilities;
+using Ignixa.Federation.Shards.Credentials;
 using Ignixa.Federation.Shards.Diagnostics;
 using Microsoft.Extensions.Http.Resilience;
 using Polly;
@@ -53,7 +54,9 @@ namespace Ignixa.Federation.Shards.Http;
 /// <c>Correlation-Context</c>): baggage is arbitrary application data and a shard is a separate trust domain.</para>
 /// <para><b>Failures.</b> A call either returns a page that represents the backend's answer exactly or throws: a
 /// classified <see cref="ShardCallException"/>, an <see cref="OperationCanceledException"/> when the caller cancels, or
-/// the credential provider's or meter's own exception. It never returns an empty page for a failure.</para>
+/// the credential provider's or meter's own exception (except that a metadata fetch reports a
+/// <see cref="ShardCredentialException"/> as <see cref="ShardCallFailure.CredentialUnavailable"/>). It never returns an
+/// empty page for a failure.</para>
 /// <para><b>Resilience.</b> A search, continuation or read that fails with a transient status (408, 429 or 5xx) or a
 /// connection fault is retried once if its wire method is GET, within the same deadline; a POST, a timeout, a permanent
 /// status and a malformed or oversized body are never retried. Each such call also runs through the shard's circuit breaker
@@ -312,7 +315,9 @@ public sealed class HttpShardClient : IShardClient, IDisposable
     /// <exception cref="ShardCallException">
     /// The exchange failed, or the body is not valid UTF-8 or not an R4 CapabilityStatement the reader accepts
     /// (<see cref="ShardCallFailure.MalformedResponse"/>). Any status other than 200, including 404 and 410, is a failure
-    /// of the advertisement, not the absence of a resource; no error body is read, and nothing is retried.
+    /// of the advertisement, not the absence of a resource; no error body is read, and nothing is retried. A
+    /// <see cref="ShardCredentialException"/> from the credential provider is
+    /// <see cref="ShardCallFailure.CredentialUnavailable"/> here, with no inner exception: nothing was sent.
     /// </exception>
     public async Task<ShardCapabilityEvidence> GetCapabilitiesAsync(CancellationToken cancellationToken)
     {
@@ -335,6 +340,14 @@ public sealed class HttpShardClient : IShardClient, IDisposable
         {
             activity?.SetStatus(ActivityStatusCode.Error, e.Failure.ToString());
             throw;
+        }
+        catch (ShardCredentialException)
+        {
+            // Classify only metadata failures so refresh can retain evidence without exposing credential details.
+            cancellationToken.ThrowIfCancellationRequested();
+            activity?.SetStatus(ActivityStatusCode.Error, nameof(ShardCallFailure.CredentialUnavailable));
+            throw Failure(
+                ShardCallFailure.CredentialUnavailable, "The shard credential could not be acquired.", fault: ShardFault.None);
         }
     }
 

@@ -61,4 +61,11 @@ public enum ShardCallFailure
     /// was sent, and retrying it unchanged cannot help. Oversized backend continuations are <see cref="InvalidNextLink"/>.
     /// </summary>
     RequestTooLarge,
+
+    /// <summary>
+    /// The shard's credential could not be acquired, so the metadata request was never sent. Set only by
+    /// <see cref="HttpShardClient.GetCapabilitiesAsync"/>, where it keeps an operational credential outage local to one
+    /// shard's refresh. It is not a statement about the backend, and says nothing about why the credential was unavailable.
+    /// </summary>
+    CredentialUnavailable,
 }
