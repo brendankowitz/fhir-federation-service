@@ -2,14 +2,14 @@
 
 The [design spec](../superpowers/specs/2026-11-19-fhir-federation-service-design.md) is the source of truth. This page summarises the structure and points to the spec sections. If the two disagree, the spec wins.
 
-Only the scaffold is built today. The components below describe the design, and each is marked with what exists.
+Only the scaffold and the shard contract and registry model are built today. The components below describe the design, and each is marked with what exists.
 
 ## Components
 
 | Project | Role | Built today |
 |---|---|---|
-| `Ignixa.Federation.Core` | Domain logic: planner, rewriter, reference classifier, merge, budget, token snapshot model ([§12.1](../superpowers/specs/2026-11-19-fhir-federation-service-design.md#121-projects)). No HTTP or hosting code. | `FederationTelemetry` (the `ActivitySource` and `Meter` named `Ignixa.Federation`). |
-| `Ignixa.Federation.Shards` | The shard registry, the HTTP shard client, backend profiles, auth handlers, resilience, and capability fetch ([§12.1](../superpowers/specs/2026-11-19-fhir-federation-service-design.md#121-projects)). No ASP.NET dependency. | `ShardActivity.StartBackendCall(alias, stage)`. |
+| `Ignixa.Federation.Core` | Domain logic: the immutable shard registry and `IShardClient` contract (`Core.Shards`), `ParameterOccurrence` (`Core.Search`), planner, rewriter, reference classifier, merge, budget, token snapshot model ([§12.1](../superpowers/specs/2026-11-19-fhir-federation-service-design.md#121-projects)). No HTTP or hosting code. | `FederationTelemetry` (the `ActivitySource` and `Meter` named `Ignixa.Federation`).<br>**Shards:** `ShardRegistry`, `ShardDescriptor`, `ShardId`, `ShardAlias`, `ShardAuth`, the `IShardClient` contract with its request, page, entry and cursor types, and `BackendProfile`.<br>**Identity:** `ResourceType`, `ResourceId`, `ResourceKey`.<br>**Search:** `ParameterOccurrence`.<br>**Configuration:** `FederationOptions` and its validator. |
+| `Ignixa.Federation.Shards` | The HTTP `IShardClient` implementation, backend profile definitions, auth handlers, resilience, and capability fetch ([§12.1](../superpowers/specs/2026-11-19-fhir-federation-service-design.md#121-projects)). No ASP.NET dependency. | `ShardActivity.StartBackendCall(alias, stage)`. |
 | `Ignixa.Federation.Api` | The host: minimal APIs, authentication and authorisation, response shaping, dependency injection, OpenTelemetry ([§12.1](../superpowers/specs/2026-11-19-fhir-federation-service-design.md#121-projects)). | `/health/live` and `/health/ready`. |
 
 ## Request flow
@@ -32,7 +32,7 @@ flowchart LR
   ShardClient --> ShardB[(Shard B)]
 ```
 
-`Core` holds the logic these stages use: classification, rewriting, reference classification, merge and budget ([§12.1](../superpowers/specs/2026-11-19-fhir-federation-service-design.md#121-projects)). The `Api` host runs the stages and does authentication and role authorisation. Every call to a shard goes through the shard client in `Shards`.
+`Core` holds the logic these stages use: classification, rewriting, reference classification, merge and budget ([§12.1](../superpowers/specs/2026-11-19-fhir-federation-service-design.md#121-projects)). The `Api` host runs the stages and does authentication and role authorisation. Every call to a shard goes through the `IShardClient` contract in `Core.Shards`, which `Shards` implements over HTTP.
 
 ## Where the spec defines each part
 

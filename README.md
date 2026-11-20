@@ -56,7 +56,7 @@ These are design goals from the spec, not shipped behaviour. The [status table](
 | Solution scaffold | Done | [§12.1](docs/superpowers/specs/2026-11-19-fhir-federation-service-design.md#121-projects) |
 | CI | Done | [§16](docs/superpowers/specs/2026-11-19-fhir-federation-service-design.md#16-phases) Phase 0 |
 | Health endpoints (`/health/live`, `/health/ready`) | Done | [§14](docs/superpowers/specs/2026-11-19-fhir-federation-service-design.md#14-observability) |
-| Shard contract and registry model | In progress (next PR) | [§4.2](docs/superpowers/specs/2026-11-19-fhir-federation-service-design.md#42-shard-registry), [§12.1](docs/superpowers/specs/2026-11-19-fhir-federation-service-design.md#121-projects) |
+| Shard contract and registry model | Done | [§4.2](docs/superpowers/specs/2026-11-19-fhir-federation-service-design.md#42-shard-registry), [§12.1](docs/superpowers/specs/2026-11-19-fhir-federation-service-design.md#121-projects) |
 | Query planning (classifier, rewriter, reference classifier) | Planned | [§6](docs/superpowers/specs/2026-11-19-fhir-federation-service-design.md#6-search-planning), [§7.7](docs/superpowers/specs/2026-11-19-fhir-federation-service-design.md#77-reference-classifier-shared) |
 | HTTP shard client and Microsoft FHIR Server profile | Planned | [§6.2](docs/superpowers/specs/2026-11-19-fhir-federation-service-design.md#62-backend-strictness-fail-closed-on-dropped-filters), [§9.2](docs/superpowers/specs/2026-11-19-fhir-federation-service-design.md#92-backend-profiles) |
 | Resilience and auth to shards | Planned | [§8](docs/superpowers/specs/2026-11-19-fhir-federation-service-design.md#8-failure-semantics), [§10.2](docs/superpowers/specs/2026-11-19-fhir-federation-service-design.md#102-backend-credentials) |
@@ -160,7 +160,7 @@ The planned shard registry is the `Federation` section of the host configuration
 }
 ```
 
-The host does not read the `Federation` section today. `appsettings.json` contains an empty `Shards` array, and the host ignores it. The spec leaves final key names to the implementation ([§17](docs/superpowers/specs/2026-11-19-fhir-federation-service-design.md#17-left-to-the-builder)).
+The host does not read the `Federation` section today. `Core` binds and validates this shape (`FederationOptions`, `ShardRegistry`), but nothing registers it in the host yet. `appsettings.json` contains an empty `Shards` array, and the host ignores it. The spec leaves final key names to the implementation ([§17](docs/superpowers/specs/2026-11-19-fhir-federation-service-design.md#17-left-to-the-builder)).
 
 ## Repository layout
 

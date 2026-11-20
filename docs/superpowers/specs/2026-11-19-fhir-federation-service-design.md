@@ -325,8 +325,8 @@ flowchart LR
 ```text
 Ignixa.Federation.slnx
 src/
-  Ignixa.Federation.Core/      # planner, rewriter, reference classifier, merge, budget, token snapshot model
-  Ignixa.Federation.Shards/    # registry, IShardClient (HTTP), backend profiles, auth handlers, resilience, capability fetch
+  Ignixa.Federation.Core/      # immutable shard registry and IShardClient contract (Core.Shards), parameter occurrences (Core.Search), planner, rewriter, reference classifier, merge, budget, token snapshot model
+  Ignixa.Federation.Shards/    # IShardClient HTTP implementation, backend profile definitions, auth handlers, resilience, capability fetch
   Ignixa.Federation.Api/       # host: minimal APIs, authN/Z, shaping, DI, OpenTelemetry
 test/
   Ignixa.Federation.Core.UnitTests/
@@ -335,7 +335,7 @@ test/
   Ignixa.Federation.Tests.Compatibility/ # certified backend profile runs
 ```
 
-`IShardClient` takes parameter occurrence lists and returns entries plus an opaque stream cursor. No mediator.
+`IShardClient` is defined in Core (`Ignixa.Federation.Core.Shards`): it takes parameter occurrence lists and returns entries plus an opaque stream cursor. Shards implements it over HTTP. No mediator.
 
 ## 13. Extension path (v2+)
 
