@@ -34,6 +34,10 @@ internal static class Searchsets
         return json.Append('}').ToString();
     }
 
+    /// <summary>A page with exactly these links, in order, relation text as given.</summary>
+    public static string Linked(params (string Relation, string Url)[] links) =>
+        $"{{\"resourceType\":\"Bundle\",\"type\":\"searchset\",\"link\":[{string.Join(',', links.Select(l => Link(l.Relation, l.Url)))}]}}";
+
     public static string Entry(string resource, string mode = "match", string? fullUrl = null)
     {
         string full = fullUrl is null ? string.Empty : $"\"fullUrl\":\"{fullUrl}\",";

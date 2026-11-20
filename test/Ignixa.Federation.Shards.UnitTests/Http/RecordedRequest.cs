@@ -5,7 +5,8 @@ namespace Ignixa.Federation.Shards.UnitTests.Http;
 /// <param name="Target">The request-line target, byte for byte.</param>
 /// <param name="Headers">The header fields in arrival order, names as sent.</param>
 /// <param name="Body">The body bytes.</param>
-internal sealed record RecordedRequest(string Method, string Target, IReadOnlyList<KeyValuePair<string, string>> Headers, byte[] Body)
+/// <param name="Connection">The 1-based number of the connection it arrived on, in accept order.</param>
+internal sealed record RecordedRequest(string Method, string Target, IReadOnlyList<KeyValuePair<string, string>> Headers, byte[] Body, int Connection)
 {
     /// <summary>Gets every value sent for <paramref name="name"/>, compared case-insensitively.</summary>
     public IReadOnlyList<string> HeaderValues(string name) =>

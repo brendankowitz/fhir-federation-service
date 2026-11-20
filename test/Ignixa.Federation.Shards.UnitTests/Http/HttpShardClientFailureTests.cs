@@ -82,7 +82,7 @@ public sealed class HttpShardClientFailureTests
     }
 
     [Fact]
-    public async Task UndeclaredBodyOverTheLimit_FailsWhileReading()
+    public async Task UndeclaredBodyOverTheLimit_FailsAfterConsumingOneByteBeyondIt()
     {
         const int limit = 4096;
         await using var shard = ShardHarness.Start(maxResponseBytes: limit);
@@ -91,8 +91,29 @@ public sealed class HttpShardClientFailureTests
         ShardCallException failure = await Should.ThrowAsync<ShardCallException>(() => shard.Client.SearchAsync(shard.SarahRequest(), Ct));
 
         failure.Failure.ShouldBe(ShardCallFailure.ResponseTooLarge);
-        shard.Meter.Bytes.ShouldBeGreaterThan(limit);
-        shard.Meter.Bytes.ShouldBeLessThan(64 * 1024);
+        shard.Meter.Bytes.ShouldBe(limit + 1);
+    }
+
+    [Theory]
+    [InlineData("status")]
+    [InlineData("declared size")]
+    public async Task RejectedResponseBody_IsNotDrainedToReuseTheConnection(string rejection)
+    {
+        // A 256 KiB body is within the platform's default drain allowance, so a draining handler would read all of it,
+        // unmetered, and put the connection back in the pool for the next call.
+        const int limit = 4096;
+        await using var shard = ShardHarness.Start(maxResponseBytes: limit);
+        ScriptedResponse rejected = rejection == "status"
+            ? ScriptedResponse.Status(401, new string('x', 256 * 1024))
+            : ScriptedResponse.Json(Padded(shard.SarahPage(), 256 * 1024));
+        shard.Server.Respond(rejected.KeepingAlive(), ScriptedResponse.Json(shard.SarahPage()).KeepingAlive());
+
+        await Should.ThrowAsync<ShardCallException>(() => shard.Client.SearchAsync(shard.SarahRequest(), Ct));
+        await Task.Delay(TimeSpan.FromMilliseconds(500), Ct);
+        await shard.Client.SearchAsync(shard.SarahRequest(), Ct);
+
+        shard.Server.Requests.Select(r => r.Connection).ShouldBe([1, 2]);
+        shard.Meter.Bytes.ShouldBe(Encoding.UTF8.GetByteCount(shard.SarahPage()));
     }
 
     [Fact]
@@ -146,6 +167,95 @@ public sealed class HttpShardClientFailureTests
         failure.Failure.ShouldBe(ShardCallFailure.Timeout);
         shard.Meter.Sends.ShouldBeEmpty();
         shard.Server.Requests.ShouldBeEmpty();
+    }
+
+    [Fact]
+    public async Task CredentialIgnoringCancellation_StillTimesOutWithoutSending()
+    {
+        await using var shard = ShardHarness.Start(callTimeout: TimeSpan.FromMilliseconds(300));
+        var pending = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+        shard.Credentials.Acquire = _ => new ValueTask<string>(pending.Task);
+        try
+        {
+            ShardCallException failure = await Should.ThrowAsync<ShardCallException>(
+                () => shard.Client.SearchAsync(shard.SarahRequest(), Ct).WaitAsync(TimeSpan.FromSeconds(10), Ct));
+
+            failure.Failure.ShouldBe(ShardCallFailure.Timeout);
+            shard.Meter.Sends.ShouldBeEmpty();
+            shard.Server.Requests.ShouldBeEmpty();
+        }
+        finally
+        {
+            pending.TrySetResult(SyntheticCredentials.Token);
+        }
+    }
+
+    [Fact]
+    public async Task CredentialIgnoringCancellation_StillYieldsToTheCaller()
+    {
+        await using var shard = ShardHarness.Start();
+        var pending = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+        shard.Credentials.Acquire = _ => new ValueTask<string>(pending.Task);
+        using var caller = CancellationTokenSource.CreateLinkedTokenSource(Ct);
+        caller.CancelAfter(TimeSpan.FromMilliseconds(300));
+        try
+        {
+            await Should.ThrowAsync<OperationCanceledException>(
+                () => shard.Client.SearchAsync(shard.SarahRequest(), caller.Token).WaitAsync(TimeSpan.FromSeconds(10), Ct));
+
+            shard.Meter.Sends.ShouldBeEmpty();
+            shard.Server.Requests.ShouldBeEmpty();
+        }
+        finally
+        {
+            pending.TrySetResult(SyntheticCredentials.Token);
+        }
+    }
+
+    [Fact]
+    public async Task CredentialArrivingAfterTheDeadline_IsATimeoutWithoutSending()
+    {
+        await using var shard = ShardHarness.Start(callTimeout: TimeSpan.FromMilliseconds(100));
+        shard.Credentials.Acquire = _ =>
+        {
+            // Completes synchronously, but only after the deadline has passed.
+            Thread.Sleep(TimeSpan.FromMilliseconds(400));
+            return ValueTask.FromResult(SyntheticCredentials.Token);
+        };
+
+        ShardCallException failure = await Should.ThrowAsync<ShardCallException>(() => shard.Client.SearchAsync(shard.SarahRequest(), Ct));
+
+        failure.Failure.ShouldBe(ShardCallFailure.Timeout);
+        shard.Meter.Sends.ShouldBeEmpty();
+        shard.Server.Requests.ShouldBeEmpty();
+    }
+
+    [Fact]
+    public async Task CallerCancellingDuringCredentialAcquisition_SendsNothing()
+    {
+        await using var shard = ShardHarness.Start();
+        using var caller = CancellationTokenSource.CreateLinkedTokenSource(Ct);
+        shard.Credentials.Acquire = async _ =>
+        {
+            await caller.CancelAsync();
+            return SyntheticCredentials.Token;
+        };
+
+        await Should.ThrowAsync<OperationCanceledException>(() => shard.Client.SearchAsync(shard.SarahRequest(), caller.Token));
+
+        shard.Meter.Sends.ShouldBeEmpty();
+        shard.Server.Requests.ShouldBeEmpty();
+    }
+
+    [Fact]
+    public async Task CallerCancellingAsTheBodyIsRead_GetsNoPage()
+    {
+        await using var shard = ShardHarness.Start();
+        shard.Server.Respond(ScriptedResponse.Json(shard.SarahPage(entries: Searchsets.Entry(Searchsets.Patient("p1")))));
+        using var caller = CancellationTokenSource.CreateLinkedTokenSource(Ct);
+        shard.Meter.OnBytes = _ => caller.Cancel();
+
+        await Should.ThrowAsync<OperationCanceledException>(() => shard.Client.SearchAsync(shard.SarahRequest(), caller.Token));
     }
 
     [Fact]
@@ -257,6 +367,25 @@ public sealed class HttpShardClientFailureTests
         (await Should.ThrowAsync<InvalidOperationException>(() => shard.Client.SearchAsync(shard.SarahRequest(), Ct))).ShouldBeSameAs(exhausted);
 
         shard.Server.Requests.ShouldBeEmpty();
+    }
+
+    public static TheoryData<Exception> MeterWireLikeFailures => new()
+    {
+        new IOException("synthetic meter store unavailable"),
+        new HttpRequestException("synthetic meter store unavailable"),
+    };
+
+    [Theory]
+    [MemberData(nameof(MeterWireLikeFailures))]
+    public async Task MeterFailingOnBodyBytes_PropagatesUnchangedNotAsATransportFailure(Exception refusal)
+    {
+        await using var shard = ShardHarness.Start();
+        shard.Server.Respond(ScriptedResponse.Json(shard.SarahPage()));
+        shard.Meter.OnBytes = _ => throw refusal;
+
+        Exception thrown = await Should.ThrowAsync<Exception>(() => shard.Client.SearchAsync(shard.SarahRequest(), Ct));
+
+        thrown.ShouldBeSameAs(refusal);
     }
 
     [Fact]

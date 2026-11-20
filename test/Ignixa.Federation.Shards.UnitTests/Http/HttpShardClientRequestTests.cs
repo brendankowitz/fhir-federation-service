@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text;
 using Ignixa.Federation.Core.Search;
 using Ignixa.Federation.Core.Shards;
@@ -118,6 +119,25 @@ public sealed class HttpShardClientRequestTests
         }
 
         shard.Credentials.Calls.ShouldBe(3);
+    }
+
+    [Fact]
+    public async Task AmbientTrace_IsPropagatedWithoutItsBaggage()
+    {
+        await using var shard = ShardHarness.Start();
+        shard.Server.Respond(ScriptedResponse.Json(shard.SarahPage()));
+        using var ambient = new Activity("synthetic-caller");
+        ambient.SetIdFormat(ActivityIdFormat.W3C);
+        ambient.AddBaggage("synthetic-tenant", "benign-value");
+        ambient.Start();
+
+        await shard.Client.SearchAsync(shard.SarahRequest(), Ct);
+        ambient.Stop();
+
+        RecordedRequest sent = shard.Server.Requests.Single();
+        sent.HeaderValues("traceparent").ShouldHaveSingleItem().ShouldContain(ambient.TraceId.ToHexString());
+        sent.HeaderValues("baggage").ShouldBeEmpty();
+        sent.HeaderValues("Correlation-Context").ShouldBeEmpty();
     }
 
     [Fact]

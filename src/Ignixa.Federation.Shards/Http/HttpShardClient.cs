@@ -24,10 +24,17 @@ namespace Ignixa.Federation.Shards.Http;
 /// <para><b>Continuation.</b> A <c>next</c> link is accepted only as a continuation of this shard's own typed search (the
 /// configured base or a configured link base alias), is kept verbatim in the <see cref="ShardCursor"/>, and is redeemed
 /// by sending only its query to the configured base, by GET or by POST to <c>_search</c> as the cursor says. A link that
-/// would repeat the query just sent is refused, so a backend cannot loop a stream.</para>
+/// would immediately repeat the query just sent is refused; detecting a longer cycle across pages is the caller's
+/// responsibility (design spec §7.8).</para>
+/// <para><b>Self link.</b> The first page's <c>self</c> must be a usable URI reference (RFC 3986) without a fragment. Its
+/// path is not checked, because it is never requested; links are normalized to the configured base (design spec §4.2).</para>
 /// <para><b>Limits.</b> Each call, from credential acquisition to the last body byte, has the deadline and response size
-/// limit given at construction. The optional <see cref="IShardTransferMeter"/> sees each actual send and every body byte
-/// read, so a caller can enforce an aggregate budget.</para>
+/// limit given at construction; a credential provider that ignores cancellation cannot extend the deadline. The optional
+/// <see cref="IShardTransferMeter"/> sees each logical send attempt and every body byte the client consumes, which is at
+/// most one byte past the limit, so a caller can enforce an aggregate budget. A rejected response's body is never
+/// drained to reuse its connection; the connection is closed instead.</para>
+/// <para><b>Tracing.</b> The ambient W3C trace context is propagated, but never baggage (<c>baggage</c> or
+/// <c>Correlation-Context</c>): baggage is arbitrary application data and a shard is a separate trust domain.</para>
 /// <para><b>Failures.</b> A call either returns a page that represents the backend's answer exactly or throws: a
 /// classified <see cref="ShardCallException"/>, an <see cref="OperationCanceledException"/> when the caller cancels, or
 /// the credential provider's or meter's own exception. It never returns an empty page for a failure, and never retries.</para>
@@ -174,7 +181,9 @@ public sealed class HttpShardClient : IShardClient, IDisposable
     public void Dispose() => _invoker.Dispose();
 
     // Redirects, cookies, decompression and ambient credentials are off: the client sends exactly what it builds and
-    // reads exactly what the backend returns.
+    // reads exactly what the backend returns. A response left unread (a failed status, an oversized body) is never
+    // drained for connection reuse, because those bytes would be neither metered nor bounded by the call; the connection
+    // is closed instead. Baggage is withheld from the propagated trace context.
     private static HttpMessageInvoker CreateInvoker(X509Certificate2? trustedTestCertificate)
     {
         SocketsHttpHandler? handler = null;
@@ -188,6 +197,8 @@ public sealed class HttpShardClient : IShardClient, IDisposable
                 PreAuthenticate = false,
                 Credentials = null,
                 PooledConnectionLifetime = TimeSpan.FromMinutes(5),
+                MaxResponseDrainSize = 0,
+                ActivityHeadersPropagator = new TraceContextOnlyPropagator(DistributedContextPropagator.Current),
             };
             if (trustedTestCertificate is not null)
             {
@@ -263,19 +274,17 @@ public sealed class HttpShardClient : IShardClient, IDisposable
     {
         string self = page.Self ?? throw Failure(ShardCallFailure.MalformedResponse, "The first page has no self link.");
         int questionMark = self.IndexOf('?', StringComparison.Ordinal);
+        if (!IsUriReference(self, questionMark < 0 ? self.Length : questionMark))
+        {
+            throw Failure(ShardCallFailure.MalformedResponse, "The self link is not a URI reference without a fragment.");
+        }
+
         if (questionMark < 0)
         {
             throw Failure(ShardCallFailure.SelfLinkMismatch, "The self link does not report the search that was sent.");
         }
 
-        ReadOnlySpan<char> selfQuery = self.AsSpan(questionMark + 1);
-        int fragment = selfQuery.IndexOf('#');
-        if (fragment >= 0)
-        {
-            selfQuery = selfQuery[..fragment];
-        }
-
-        if (!QueryText.TryDecodePairs(selfQuery, out List<(string Key, string Value)> reported))
+        if (!QueryText.TryDecodePairs(self.AsSpan(questionMark + 1), out List<(string Key, string Value)> reported))
         {
             throw Failure(ShardCallFailure.MalformedResponse, "The self link query cannot be decoded.");
         }
@@ -292,6 +301,54 @@ public sealed class HttpShardClient : IShardClient, IDisposable
         }
 
         return new ShardPage(page.Entries, NextCursor(page, request.Type, sent, link => ShardCursor.Next(request, _shard.Profile, link)), page.Total);
+    }
+
+    // RFC 3986 URI-reference, checked syntactically: the whole text is visible ASCII with valid escapes and no fragment,
+    // the part before the query holds only URI characters, a leading scheme is well formed, and the platform can resolve
+    // it against the configured base, which validates any authority and port. The query is compared separately and stays
+    // permissive, because backends echo characters such as '|' unescaped.
+    private bool IsUriReference(string self, int queryStart)
+    {
+        if (!QueryText.IsWireSafe(self))
+        {
+            return false;
+        }
+
+        ReadOnlySpan<char> beforeQuery = self.AsSpan(0, queryStart);
+        foreach (char c in beforeQuery)
+        {
+            if (!char.IsAsciiLetterOrDigit(c) && !"-._~!$&'()*+,;=:@/%[]".Contains(c, StringComparison.Ordinal))
+            {
+                return false;
+            }
+        }
+
+        int colon = beforeQuery.IndexOf(':');
+        int slash = beforeQuery.IndexOf('/');
+        if (colon >= 0 && (slash < 0 || colon < slash) && !IsScheme(beforeQuery[..colon]))
+        {
+            return false;
+        }
+
+        return Uri.TryCreate(_shard.BaseUrl, self, out _);
+    }
+
+    private static bool IsScheme(ReadOnlySpan<char> scheme)
+    {
+        if (scheme.IsEmpty || !char.IsAsciiLetter(scheme[0]))
+        {
+            return false;
+        }
+
+        foreach (char c in scheme[1..])
+        {
+            if (!char.IsAsciiLetterOrDigit(c) && c is not ('+' or '-' or '.'))
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     private ShardCursor? NextCursor(Searchset page, ResourceType type, string sent, Func<string, ShardCursor> cursor)
@@ -333,7 +390,9 @@ public sealed class HttpShardClient : IShardClient, IDisposable
                 }
                 : new HttpRequestMessage(HttpMethod.Get, new Uri($"{_shard.CanonicalBaseUrl}/{type.Value}?{query}", in Verbatim));
             ReadOnlyMemory<byte> body = await ExchangeAsync(message, cancellationToken).ConfigureAwait(false);
-            return interpret(Searchset.Read(body, _shard, type));
+            ShardPage page = interpret(Searchset.Read(body, _shard, type));
+            cancellationToken.ThrowIfCancellationRequested();
+            return page;
         }
         catch (ShardCallException e)
         {
@@ -355,7 +414,9 @@ public sealed class HttpShardClient : IShardClient, IDisposable
         deadline.CancelAfter(_callTimeout);
         try
         {
-            string token = await _credentials.GetAccessTokenAsync(_shard.Auth, deadline.Token).ConfigureAwait(false);
+            // WaitAsync bounds a provider that ignores its token; the abandoned acquisition is left to finish on its own.
+            string token = await _credentials.GetAccessTokenAsync(_shard.Auth, deadline.Token).AsTask()
+                .WaitAsync(deadline.Token).ConfigureAwait(false);
             if (!IsBearerToken(token))
             {
                 // The token is deliberately not quoted.
@@ -366,21 +427,19 @@ public sealed class HttpShardClient : IShardClient, IDisposable
             message.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/fhir+json"));
             message.Headers.TryAddWithoutValidation("Prefer", "handling=strict");
 
+            // A token that arrived after the deadline, or after the caller gave up, is not used.
+            deadline.Token.ThrowIfCancellationRequested();
             _meter?.RecordSend(_shard.Id);
-            HttpResponseMessage response;
-            try
-            {
-                response = await _invoker.SendAsync(message, deadline.Token).ConfigureAwait(false);
-            }
-            catch (HttpRequestException)
-            {
-                throw WireFailure(deadline, cancellationToken);
-            }
+            HttpResponseMessage response = await OnWireAsync(
+                () => new ValueTask<HttpResponseMessage>(_invoker.SendAsync(message, deadline.Token)), deadline, cancellationToken)
+                .ConfigureAwait(false);
 
             using (response)
             {
                 CheckStatus(response);
-                return await ReadBodyAsync(response.Content, deadline, cancellationToken).ConfigureAwait(false);
+                ReadOnlyMemory<byte> body = await ReadBodyAsync(response.Content, deadline, cancellationToken).ConfigureAwait(false);
+                deadline.Token.ThrowIfCancellationRequested();
+                return body;
             }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -420,27 +479,42 @@ public sealed class HttpShardClient : IShardClient, IDisposable
             throw Failure(ShardCallFailure.ResponseTooLarge, "The response body exceeds the size limit.");
         }
 
-        try
+        Stream stream = await OnWireAsync(
+            () => new ValueTask<Stream>(content.ReadAsStreamAsync(deadline.Token)), deadline, cancellationToken).ConfigureAwait(false);
+        await using (stream.ConfigureAwait(false))
         {
-            Stream stream = await content.ReadAsStreamAsync(deadline.Token).ConfigureAwait(false);
-            await using (stream.ConfigureAwait(false))
+            using var body = new MemoryStream((int)Math.Min(content.Headers.ContentLength ?? ChunkBytes, 64 * ChunkBytes));
+            byte[] chunk = new byte[ChunkBytes];
+            while (true)
             {
-                using var body = new MemoryStream((int)Math.Min(content.Headers.ContentLength ?? ChunkBytes, 64 * ChunkBytes));
-                byte[] chunk = new byte[ChunkBytes];
-                int read;
-                while ((read = await stream.ReadAsync(chunk, deadline.Token).ConfigureAwait(false)) > 0)
+                // Never asks for more than one byte past the limit: that byte proves the body too large, and nothing
+                // after it is read.
+                int wanted = (int)Math.Min(ChunkBytes, _maxResponseBytes - body.Length + 1);
+                int read = await OnWireAsync(() => stream.ReadAsync(chunk.AsMemory(0, wanted), deadline.Token), deadline, cancellationToken)
+                    .ConfigureAwait(false);
+                if (read == 0)
                 {
-                    _meter?.RecordResponseBytes(_shard.Id, read);
-                    if (body.Length + read > _maxResponseBytes)
-                    {
-                        throw Failure(ShardCallFailure.ResponseTooLarge, "The response body exceeds the size limit.");
-                    }
-
-                    await body.WriteAsync(chunk.AsMemory(0, read), deadline.Token).ConfigureAwait(false);
+                    return new ReadOnlyMemory<byte>(body.GetBuffer(), 0, (int)body.Length);
                 }
 
-                return new ReadOnlyMemory<byte>(body.GetBuffer(), 0, (int)body.Length);
+                // Outside the wire scope: the meter's own exceptions are the meter's, never a transport failure.
+                _meter?.RecordResponseBytes(_shard.Id, read);
+                if (body.Length + read > _maxResponseBytes)
+                {
+                    throw Failure(ShardCallFailure.ResponseTooLarge, "The response body exceeds the size limit.");
+                }
+
+                await body.WriteAsync(chunk.AsMemory(0, read), deadline.Token).ConfigureAwait(false);
             }
+        }
+    }
+
+    // Runs one wire operation; only its IO and HTTP errors are classified, as the token that fired or as a transport fault.
+    private async ValueTask<T> OnWireAsync<T>(Func<ValueTask<T>> operation, CancellationTokenSource deadline, CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await operation().ConfigureAwait(false);
         }
         catch (IOException)
         {

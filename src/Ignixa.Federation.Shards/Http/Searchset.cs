@@ -86,17 +86,19 @@ internal sealed partial class Searchset
         foreach (JsonElement link in ArrayProperty(bundle, "link", shard))
         {
             if (link.ValueKind != JsonValueKind.Object
-                || !link.TryGetProperty("relation", out JsonElement relation) || relation.ValueKind != JsonValueKind.String
-                || !link.TryGetProperty("url", out JsonElement url) || url.ValueKind != JsonValueKind.String)
+                || !link.TryGetProperty("relation", out JsonElement relationElement) || Text(relationElement) is not { } relation
+                || !link.TryGetProperty("url", out JsonElement urlElement) || Text(urlElement) is not { } url)
             {
                 throw Malformed(shard, "A Bundle.link is not a relation and url.");
             }
 
-            if (relation.ValueEquals("self"))
+            // Registered relation types compare case-insensitively (RFC 8288 §2.1.1), so "Next" is a next link, never an
+            // unknown relation that would make the page look exhausted.
+            if (string.Equals(relation, "self", StringComparison.OrdinalIgnoreCase))
             {
                 self = self is null ? NonEmpty(url, shard) : throw Malformed(shard, "The Bundle has more than one self link.");
             }
-            else if (relation.ValueEquals("next"))
+            else if (string.Equals(relation, "next", StringComparison.OrdinalIgnoreCase))
             {
                 next = next is null ? NonEmpty(url, shard) : throw Malformed(shard, "The Bundle has more than one next link.");
             }
@@ -127,8 +129,7 @@ internal sealed partial class Searchset
             }
 
             if (!resource.TryGetProperty("id", out JsonElement idElement)
-                || idElement.ValueKind != JsonValueKind.String
-                || !ResourceId.TryParse(idElement.GetString(), out ResourceId? id))
+                || !ResourceId.TryParse(Text(idElement), out ResourceId? id))
             {
                 throw Malformed(shard, "An entry resource has no valid id.");
             }
@@ -159,7 +160,7 @@ internal sealed partial class Searchset
         string? versionId = null;
         if (meta.TryGetProperty("versionId", out JsonElement version))
         {
-            versionId = version.ValueKind == JsonValueKind.String && version.GetString() is { Length: > 0 } text
+            versionId = Text(version) is { Length: > 0 } text
                 ? text
                 : throw Malformed(shard, "An entry resource meta.versionId is not a non-empty string.");
         }
@@ -167,7 +168,7 @@ internal sealed partial class Searchset
         DateTimeOffset? lastUpdated = null;
         if (meta.TryGetProperty("lastUpdated", out JsonElement instant))
         {
-            lastUpdated = instant.ValueKind == JsonValueKind.String && TryParseInstant(instant.GetString()!, out DateTimeOffset value)
+            lastUpdated = Text(instant) is { } text && TryParseInstant(text, out DateTimeOffset value)
                 ? value
                 : throw Malformed(shard, "An entry resource meta.lastUpdated is not a representable FHIR instant.");
         }
@@ -196,11 +197,31 @@ internal sealed partial class Searchset
             : throw Malformed(shard, $"Bundle.{name} is not an array.");
     }
 
-    private static string NonEmpty(JsonElement url, ShardDescriptor shard) =>
-        url.GetString() is { Length: > 0 } text ? text : throw Malformed(shard, "A self or next link has an empty url.");
+    private static string NonEmpty(string url, ShardDescriptor shard) =>
+        url.Length > 0 ? url : throw Malformed(shard, "A self or next link has an empty url.");
 
     private static bool IsString(JsonElement owner, string name, string expected) =>
-        owner.TryGetProperty(name, out JsonElement value) && value.ValueKind == JsonValueKind.String && value.ValueEquals(expected);
+        owner.TryGetProperty(name, out JsonElement value) && string.Equals(Text(value), expected, StringComparison.Ordinal);
+
+    // Every string the client consumes is decoded here. Valid JSON text can escape an unpaired surrogate ("\ud800"), which
+    // has no UTF-16 string form: GetString and ValueEquals throw InvalidOperationException for it, so it reads as absent
+    // and the caller refuses the body. The kind is checked first, so the catch covers only that decoding failure.
+    private static string? Text(JsonElement value)
+    {
+        if (value.ValueKind != JsonValueKind.String)
+        {
+            return null;
+        }
+
+        try
+        {
+            return value.GetString();
+        }
+        catch (InvalidOperationException)
+        {
+            return null;
+        }
+    }
 
     private static ShardCallException Malformed(ShardDescriptor shard, string reason) =>
         new(shard, ShardCallFailure.MalformedResponse, reason);

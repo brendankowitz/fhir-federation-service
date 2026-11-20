@@ -13,6 +13,9 @@ internal sealed class RecordingMeter : IShardTransferMeter
     /// <summary>Gets or sets an exception thrown from <see cref="RecordSend"/>, as a budget-enforcing meter would.</summary>
     public Exception? ThrowOnSend { get; set; }
 
+    /// <summary>Gets or sets what runs after each recorded chunk; it may throw or cancel, as a budget-enforcing meter would.</summary>
+    public Action<int>? OnBytes { get; set; }
+
     public IReadOnlyList<ShardId> Sends => [.. _sends];
 
     public IReadOnlyList<(ShardId Shard, int Count)> Chunks => [.. _chunks];
@@ -28,5 +31,9 @@ internal sealed class RecordingMeter : IShardTransferMeter
         }
     }
 
-    public void RecordResponseBytes(ShardId shard, int count) => _chunks.Enqueue((shard, count));
+    public void RecordResponseBytes(ShardId shard, int count)
+    {
+        _chunks.Enqueue((shard, count));
+        OnBytes?.Invoke(count);
+    }
 }

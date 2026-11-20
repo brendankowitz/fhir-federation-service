@@ -101,6 +101,44 @@ public sealed class HttpShardClientSelfLinkTests
         failure.Failure.ShouldBe(ShardCallFailure.MalformedResponse);
     }
 
+    [Theory]
+    [InlineData("not a uri?name=Sarah&_count=10")]
+    [InlineData("{search}?name=Sarah&_count=10#page")]
+    [InlineData("https://[bad/fhir/Patient?name=Sarah&_count=10")]
+    [InlineData("https://127.0.0.1:99999/fhir/Patient?name=Sarah&_count=10")]
+    [InlineData("fhir\\Patient?name=Sarah&_count=10")]
+    [InlineData("<fhir>/Patient?name=Sarah&_count=10")]
+    [InlineData("https://h.example/fhir/Pat%zzient?name=Sarah&_count=10")]
+    [InlineData("1https://h.example/fhir/Patient?name=Sarah&_count=10")]
+    [InlineData(":?name=Sarah&_count=10")]
+    public async Task SelfThatIsNotAUsableUriReference_IsMalformedEvenWithTheSentQuery(string self)
+    {
+        ArgumentNullException.ThrowIfNull(self);
+        await using var shard = ShardHarness.Start();
+        shard.Server.Respond(ScriptedResponse.Json(Searchsets.Page(self.Replace("{search}", shard.Search, StringComparison.Ordinal))));
+
+        ShardCallException failure = await Should.ThrowAsync<ShardCallException>(() => shard.Client.SearchAsync(shard.SarahRequest(), Ct));
+
+        failure.Failure.ShouldBe(ShardCallFailure.MalformedResponse);
+    }
+
+    [Theory]
+    [InlineData("?name=Sarah&_count=10")]
+    [InlineData("Patient?name=Sarah&_count=10")]
+    [InlineData("/elsewhere/Observation?name=Sarah&_count=10")]
+    [InlineData("//other.example:8443/r4/Patient?name=Sarah&_count=10")]
+    [InlineData("http://other.example/Patient/_search?name=Sarah&_count=10")]
+    [InlineData("urn:x-synthetic:search?name=Sarah&_count=10")]
+    public async Task SelfThatIsAnyUsableUriReference_IsAcceptedWithoutAPathRequirement(string self)
+    {
+        await using var shard = ShardHarness.Start();
+        shard.Server.Respond(ScriptedResponse.Json(Searchsets.Page(self)));
+
+        ShardPage page = await shard.Client.SearchAsync(shard.SarahRequest(), Ct);
+
+        page.IsExhausted.ShouldBeTrue();
+    }
+
     [Fact]
     public async Task ContinuationPages_AreNotComparedWithTheirSelf()
     {

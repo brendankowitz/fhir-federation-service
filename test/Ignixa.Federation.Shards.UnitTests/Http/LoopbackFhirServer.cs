@@ -9,7 +9,8 @@ namespace Ignixa.Federation.Shards.UnitTests.Http;
 
 /// <summary>
 /// A TLS HTTP/1.1 server on <c>127.0.0.1</c> at an OS-assigned port. It records each request exactly as received and
-/// answers from a script, one response per connection, so tests observe the client's real wire behaviour.
+/// answers from a script, one response per connection unless a response keeps the connection alive, so tests observe the
+/// client's real wire behaviour, including whether it reuses a connection.
 /// </summary>
 internal sealed class LoopbackFhirServer : IAsyncDisposable
 {
@@ -21,6 +22,7 @@ internal sealed class LoopbackFhirServer : IAsyncDisposable
     private readonly ConcurrentQueue<RecordedRequest> _requests = new();
     private readonly ConcurrentBag<Task> _connections = [];
     private readonly Task _acceptLoop;
+    private int _connectionCount;
 
     public LoopbackFhirServer()
     {
@@ -99,17 +101,20 @@ internal sealed class LoopbackFhirServer : IAsyncDisposable
                     new SslServerAuthenticationOptions { ServerCertificate = LoopbackCertificate.Server },
                     _stopping.Token);
 
-                RecordedRequest? request = await ReadRequestAsync(tls);
-                if (request is null)
+                RecordedRequest? request;
+                int connection = Interlocked.Increment(ref _connectionCount);
+                while ((request = await ReadRequestAsync(tls, connection)) is not null)
                 {
-                    return;
+                    _requests.Enqueue(request);
+                    ScriptedResponse response = _script.TryDequeue(out ScriptedResponse? scripted)
+                        ? scripted
+                        : ScriptedResponse.Status(599, "unscripted request");
+                    await WriteAsync(tls, response);
+                    if (!response.KeepsAlive)
+                    {
+                        return;
+                    }
                 }
-
-                _requests.Enqueue(request);
-                ScriptedResponse response = _script.TryDequeue(out ScriptedResponse? scripted)
-                    ? scripted
-                    : ScriptedResponse.Status(599, "unscripted request");
-                await WriteAsync(tls, response);
             }
             catch (Exception e) when (e is IOException or AuthenticationException or OperationCanceledException or ObjectDisposedException)
             {
@@ -118,7 +123,7 @@ internal sealed class LoopbackFhirServer : IAsyncDisposable
         }
     }
 
-    private async Task<RecordedRequest?> ReadRequestAsync(SslStream tls)
+    private async Task<RecordedRequest?> ReadRequestAsync(SslStream tls, int connection)
     {
         byte[] buffer = new byte[MaxHeadBytes];
         int length = 0;
@@ -157,7 +162,7 @@ internal sealed class LoopbackFhirServer : IAsyncDisposable
         Array.Copy(buffer, headEnd, body, 0, already);
         await tls.ReadExactlyAsync(body.AsMemory(already), _stopping.Token);
 
-        return new RecordedRequest(requestLine[0], requestLine[1], headers, body);
+        return new RecordedRequest(requestLine[0], requestLine[1], headers, body, connection);
     }
 
     private async Task WriteAsync(SslStream tls, ScriptedResponse response)
@@ -175,6 +180,9 @@ internal sealed class LoopbackFhirServer : IAsyncDisposable
             await Task.Delay(Timeout.Infinite, _stopping.Token);
         }
 
-        await tls.ShutdownAsync();
+        if (!response.KeepsAlive)
+        {
+            await tls.ShutdownAsync();
+        }
     }
 }

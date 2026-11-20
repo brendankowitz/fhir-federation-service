@@ -201,6 +201,39 @@ public sealed class HttpShardClientNextLinkTests
         shard.Server.Requests.ShouldBeEmpty();
     }
 
+    [Theory]
+    [InlineData("Next")]
+    [InlineData("NEXT")]
+    public async Task NextRelation_IsRecognizedWhateverItsCase(string relation)
+    {
+        await using var shard = ShardHarness.Start();
+        shard.Server.Respond(ScriptedResponse.Json(Searchsets.Linked(("self", shard.Search + "?name=Sarah&_count=10"), (relation, "?ct=Mg"))));
+
+        ShardPage page = await shard.Client.SearchAsync(shard.SarahRequest(), Ct);
+
+        page.IsExhausted.ShouldBeFalse();
+        page.Next.ShouldNotBeNull().Target.ShouldBe("?ct=Mg");
+    }
+
+    [Theory]
+    [InlineData("self", "SELF")]
+    [InlineData("Self", "self")]
+    [InlineData("next", "Next")]
+    public async Task RelationsDifferingOnlyInCase_AreDuplicates(string first, string second)
+    {
+        ArgumentNullException.ThrowIfNull(first);
+        await using var shard = ShardHarness.Start();
+        string selfUrl = shard.Search + "?name=Sarah&_count=10";
+        (string, string)[] links = first.Equals("self", StringComparison.OrdinalIgnoreCase)
+            ? [(first, selfUrl), (second, selfUrl)]
+            : [("self", selfUrl), (first, "?ct=Mg"), (second, "?ct=Mw")];
+        shard.Server.Respond(ScriptedResponse.Json(Searchsets.Linked(links)));
+
+        ShardCallException failure = await Should.ThrowAsync<ShardCallException>(() => shard.Client.SearchAsync(shard.SarahRequest(), Ct));
+
+        failure.Failure.ShouldBe(ShardCallFailure.MalformedResponse);
+    }
+
     [Fact]
     public async Task CursorFromAFirstPage_RedeemsTheSameWayAfterTheClientIsReplaced()
     {
@@ -209,9 +242,11 @@ public sealed class HttpShardClientNextLinkTests
         ShardCursor cursor = (await shard.Client.SearchAsync(shard.SarahRequest(ShardSearchMethod.PostSearch), Ct)).Next!;
         var replayed = new ShardCursor(cursor.Shard, cursor.Type, cursor.Target, cursor.Redemption);
         shard.Server.Respond(ScriptedResponse.Json(Searchsets.Page(self: null)), ScriptedResponse.Json(Searchsets.Page(self: null)));
+        using var replacement = new HttpShardClient(
+            shard.Shard, shard.Credentials, TimeSpan.FromSeconds(10), 1 << 20, meter: null, LoopbackCertificate.Trust);
 
         await shard.Client.ContinueAsync(cursor, Ct);
-        await shard.Client.ContinueAsync(replayed, Ct);
+        await replacement.ContinueAsync(replayed, Ct);
 
         RecordedRequest[] redemptions = [.. shard.Server.Requests.Skip(1)];
         redemptions.Select(r => (r.Method, r.Target, Encoding.ASCII.GetString(r.Body)))

@@ -2,7 +2,7 @@ using System.Text;
 
 namespace Ignixa.Federation.Shards.UnitTests.Http;
 
-/// <summary>One scripted answer from <see cref="LoopbackFhirServer"/>, written as raw HTTP/1.1 with <c>Connection: close</c>.</summary>
+/// <summary>One scripted answer from <see cref="LoopbackFhirServer"/>, written as raw HTTP/1.1 with <c>Connection: close</c> unless kept alive.</summary>
 internal sealed class ScriptedResponse
 {
     private ScriptedResponse(int status, byte[] body, string? contentType)
@@ -29,6 +29,9 @@ internal sealed class ScriptedResponse
     /// <summary>Gets whether the server sends the head and the body bytes, then stalls without closing.</summary>
     public bool StallsAfterBody { get; private init; }
 
+    /// <summary>Gets whether the server keeps the connection open for another request after this response.</summary>
+    public bool KeepsAlive { get; private init; }
+
     public static ScriptedResponse Json(string json) => new(200, Encoding.UTF8.GetBytes(json), "application/fhir+json");
 
     public static ScriptedResponse Status(int status, string body = "") => new(status, Encoding.UTF8.GetBytes(body), "text/plain");
@@ -41,6 +44,9 @@ internal sealed class ScriptedResponse
 
     /// <summary>Declares a length one byte longer than the body sent, then stalls, so the client waits inside the body read.</summary>
     public ScriptedResponse StallingInBody() => new(StatusCode, Body, ContentType) { StallsAfterBody = true };
+
+    /// <summary>Keeps the connection open after this response, so a client that drains the body can reuse it.</summary>
+    public ScriptedResponse KeepingAlive() => new(StatusCode, Body, ContentType) { DeclaresLength = DeclaresLength, Location = Location, KeepsAlive = true };
 
     public byte[] Head()
     {
@@ -61,7 +67,7 @@ internal sealed class ScriptedResponse
             head.Append("Content-Length: ").Append(Body.Length + (StallsAfterBody ? 1 : 0)).Append("\r\n");
         }
 
-        head.Append("Connection: close\r\n\r\n");
+        head.Append(KeepsAlive ? "\r\n" : "Connection: close\r\n\r\n");
         return Encoding.ASCII.GetBytes(head.ToString());
     }
 }

@@ -142,6 +142,15 @@ public sealed class HttpShardClientResponseTests
         { "date-only instant", Page(Searchsets.Entry(Searchsets.Patient("p1", lastUpdated: "2026-01-02"))) },
         { "instant without zone", Page(Searchsets.Entry(Searchsets.Patient("p1", lastUpdated: "2026-01-02T03:04:05"))) },
         { "instant out of range", Page(Searchsets.Entry(Searchsets.Patient("p1", lastUpdated: "2026-13-02T03:04:05Z"))) },
+
+        // Valid JSON text whose escaped string is not valid UTF-16: an unpaired surrogate.
+        { "unpaired surrogate in id", Page(Searchsets.Entry("{\"resourceType\":\"Patient\",\"id\":\"p\\ud800\"}")) },
+        { "unpaired surrogate in versionId", Page(Searchsets.Entry(Searchsets.Patient("p1", versionId: "\\udc00"))) },
+        { "unpaired surrogate in lastUpdated", Page(Searchsets.Entry(Searchsets.Patient("p1", lastUpdated: "2026-01-02T03:04:05Z\\ud800"))) },
+        { "unpaired surrogate in search mode", Page(Searchsets.Entry(Searchsets.Patient("p1"), mode: "match\\ud800")) },
+        { "unpaired surrogate in resourceType", Page(Searchsets.Entry("{\"resourceType\":\"Patient\\ud800\",\"id\":\"p1\"}")) },
+        { "unpaired surrogate in self url", "{\"resourceType\":\"Bundle\",\"type\":\"searchset\",\"link\":[{\"relation\":\"self\",\"url\":\"{self}\\ud800\"}]}" },
+        { "unpaired surrogate in next url", "{\"resourceType\":\"Bundle\",\"type\":\"searchset\",\"link\":[{\"relation\":\"self\",\"url\":\"{self}\"},{\"relation\":\"next\",\"url\":\"?a=1\\udc00\"}]}" },
     };
 
     [Theory]
