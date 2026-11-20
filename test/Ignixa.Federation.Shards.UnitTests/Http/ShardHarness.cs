@@ -22,14 +22,14 @@ internal sealed class ShardHarness : IAsyncDisposable
 
     public static readonly ResourceType Patient = ResourceType.Parse("Patient");
 
-    private ShardHarness(string id, BackendProfile profile, TimeSpan callTimeout, long maxResponseBytes, bool trustLoopback)
+    private ShardHarness(string id, BackendProfile profile, TimeSpan callTimeout, long maxResponseBytes, bool trustLoopback, string? basePath)
     {
         Server = new LoopbackFhirServer();
         var options = new ShardOptions
         {
             Id = id,
             Alias = ShardAlias,
-            BaseUrl = Server.BaseUrl,
+            BaseUrl = basePath is null ? Server.BaseUrl : Server.Origin + basePath,
             Profile = profile.Name,
             Auth = new AuthOptions { Type = "ManagedIdentity", Resource = "https://fhir.synthetic.example" },
         };
@@ -61,9 +61,10 @@ internal sealed class ShardHarness : IAsyncDisposable
         TimeSpan? callTimeout = null,
         long maxResponseBytes = 1 << 20,
         bool trustLoopback = true,
-        string id = "east")
+        string id = "east",
+        string? basePath = null)
     {
-        return new ShardHarness(id, profile ?? Repost, callTimeout ?? TimeSpan.FromSeconds(10), maxResponseBytes, trustLoopback);
+        return new ShardHarness(id, profile ?? Repost, callTimeout ?? TimeSpan.FromSeconds(10), maxResponseBytes, trustLoopback, basePath);
     }
 
     /// <summary>A Patient search; parameters alternate raw key and raw value.</summary>

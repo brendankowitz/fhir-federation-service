@@ -10,6 +10,7 @@ using System.Text.Unicode;
 using Ignixa.Federation.Core.Identity;
 using Ignixa.Federation.Core.Search;
 using Ignixa.Federation.Core.Shards;
+using Ignixa.Federation.Shards.Capabilities;
 using Ignixa.Federation.Shards.Diagnostics;
 
 namespace Ignixa.Federation.Shards.Http;
@@ -42,6 +43,8 @@ namespace Ignixa.Federation.Shards.Http;
 /// the credential provider's or meter's own exception. It never returns an empty page for a failure, and never retries.</para>
 /// <para><b>Read.</b> <see cref="ReadAsync"/> is the same bounded exchange for one resource, <c>GET {base}/{type}/{id}</c>,
 /// with its own <c>read</c> span. Only there are HTTP 404 and 410 classified as the resource's absence.</para>
+/// <para><b>Capabilities.</b> <see cref="GetCapabilitiesAsync"/> is the same bounded exchange for <c>GET {base}/metadata</c>,
+/// with its own <c>metadata</c> span; there 404 and 410 are unexpected statuses, because the advertisement is not a resource.</para>
 /// <para>Thread-safe: concurrent calls are independent.</para>
 /// </remarks>
 public sealed class HttpShardClient : IShardClient, IDisposable
@@ -49,6 +52,15 @@ public sealed class HttpShardClient : IShardClient, IDisposable
     private const int ChunkBytes = 16 * 1024;
     private const string Stage = "search";
     private const string ReadStage = "read";
+    private const string MetadataStage = "metadata";
+
+    // What one exchange asks of the backend; it decides how a status is read and what a failure says.
+    private enum Operation
+    {
+        Search,
+        Read,
+        Metadata,
+    }
 
     // CancellationTokenSource.CancelAfter accepts at most uint.MaxValue - 1 milliseconds.
     private static readonly TimeSpan MaxCallTimeout = TimeSpan.FromMilliseconds(uint.MaxValue - 1);
@@ -188,6 +200,57 @@ public sealed class HttpShardClient : IShardClient, IDisposable
     public void Dispose() => _invoker.Dispose();
 
     /// <summary>
+    /// Fetches this shard's advertisement: a single <c>GET {base}/metadata</c> with the same credential, deadline, size
+    /// limit, metering and no-redirect rules as a search, with its own <c>metadata</c> span.
+    /// </summary>
+    /// <param name="cancellationToken">Cancels the call.</param>
+    /// <returns>
+    /// What the shard's R4 CapabilityStatement advertises, as read by <see cref="CapabilityStatementReader"/>. Advertised
+    /// is not certified: nothing is compared with the shard's profile or any other shard.
+    /// </returns>
+    /// <exception cref="ShardCallException">
+    /// The exchange failed, or the body is not valid UTF-8 or not an R4 CapabilityStatement the reader accepts
+    /// (<see cref="ShardCallFailure.MalformedResponse"/>). Any status other than 200, including 404 and 410, is a failure
+    /// of the advertisement, not the absence of a resource; no error body is read, and nothing is retried.
+    /// </exception>
+    public async Task<ShardCapabilityEvidence> GetCapabilitiesAsync(CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        using Activity? activity = ShardActivity.StartBackendCall(_shard.Alias.Value, MetadataStage);
+        try
+        {
+            using var message = new HttpRequestMessage(HttpMethod.Get, new Uri($"{_shard.CanonicalBaseUrl}/metadata", in Verbatim));
+
+            // The reader runs inside the exchange, so it is under the same deadline and caller cancellation.
+            return await ExchangeAsync(message, Operation.Metadata, ReadCapabilities, cancellationToken).ConfigureAwait(false);
+        }
+        catch (ShardCallException e)
+        {
+            activity?.SetStatus(ActivityStatusCode.Error, e.Failure.ToString());
+            throw;
+        }
+    }
+
+    private ShardCapabilityEvidence ReadCapabilities(ReadOnlyMemory<byte> body)
+    {
+        // The reader trusts the JSON parser's view of the bytes; an ignored property must not hide invalid text.
+        if (!Utf8.IsValid(body.Span))
+        {
+            throw Failure(ShardCallFailure.MalformedResponse, "The body is not valid UTF-8.");
+        }
+
+        try
+        {
+            return CapabilityStatementReader.Read(body);
+        }
+        catch (FormatException)
+        {
+            // The reader's message is safe to log, but a fixed diagnostic keeps every failure of this kind identical.
+            throw Failure(ShardCallFailure.MalformedResponse, "The body is not an R4 CapabilityStatement that advertises.");
+        }
+    }
+
+    /// <summary>
     /// Reads the current version of one resource: a single <c>GET {base}/{type}/{id}</c> at the key's own shard, with the
     /// same credential, deadline, size limit, metering and no-redirect rules as a search.
     /// </summary>
@@ -234,7 +297,7 @@ public sealed class HttpShardClient : IShardClient, IDisposable
             using var message = new HttpRequestMessage(HttpMethod.Get, location);
 
             // The identity check runs inside the exchange, so it is under the same deadline and caller cancellation.
-            return await ExchangeAsync(message, qualifiedRead: true, body => ReadResource(body, location, key), cancellationToken)
+            return await ExchangeAsync(message, Operation.Read, body => ReadResource(body, location, key), cancellationToken)
                 .ConfigureAwait(false);
         }
         catch (ShardCallException e)
@@ -480,7 +543,7 @@ public sealed class HttpShardClient : IShardClient, IDisposable
                     Content = FormBody(query),
                 }
                 : new HttpRequestMessage(HttpMethod.Get, new Uri($"{_shard.CanonicalBaseUrl}/{type.Value}?{query}", in Verbatim));
-            ReadOnlyMemory<byte> body = await ExchangeAsync(message, qualifiedRead: false, static body => body, cancellationToken)
+            ReadOnlyMemory<byte> body = await ExchangeAsync(message, Operation.Search, static body => body, cancellationToken)
                 .ConfigureAwait(false);
             ShardPage page = interpret(Searchset.Read(body, _shard, type));
             cancellationToken.ThrowIfCancellationRequested();
@@ -503,7 +566,7 @@ public sealed class HttpShardClient : IShardClient, IDisposable
     // Runs one bounded exchange and hands the whole body to interpret, still under the deadline and the caller's token.
     private async Task<T> ExchangeAsync<T>(
         HttpRequestMessage message,
-        bool qualifiedRead,
+        Operation operation,
         Func<ReadOnlyMemory<byte>, T> interpret,
         CancellationToken cancellationToken)
     {
@@ -533,7 +596,7 @@ public sealed class HttpShardClient : IShardClient, IDisposable
 
             using (response)
             {
-                CheckStatus(response, qualifiedRead);
+                CheckStatus(response, operation);
                 ReadOnlyMemory<byte> body = await ReadBodyAsync(response.Content, deadline, cancellationToken).ConfigureAwait(false);
                 deadline.Token.ThrowIfCancellationRequested();
                 T result = interpret(body);
@@ -553,9 +616,11 @@ public sealed class HttpShardClient : IShardClient, IDisposable
         }
     }
 
-    // Only a qualified read treats 404 and 410 as the resource's absence; a search that gets them is still an unexpected status.
-    private void CheckStatus(HttpResponseMessage response, bool qualifiedRead)
+    // Only a qualified read treats 404 and 410 as the resource's absence; a search or metadata fetch that gets them is
+    // still an unexpected status.
+    private void CheckStatus(HttpResponseMessage response, Operation operation)
     {
+        bool qualifiedRead = operation == Operation.Read;
         int status = (int)response.StatusCode;
         ShardCallFailure? failure = status switch
         {
@@ -572,7 +637,12 @@ public sealed class HttpShardClient : IShardClient, IDisposable
         {
             throw Failure(
                 classified,
-                qualifiedRead ? "The backend did not return the resource." : "The backend did not answer with a search page.",
+                operation switch
+                {
+                    Operation.Read => "The backend did not return the resource.",
+                    Operation.Metadata => "The backend did not return its capability statement.",
+                    _ => "The backend did not answer with a search page.",
+                },
                 status);
         }
     }
