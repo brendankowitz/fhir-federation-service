@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text;
 using Ignixa.Federation.Core.Identity;
 using Ignixa.Federation.Core.Search;
@@ -16,6 +17,8 @@ namespace Ignixa.Federation.Shards.UnitTests.Http;
 /// </summary>
 public sealed class MultiShardHttpClientRequestMeterTests
 {
+    private const string CallerHeader = "X-Federation-Caller";
+
     private static CancellationToken Ct => TestContext.Current.CancellationToken;
 
     private static int Size(string body) => Encoding.UTF8.GetByteCount(body);
@@ -78,27 +81,36 @@ public sealed class MultiShardHttpClientRequestMeterTests
     }
 
     [Fact]
-    public async Task RetryContinuationAndRead_AreChargedToTheirRequestEvenWhileAnotherRequestOverlapsTheRetry()
+    public async Task RetryContinuationAndRead_KeepTheirMeterAndOpaqueCallerEvenWhenRequestsOverlap()
     {
         await using MultiShardRig rig = MultiShardRig.Start();
         string first = MultiShardRig.Page(rig.East, rig.East.BaseUrl + "/Patient?ct=east-2", Searchsets.Entry(MultiShardRig.PatientJson("a1", "east")));
         string second = Searchsets.Linked();
         string readA = MultiShardRig.PatientJson("a2", "request A read");
         string readB = MultiShardRig.PatientJson("b1", "request B read, which is longer than the others");
+        string metadata = CapabilityJson.ServerStatement();
         var hold = new ResponseHold();
         rig.East.Respond(
             ScriptedResponse.Status(503, beforeHead: hold.BeforeHead),
             ScriptedResponse.Json(readB),
+            ScriptedResponse.Json(metadata),
             ScriptedResponse.Json(first),
             ScriptedResponse.Json(second),
             ScriptedResponse.Json(readA));
         var meterA = new RecordingMeter();
         var meterB = new RecordingMeter();
-        RequestShardClient requestA = rig.Router.ForRequest(meterA);
+        const string callerA = "correlation_A-03";
+        const string callerB = "correlation_B-19";
+        RequestShardClient requestA = rig.Router.ForRequestWithCaller(meterA, callerA);
+        using var ambient = new Activity("synthetic trace");
+        ambient.SetIdFormat(ActivityIdFormat.W3C);
+        ambient.AddBaggage(CallerHeader, "do-not-forward");
+        ambient.Start();
 
         Task<ShardPage> firstPage = requestA.SearchAsync(MultiShardRig.Search(MultiShardRig.EastId), Ct);
         await hold.ArrivalAsync(Ct);
-        await rig.Router.ForRequest(meterB).ReadAsync(MultiShardRig.Key(MultiShardRig.EastId, "b1"), Ct);
+        await rig.Router.ForRequestWithCaller(meterB, callerB).ReadAsync(MultiShardRig.Key(MultiShardRig.EastId, "b1"), Ct);
+        await rig.Router.GetClient(rig.EastShard).GetCapabilitiesAsync(Ct);
         hold.Release();
         ShardPage page = await firstPage.WaitAsync(Watchdog.Interval, Ct);
         await requestA.ContinueAsync(page.Next!, Ct);
@@ -108,10 +120,61 @@ public sealed class MultiShardHttpClientRequestMeterTests
         meterA.Bytes.ShouldBe(Size(first) + Size(second) + Size(readA));
         meterB.Sends.ShouldBe([MultiShardRig.EastId]);
         meterB.Bytes.ShouldBe(Size(readB));
-        rig.Meter.Sends.ShouldBeEmpty();
-        rig.Meter.Bytes.ShouldBe(0);
+        rig.Meter.Sends.ShouldBe([MultiShardRig.EastId]);
+        rig.Meter.Bytes.ShouldBe(Size(metadata));
+        rig.Credentials.Calls.ShouldBe(5);
         rig.East.Requests.Select(r => r.Target).ShouldBe(
-            ["/fhir/Patient?name=Sarah&_count=10", "/fhir/Patient/b1", "/fhir/Patient?name=Sarah&_count=10", "/fhir/Patient?ct=east-2", "/fhir/Patient/a2"]);
+            ["/fhir/Patient?name=Sarah&_count=10", "/fhir/Patient/b1", "/fhir/metadata", "/fhir/Patient?name=Sarah&_count=10", "/fhir/Patient?ct=east-2", "/fhir/Patient/a2"]);
+        rig.East.Requests.SelectMany(r => r.HeaderValues(CallerHeader).DefaultIfEmpty()).ShouldBe(
+            [callerA, callerB, null, callerA, callerA, callerA]);
+        foreach (RecordedRequest sent in rig.East.Requests)
+        {
+            sent.HeaderValues("Authorization").ShouldBe(["Bearer " + SyntheticCredentials.Token]);
+            sent.HeaderValues("traceparent").ShouldHaveSingleItem().ShouldContain(ambient.TraceId.ToHexString());
+            sent.HeaderValues("baggage").ShouldBeEmpty();
+            sent.HeaderValues("Correlation-Context").ShouldBeEmpty();
+        }
+    }
+
+    [Fact]
+    public async Task PostAndLegacyView_DoNotCarryTheHeaderAcrossARedirectOrBetweenViews()
+    {
+        await using MultiShardRig rig = MultiShardRig.Start();
+        rig.East.Respond(ScriptedResponse.Redirect(rig.West.BaseUrl + "/Patient"), ScriptedResponse.Json(MultiShardRig.Page(rig.East)));
+        ShardSearchRequest get = MultiShardRig.Search(MultiShardRig.EastId);
+        var post = new ShardSearchRequest(get.Shard, get.Type, get.Parameters, get.PageSize, ShardSearchMethod.PostSearch);
+        string callerId = new('A', 128);
+
+        ShardCallException refusal = await Should.ThrowAsync<ShardCallException>(() =>
+            rig.Router.ForRequestWithCaller(new RecordingMeter(), callerId).SearchAsync(post, Ct));
+        await rig.Router.ForRequest(new RecordingMeter()).SearchAsync(get, Ct);
+
+        refusal.Failure.ShouldBe(ShardCallFailure.Redirect);
+        rig.West.Requests.ShouldBeEmpty();
+        rig.East.Requests.Select(r => r.Method).ShouldBe(["POST", "GET"]);
+        rig.East.Requests[0].HeaderValues(CallerHeader).ShouldBe([callerId]);
+        rig.East.Requests[1].HeaderValues(CallerHeader).ShouldBeEmpty();
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData(" a")]
+    [InlineData("a,b")]
+    [InlineData("a\r\nx-header: synthetic")]
+    [InlineData("a\u00e9")]
+    public async Task InvalidCallerIdCannotBindAView(string callerId)
+    {
+        await using MultiShardRig rig = MultiShardRig.Start();
+        var meter = new RecordingMeter();
+
+        Should.Throw<ArgumentException>(() => rig.Router.ForRequestWithCaller(meter, callerId));
+        Should.Throw<ArgumentException>(() => rig.Router.ForRequestWithCaller(meter, new string('A', 129)));
+        Should.Throw<ArgumentNullException>(() => rig.Router.ForRequestWithCaller(meter, null!));
+
+        meter.Sends.ShouldBeEmpty();
+        rig.Credentials.Calls.ShouldBe(0);
+        rig.East.Requests.ShouldBeEmpty();
+        rig.West.Requests.ShouldBeEmpty();
     }
 
     [Fact]

@@ -3,8 +3,8 @@ using System.Diagnostics;
 namespace Ignixa.Federation.Shards.Http;
 
 /// <summary>
-/// Injects what another propagator injects except baggage, the W3C <c>baggage</c> or legacy <c>Correlation-Context</c>
-/// field: baggage is arbitrary application data, and a shard is a separate trust domain. Trace correlation is unchanged.
+/// Keeps trace correlation but withholds baggage (<c>baggage</c> and <c>Correlation-Context</c>) from the shard.
+/// No propagator may supply the caller header; that value must come from an explicit request binding.
 /// </summary>
 internal sealed class TraceContextOnlyPropagator : DistributedContextPropagator
 {
@@ -13,7 +13,7 @@ internal sealed class TraceContextOnlyPropagator : DistributedContextPropagator
     public TraceContextOnlyPropagator(DistributedContextPropagator inner)
     {
         _inner = inner;
-        Fields = [.. inner.Fields.Where(field => !IsBaggage(field))];
+        Fields = [.. inner.Fields.Where(field => !IsExcluded(field))];
     }
 
     public override IReadOnlyCollection<string> Fields { get; }
@@ -24,7 +24,7 @@ internal sealed class TraceContextOnlyPropagator : DistributedContextPropagator
             carrier,
             setter is null ? null : (target, name, value) =>
             {
-                if (!IsBaggage(name))
+                if (!IsExcluded(name))
                 {
                     setter(target, name, value);
                 }
@@ -36,6 +36,8 @@ internal sealed class TraceContextOnlyPropagator : DistributedContextPropagator
     public override IEnumerable<KeyValuePair<string, string?>>? ExtractBaggage(object? carrier, PropagatorGetterCallback? getter) =>
         _inner.ExtractBaggage(carrier, getter);
 
-    private static bool IsBaggage(string name) =>
-        name.Equals("baggage", StringComparison.OrdinalIgnoreCase) || name.Equals("Correlation-Context", StringComparison.OrdinalIgnoreCase);
+    private static bool IsExcluded(string name) =>
+        name.Equals("baggage", StringComparison.OrdinalIgnoreCase) ||
+        name.Equals("Correlation-Context", StringComparison.OrdinalIgnoreCase) ||
+        name.Equals(ShardRequestContext.CallerHeader, StringComparison.OrdinalIgnoreCase);
 }

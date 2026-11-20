@@ -5,7 +5,7 @@ namespace Ignixa.Federation.Shards.Http;
 
 /// <summary>
 /// A request-bound view of a <see cref="MultiShardHttpClient"/>. Its searches, continuations and qualified reads share
-/// the router's transports, but charge only the meter supplied to <see cref="MultiShardHttpClient.ForRequest"/>.
+/// the router's transports, but charge only the request's meter and carry only its explicitly supplied caller identifier, if any.
 /// </summary>
 /// <remarks>
 /// The same view can serve parallel calls for one request. It does not own the router or meter and must not outlive either.
@@ -13,23 +13,23 @@ namespace Ignixa.Federation.Shards.Http;
 public sealed class RequestShardClient : IShardClient
 {
     private readonly MultiShardHttpClient _router;
-    private readonly IShardTransferMeter _meter;
+    private readonly ShardRequestContext _context;
 
-    internal RequestShardClient(MultiShardHttpClient router, IShardTransferMeter meter)
+    internal RequestShardClient(MultiShardHttpClient router, ShardRequestContext context)
     {
         _router = router;
-        _meter = meter;
+        _context = context;
     }
 
     /// <inheritdoc cref="MultiShardHttpClient.SearchAsync(ShardSearchRequest, CancellationToken)"/>
     public Task<ShardPage> SearchAsync(ShardSearchRequest request, CancellationToken cancellationToken) =>
-        _router.SearchMeteredAsync(request, _meter, cancellationToken);
+        _router.SearchWithContextAsync(request, _context, cancellationToken);
 
     /// <inheritdoc cref="MultiShardHttpClient.ContinueAsync(ShardCursor, CancellationToken)"/>
     public Task<ShardPage> ContinueAsync(ShardCursor cursor, CancellationToken cancellationToken) =>
-        _router.ContinueMeteredAsync(cursor, _meter, cancellationToken);
+        _router.ContinueWithContextAsync(cursor, _context, cancellationToken);
 
     /// <inheritdoc cref="MultiShardHttpClient.ReadAsync(ResourceKey, CancellationToken)"/>
     public Task<ShardReadResult> ReadAsync(ResourceKey key, CancellationToken cancellationToken) =>
-        _router.ReadMeteredAsync(key, _meter, cancellationToken);
+        _router.ReadWithContextAsync(key, _context, cancellationToken);
 }

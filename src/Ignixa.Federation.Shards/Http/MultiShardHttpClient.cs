@@ -107,7 +107,7 @@ public sealed class MultiShardHttpClient : IShardClient, IDisposable
     /// <see cref="ShardRequestLimits"/> (<see cref="ShardCallFailure.RequestTooLarge"/>, nothing sent).
     /// </exception>
     public Task<ShardPage> SearchAsync(ShardSearchRequest request, CancellationToken cancellationToken) =>
-        SearchMeteredAsync(request, meter: null, cancellationToken);
+        SearchWithContextAsync(request, context: default, cancellationToken);
 
     /// <inheritdoc/>
     /// <exception cref="ArgumentNullException"><paramref name="cursor"/> is <see langword="null"/>.</exception>
@@ -121,7 +121,7 @@ public sealed class MultiShardHttpClient : IShardClient, IDisposable
     /// <see cref="ShardRequestLimits"/> (<see cref="ShardCallFailure.InvalidNextLink"/>, nothing sent).
     /// </exception>
     public Task<ShardPage> ContinueAsync(ShardCursor cursor, CancellationToken cancellationToken) =>
-        ContinueMeteredAsync(cursor, meter: null, cancellationToken);
+        ContinueWithContextAsync(cursor, context: default, cancellationToken);
 
     /// <summary>Reads the current version of one resource from the shard its key names; see <see cref="HttpShardClient.ReadAsync"/>.</summary>
     /// <param name="key">The qualified resource to read.</param>
@@ -135,7 +135,7 @@ public sealed class MultiShardHttpClient : IShardClient, IDisposable
     /// <see cref="ShardCallFailure.ResourceGone"/>.
     /// </exception>
     public Task<ShardReadResult> ReadAsync(ResourceKey key, CancellationToken cancellationToken) =>
-        ReadMeteredAsync(key, meter: null, cancellationToken);
+        ReadWithContextAsync(key, context: default, cancellationToken);
 
     /// <summary>
     /// Lends the router's client for one registered shard, so a component such as the metadata worker uses the same
@@ -183,25 +183,52 @@ public sealed class MultiShardHttpClient : IShardClient, IDisposable
     {
         ArgumentNullException.ThrowIfNull(meter);
         ThrowIfDisposed();
-        return new RequestShardClient(this, meter);
+        return new RequestShardClient(this, new ShardRequestContext(meter, callerId: null));
     }
 
-    internal Task<ShardPage> SearchMeteredAsync(ShardSearchRequest request, IShardTransferMeter? meter, CancellationToken cancellationToken)
+    /// <summary>
+    /// Borrows a metered request view that sends an explicit <c>X-Federation-Caller</c> value on its shard data calls.
+    /// </summary>
+    /// <param name="meter">The thread-safe meter for this request.</param>
+    /// <param name="callerId">
+    /// A host-issued opaque identifier for correlation, not an inbound header, raw identity or credential.
+    /// Supply 1 to 128 ASCII letters, digits or <c>-._~</c> characters. The value is sent unchanged.
+    /// </param>
+    /// <returns>A view over this router; its retry, continuation and read calls keep the same identifier.</returns>
+    /// <remarks>Unbound router calls, metadata and credential acquisition do not use this identifier.</remarks>
+    /// <exception cref="ArgumentNullException">An argument is <see langword="null"/>.</exception>
+    /// <exception cref="ArgumentException">The caller identifier is not in the supported form.</exception>
+    /// <exception cref="ObjectDisposedException">The router is disposed.</exception>
+    public RequestShardClient ForRequestWithCaller(IShardTransferMeter meter, string callerId)
+    {
+        ArgumentNullException.ThrowIfNull(meter);
+        ArgumentNullException.ThrowIfNull(callerId);
+        ThrowIfDisposed();
+        if (callerId.Length is 0 or > 128 ||
+            callerId.Any(c => !char.IsAsciiLetterOrDigit(c) && c is not ('-' or '.' or '_' or '~')))
+        {
+            throw new ArgumentException("The opaque caller identifier must be 1 to 128 ASCII letters, digits or -._~ characters.", nameof(callerId));
+        }
+
+        return new RequestShardClient(this, new ShardRequestContext(meter, callerId));
+    }
+
+    internal Task<ShardPage> SearchWithContextAsync(ShardSearchRequest request, ShardRequestContext context, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(request);
-        return OwnerOf(request.Shard, nameof(request)).SearchMeteredAsync(request, meter, cancellationToken);
+        return OwnerOf(request.Shard, nameof(request)).SearchWithContextAsync(request, context, cancellationToken);
     }
 
-    internal Task<ShardPage> ContinueMeteredAsync(ShardCursor cursor, IShardTransferMeter? meter, CancellationToken cancellationToken)
+    internal Task<ShardPage> ContinueWithContextAsync(ShardCursor cursor, ShardRequestContext context, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(cursor);
-        return OwnerOf(cursor.Shard, nameof(cursor)).ContinueMeteredAsync(cursor, meter, cancellationToken);
+        return OwnerOf(cursor.Shard, nameof(cursor)).ContinueWithContextAsync(cursor, context, cancellationToken);
     }
 
-    internal Task<ShardReadResult> ReadMeteredAsync(ResourceKey key, IShardTransferMeter? meter, CancellationToken cancellationToken)
+    internal Task<ShardReadResult> ReadWithContextAsync(ResourceKey key, ShardRequestContext context, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(key);
-        return OwnerOf(key.Shard, nameof(key)).ReadMeteredAsync(key, meter, cancellationToken);
+        return OwnerOf(key.Shard, nameof(key)).ReadWithContextAsync(key, context, cancellationToken);
     }
 
     /// <summary>Disposes the clients the router created, and not the credential provider or the transfer meter. Calling it again has no effect.</summary>

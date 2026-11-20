@@ -25,7 +25,8 @@ namespace Ignixa.Federation.Shards.Http;
 /// <para><b>Wire.</b> Search parameters are sent verbatim in planner order, then one <c>_count</c>: as the query of
 /// <c>GET {base}/{type}</c>, or as the <c>application/x-www-form-urlencoded</c> body of <c>POST {base}/{type}/_search</c>.
 /// Every exchange carries <c>Prefer: handling=strict</c>, <c>Accept: application/fhir+json</c> and the bearer token, and
-/// nothing else of the caller's. Redirects, cookies and compression are off.</para>
+/// data calls on a bound view may carry its explicit opaque <c>X-Federation-Caller</c> correlation value.
+/// Redirects, cookies and compression are off.</para>
 /// <para><b>Self check.</b> A first page must have exactly one <c>self</c> link whose query decodes to the same pairs as
 /// the query sent, duplicates counted, in any order; otherwise the backend answered a different search and the call fails
 /// with <see cref="ShardCallFailure.SelfLinkMismatch"/>. No backend-owned parameter is exempt, because none is documented.</para>
@@ -220,16 +221,16 @@ public sealed class HttpShardClient : IShardClient, IDisposable
     /// <exception cref="ArgumentOutOfRangeException">The page size exceeds the backend's maximum <c>_count</c>. Nothing is sent.</exception>
     /// <exception cref="ShardCallException">The exchange failed or the response was not an exact answer to the request.</exception>
     public Task<ShardPage> SearchAsync(ShardSearchRequest request, CancellationToken cancellationToken) =>
-        SearchMeteredAsync(request, meter: null, cancellationToken);
+        SearchWithContextAsync(request, context: default, cancellationToken);
 
-    internal Task<ShardPage> SearchMeteredAsync(ShardSearchRequest request, IShardTransferMeter? meter, CancellationToken cancellationToken) =>
-        SearchCoreAsync(request, meter, witness: null, cancellationToken);
+    internal Task<ShardPage> SearchWithContextAsync(ShardSearchRequest request, ShardRequestContext context, CancellationToken cancellationToken) =>
+        SearchCoreAsync(request, context, witness: null, cancellationToken);
 
     internal Task<ShardPage> SearchWithWitnessAsync(ShardSearchRequest request, WireWitness witness, CancellationToken cancellationToken) =>
-        SearchCoreAsync(request, meter: null, witness, cancellationToken);
+        SearchCoreAsync(request, context: default, witness, cancellationToken);
 
     private Task<ShardPage> SearchCoreAsync(
-        ShardSearchRequest request, IShardTransferMeter? meter, WireWitness? witness, CancellationToken cancellationToken)
+        ShardSearchRequest request, ShardRequestContext context, WireWitness? witness, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(request);
         if (request.Shard != _shard.Id)
@@ -249,7 +250,7 @@ public sealed class HttpShardClient : IShardClient, IDisposable
         }
 
         string query = BuildQuery(request);
-        return CallAsync(request.Type, query, post, ShardCallFailure.RequestTooLarge, page => FirstPage(request, query, page), meter, witness, cancellationToken);
+        return CallAsync(request.Type, query, post, ShardCallFailure.RequestTooLarge, page => FirstPage(request, query, page), context, witness, cancellationToken);
     }
 
     /// <inheritdoc/>
@@ -260,9 +261,9 @@ public sealed class HttpShardClient : IShardClient, IDisposable
     /// </exception>
     /// <exception cref="ShardCallException">The exchange failed or the response was not a readable page.</exception>
     public Task<ShardPage> ContinueAsync(ShardCursor cursor, CancellationToken cancellationToken) =>
-        ContinueMeteredAsync(cursor, meter: null, cancellationToken);
+        ContinueWithContextAsync(cursor, context: default, cancellationToken);
 
-    internal Task<ShardPage> ContinueMeteredAsync(ShardCursor cursor, IShardTransferMeter? meter, CancellationToken cancellationToken)
+    internal Task<ShardPage> ContinueWithContextAsync(ShardCursor cursor, ShardRequestContext context, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(cursor);
         if (cursor.Shard != _shard.Id)
@@ -287,7 +288,7 @@ public sealed class HttpShardClient : IShardClient, IDisposable
                 page.Entries,
                 NextCursor(page, cursor.Type, query, link => new ShardCursor(cursor.Shard, cursor.Type, link, cursor.Redemption)),
                 page.Total),
-            meter,
+            context,
             witness: null,
             cancellationToken);
     }
@@ -326,7 +327,7 @@ public sealed class HttpShardClient : IShardClient, IDisposable
                 formBody: null,
                 Operation.Metadata,
                 ReadCapabilities,
-                meter: null,
+                context: default,
                 witness: null,
                 cancellationToken).ConfigureAwait(false);
         }
@@ -378,9 +379,9 @@ public sealed class HttpShardClient : IShardClient, IDisposable
         /// <see cref="ShardCallFailure.ResourceGone"/> here only; no error body is read, and nothing is fallen back to.
     /// </exception>
     public Task<ShardReadResult> ReadAsync(ResourceKey key, CancellationToken cancellationToken) =>
-        ReadMeteredAsync(key, meter: null, cancellationToken);
+        ReadWithContextAsync(key, context: default, cancellationToken);
 
-    internal Task<ShardReadResult> ReadMeteredAsync(ResourceKey key, IShardTransferMeter? meter, CancellationToken cancellationToken)
+    internal Task<ShardReadResult> ReadWithContextAsync(ResourceKey key, ShardRequestContext context, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(key);
         if (key.Shard != _shard.Id)
@@ -394,10 +395,10 @@ public sealed class HttpShardClient : IShardClient, IDisposable
             throw new ArgumentException("The id cannot be addressed as a URL path segment.", nameof(key));
         }
 
-        return ReadCoreAsync(key, meter, cancellationToken);
+        return ReadCoreAsync(key, context, cancellationToken);
     }
 
-    private async Task<ShardReadResult> ReadCoreAsync(ResourceKey key, IShardTransferMeter? meter, CancellationToken cancellationToken)
+    private async Task<ShardReadResult> ReadCoreAsync(ResourceKey key, ShardRequestContext context, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
         using Activity? activity = ShardActivity.StartBackendCall(_shard.Alias.Value, ReadStage);
@@ -412,7 +413,7 @@ public sealed class HttpShardClient : IShardClient, IDisposable
                 formBody: null,
                 Operation.Read,
                 body => ReadResource(body, location, key),
-                meter,
+                context,
                 witness: null,
                 cancellationToken).ConfigureAwait(false);
         }
@@ -648,7 +649,7 @@ public sealed class HttpShardClient : IShardClient, IDisposable
         bool post,
         ShardCallFailure tooLarge,
         Func<Searchset, ShardPage> interpret,
-        IShardTransferMeter? meter,
+        ShardRequestContext context,
         WireWitness? witness,
         CancellationToken cancellationToken)
     {
@@ -673,7 +674,7 @@ public sealed class HttpShardClient : IShardClient, IDisposable
                 post ? query : null,
                 Operation.Search,
                 body => interpret(Searchset.Read(body, _shard, type)),
-                meter,
+                context,
                 witness,
                 cancellationToken).ConfigureAwait(false);
         }
@@ -703,13 +704,13 @@ public sealed class HttpShardClient : IShardClient, IDisposable
         string? formBody,
         Operation operation,
         Func<ReadOnlyMemory<byte>, T> interpret,
-        IShardTransferMeter? meter,
+        ShardRequestContext context,
         WireWitness? witness,
         CancellationToken cancellationToken)
     {
         using var expiry = new CancellationTokenSource(_callTimeout, _deadlineClock);
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, expiry.Token);
-        IShardTransferMeter? callMeter = meter ?? _meter;
+        IShardTransferMeter? callMeter = context.Meter ?? _meter;
         string? token = null;
         try
         {
@@ -721,6 +722,11 @@ public sealed class HttpShardClient : IShardClient, IDisposable
                 // token, and the abandoned acquisition is left to finish on its own.
                 token ??= await AcquireAsync(deadline.Token).ConfigureAwait(false);
                 using HttpRequestMessage message = CreateMessage(method, uri, formBody);
+                if (context.CallerId is { } callerId)
+                {
+                    message.Headers.Add(ShardRequestContext.CallerHeader, callerId);
+                }
+
                 try
                 {
                     return await SendAsync(message, token, operation, interpret, callMeter, deadline, witness, cancellationToken).ConfigureAwait(false);
