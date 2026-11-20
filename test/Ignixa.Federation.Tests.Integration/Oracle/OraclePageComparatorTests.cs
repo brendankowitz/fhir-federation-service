@@ -434,7 +434,10 @@ public sealed class OraclePageComparatorTests
     [Theory]
     [InlineData("https://east.example/fh%69r/")]
     [InlineData("https://east.example/temporary/../fhir/")]
-    public void Bind_RejectsSpellingEquivalentBasesWithAmbiguousPathSegments(string westBase)
+    [InlineData("https://ｅａｓｔ.example/fhir/")]
+    [InlineData("https://east。example/fhir/")]
+    [InlineData("https://bücher.example/fhir/")]
+    public void Bind_RejectsAmbiguousBaseSpellings(string westBase)
     {
         var shards = new Dictionary<string, string>
         {
@@ -445,6 +448,10 @@ public sealed class OraclePageComparatorTests
         var message = Should.Throw<ArgumentException>(() => new OracleBases(shards, oracle: null)).Message;
 
         message.ShouldContain(westBase);
+        if (westBase.Any(character => character > 127))
+        {
+            message.ShouldContain("non-ASCII");
+        }
     }
 
     [Fact]
@@ -457,6 +464,13 @@ public sealed class OraclePageComparatorTests
         Should.NotThrow(() => OracleFixtures.Bind("include.forward", "colocated", byPathCase));
         byPathCase.Shards["west"].ShouldBe("https://east.example/FHIR/");
         byPathCase.Oracle.ShouldBe("https://east.example:8443/fhir/");
+
+        var punycode = new OracleBases(
+            new Dictionary<string, string> { ["east"] = "https://xn--bcher-kva.example/fhir/", ["west"] = West },
+            oracle: null);
+
+        Should.NotThrow(() => OracleFixtures.Bind("collision.tagged-union", "per-shard", punycode));
+        punycode.Shards["east"].ShouldBe("https://xn--bcher-kva.example/fhir/");
     }
 
     [Theory]

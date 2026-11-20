@@ -50,7 +50,7 @@ internal static class OracleUrl
 /// </summary>
 internal sealed record OracleBases
 {
-    /// <exception cref="ArgumentException">A base is not an absolute http(s) URL with a host and no userinfo, query, fragment, percent-escape or dot segment.</exception>
+    /// <exception cref="ArgumentException">A base is not an absolute http(s) URL with a host and no userinfo, non-ASCII characters, query, fragment, percent-escape or dot segment.</exception>
     public OracleBases(IReadOnlyDictionary<string, string> shards, string? oracle)
     {
         Shards = shards.ToDictionary(shard => shard.Key, shard => Canonical($"shard '{shard.Key}'", shard.Value, nameof(shards)), StringComparer.Ordinal);
@@ -65,12 +65,13 @@ internal sealed record OracleBases
     {
         var canonical = OracleUrl.Canonicalize(baseUrl);
         if (canonical is null
+            || !System.Text.Ascii.IsValid(baseUrl)
             || canonical.IndexOfAny(['?', '#']) >= 0
             || baseUrl.Contains('%')
             || HasDotSegment(canonical))
         {
             throw new ArgumentException(
-                $"The {registration} base '{baseUrl}' must be an absolute http(s) URL with a host and no userinfo, query, fragment, percent-escape or dot segment.",
+                $"The {registration} base '{baseUrl}' must be an absolute http(s) URL with a host and no userinfo, non-ASCII characters, query, fragment, percent-escape or dot segment.",
                 paramName);
         }
 
