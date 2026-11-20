@@ -23,6 +23,9 @@ internal sealed class ScriptedResponse
 
     public string? Location { get; private init; }
 
+    /// <summary>Runs after the request is recorded but before the server sends any response bytes.</summary>
+    public Func<CancellationToken, Task>? BeforeHead { get; private init; }
+
     /// <summary>Gets whether the server never answers, so only the client's deadline or cancellation ends the call.</summary>
     public bool StallsBeforeHead { get; private init; }
 
@@ -32,7 +35,8 @@ internal sealed class ScriptedResponse
     /// <summary>Gets whether the server keeps the connection open for another request after this response.</summary>
     public bool KeepsAlive { get; private init; }
 
-    public static ScriptedResponse Json(string json) => new(200, Encoding.UTF8.GetBytes(json), "application/fhir+json");
+    public static ScriptedResponse Json(string json, Func<CancellationToken, Task>? beforeHead = null) =>
+        new(200, Encoding.UTF8.GetBytes(json), "application/fhir+json") { BeforeHead = beforeHead };
 
     public static ScriptedResponse Status(int status, string body = "") => new(status, Encoding.UTF8.GetBytes(body), "text/plain");
 

@@ -389,16 +389,43 @@ public sealed class HttpShardClientFailureTests
     }
 
     [Fact]
-    public async Task ConcurrentCalls_AreIndependent()
+    public async Task OverlappingDistinctCalls_CancelOnlyTheCallerAndKeepThePeersResult()
     {
-        await using var shard = ShardHarness.Start();
-        shard.Server.Respond([.. Enumerable.Range(0, 8).Select(_ => ScriptedResponse.Json(shard.SarahPage(entries: Searchsets.Entry(Searchsets.Patient("p1")))))]);
+        var bound = TimeSpan.FromSeconds(10);
+        await using var shard = ShardHarness.Start(callTimeout: TimeSpan.FromSeconds(30));
+        using var caller = CancellationTokenSource.CreateLinkedTokenSource(Ct);
+        var firstArrived = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var peerArrived = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releasePeer = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        string peerPage = Searchsets.Page(shard.Search + "?name=Taylor&_count=10", entries: Searchsets.Entry(Searchsets.Patient("taylor")));
+        shard.Server.Respond(
+            ScriptedResponse.Json(shard.SarahPage(entries: Searchsets.Entry(Searchsets.Patient("sarah"))), stop =>
+            {
+                firstArrived.SetResult();
+                return Task.Delay(Timeout.Infinite, stop);
+            }),
+            ScriptedResponse.Json(peerPage, stop =>
+            {
+                peerArrived.SetResult();
+                return releasePeer.Task.WaitAsync(stop);
+            }));
 
-        ShardPage[] pages = await Task.WhenAll(Enumerable.Range(0, 8).Select(_ => shard.Client.SearchAsync(shard.SarahRequest(), Ct)));
+        Task<ShardPage> first = shard.Client.SearchAsync(shard.SarahRequest(), caller.Token);
+        await firstArrived.Task.WaitAsync(bound, Ct);
+        Task<ShardPage> peer = shard.Client.SearchAsync(shard.Request(ShardSearchMethod.Get, 10, "name", "Taylor"), Ct);
+        await peerArrived.Task.WaitAsync(bound, Ct);
 
-        pages.ShouldAllBe(p => p.Entries.Count == 1);
-        shard.Server.Requests.Count.ShouldBe(8);
-        shard.Meter.Sends.Count.ShouldBe(8);
+        first.IsCompleted.ShouldBeFalse();
+        peer.IsCompleted.ShouldBeFalse();
+        await caller.CancelAsync().WaitAsync(bound, Ct);
+        var canceled = await Should.ThrowAsync<OperationCanceledException>(() => first.WaitAsync(bound, Ct));
+        canceled.CancellationToken.ShouldBe(caller.Token);
+
+        releasePeer.SetResult();
+        ShardPage result = await peer.WaitAsync(bound, Ct);
+        result.Entries.Select(e => e.Key.Id.Value).ShouldBe(["taylor"]);
+        shard.Server.Requests.Select(r => r.Target).ShouldBe(["/fhir/Patient?name=Sarah&_count=10", "/fhir/Patient?name=Taylor&_count=10"]);
+        shard.Meter.Sends.Count.ShouldBe(2);
     }
 
     [Fact]

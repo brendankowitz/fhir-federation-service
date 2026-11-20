@@ -167,6 +167,11 @@ internal sealed class LoopbackFhirServer : IAsyncDisposable
 
     private async Task WriteAsync(SslStream tls, ScriptedResponse response)
     {
+        if (response.BeforeHead is { } beforeHead)
+        {
+            await beforeHead(_stopping.Token);
+        }
+
         if (response.StallsBeforeHead)
         {
             await Task.Delay(Timeout.Infinite, _stopping.Token);
