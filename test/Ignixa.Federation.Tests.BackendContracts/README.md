@@ -87,16 +87,18 @@ the sanitized report, the request construction, the seed shape, and the generali
 
 ## Run it
 
-Requires .NET SDK 11.0.100 and a local Docker engine for `linux/amd64` containers. The harness uses
-`/var/run/docker.sock` on Linux and the Docker Desktop Linux engine on Windows. From the repository root:
+Requires .NET SDK 11.0.100. The live tests also require a local Docker engine for `linux/amd64` containers.
+The harness uses `/var/run/docker.sock` on Linux and the Docker Desktop Linux engine on Windows.
+Run the same two commands as CI from the repository root:
 
 ```text
-dotnet run --project test/Ignixa.Federation.Tests.BackendContracts/Ignixa.Federation.Tests.BackendContracts.csproj --configuration Release -- --show-live-output on --progress off --minimum-expected-tests 29
+dotnet run --project test/Ignixa.Federation.Tests.BackendContracts/Ignixa.Federation.Tests.BackendContracts.csproj --configuration Release -- --show-live-output on --progress off --fail-skips on --filter-class '*EvidenceTests' --minimum-expected-tests 78
+dotnet run --project test/Ignixa.Federation.Tests.BackendContracts/Ignixa.Federation.Tests.BackendContracts.csproj --configuration Release --no-build -- --show-live-output on --progress off --fail-skips on --filter-class '*ContractTests' --minimum-expected-tests 9
 ```
 
-The command exits non-zero if a case fails. To run only the offline tests, replace the options after
-`--` with `--filter-class '*EvidenceTests'`. The full run has 87 tests: 78 offline and 9 live
-(3 reference, 6 count).
+The first command builds the project and runs the 78 offline tests. The second runs the nine live cases
+(three reference, six count) using that build. The separate filters and minimum test counts prevent
+offline tests from satisfying the live gate. Failed or skipped cases make their command exit non-zero.
 
 The first live run can take several minutes to pull images and initialize the SQL schema.
 
