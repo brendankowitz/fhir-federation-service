@@ -188,10 +188,10 @@ page, and then stop (oracle harness, Pages, step 5).
 ### The sample command it runs
 
 The driver is a thin wrapper over the sample. It builds the sample, then runs the built sample with the equivalent of
-this command (default alternate read, default `--max-pages`):
+this command (default alternate read, default `--max-pages`; replace the example base with your federation base):
 
 ```powershell
-dotnet run --project samples/Ignixa.Federation.SampleClient -c Release -- --base <federation base> --type Patient --param name=Orchid --param _count=1 --max-pages 10 --read alternate
+dotnet run --project samples/Ignixa.Federation.SampleClient -c Release -- --base 'https://fed.example/fhir/' --type Patient --param name=Orchid --param _count=1 --max-pages 10 --read alternate
 ```
 
 With `--read direct` it adds the two `--direct-shard` options, one per shard base. The driver runs the built assembly
@@ -215,8 +215,12 @@ python -B docs/guides/client-acceptance/collision_walkthrough.py `
 | `--max-pages N` | Page limit passed to the sample. Default 10, minimum 3. |
 | `--dotnet PATH` | The `dotnet` to use. Default `dotnet`. |
 
-It builds the sample in Release, runs it, and prints the sample's own stdout and stderr (already free of tokens, `ct`
-values and resource bodies). It then prints `verdict: PASS` or `verdict: FAIL`, with one `- <reason>` line per failed
+It builds the sample in Release, runs it, and prints the sample's own stdout and stderr. The sample does not print the
+access tokens it is given or resource bodies, but anything the server supplied can appear in its output: OperationOutcome
+issue text on `outcome` and `  issue` lines, and the URLs, shard aliases and resource ids on match, include and read
+lines. The sample strips control characters and, best effort, blanks echoes of a continuation query it has already
+followed from OperationOutcome diagnostics; it does not otherwise vet server text, so the output can contain sensitive
+data. Review it before sharing. It then prints `verdict: PASS` or `verdict: FAIL`, with one `- <reason>` line per failed
 check. Exit code: 0 for PASS, 1 for FAIL, 2 for a usage error.
 
 The sample's output for a passing run has this **expected shape** (synthetic; aliases and bases are placeholders, and
@@ -243,11 +247,14 @@ For a labelled scripted-handler transcript of a real run, see the
 - The run terminates: no `stopped after` line within `--max-pages`.
 - No page carries an include or outcome line, and the summary agrees with the pages, with matches=2, includes=0 and
   outcomes=0.
-- The matches are exactly the two expected `fullUrl`s, with no repeat across pages. URL comparison canonicalises scheme
-  and host case and the default port 443 only.
+- The matches are exactly the two expected URLs as printed by the sample, with no repeat across pages. Each URL is
+  reduced to its scheme, authority (host and any non-default port) and path, without user info, query or fragment, and
+  normalised by .NET's `Uri`, so case and escaping can differ from the raw text. The
+  driver compares those printed forms (each shard base plus `Patient/dup`), not the raw Bundle `fullUrl` or the request
+  sent on the wire. URL comparison canonicalises scheme and host case and the default port 443 only.
 - Every match has a shard alias, and the two aliases differ.
-- Exactly one read line, in the requested mode. For `alternate`, the URL is the federation base plus
-  `shards/<first match's alias>/Patient/dup`. For `direct`, it is the first match's `fullUrl`.
+- Exactly one read line, in the requested mode. For `alternate`, the printed URL is the federation base plus
+  `shards/<first match's alias>/Patient/dup`. For `direct`, it is the first match's printed URL.
 
 ### What the driver does not check
 
