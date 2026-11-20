@@ -239,6 +239,7 @@ public static class CliApp
     /// <summary>
     /// Remembers the query of each continuation link the federation issued and blanks it out of server text.
     /// A server could echo the opaque <c>ct</c> in a diagnostic; the CLI promises never to print it, whole or cut short.
+    /// Defense in depth for CLI output; <see cref="FederationClient"/> does not need to redact continuation tokens.
     /// </summary>
     private sealed class Redactor
     {

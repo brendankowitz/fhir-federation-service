@@ -446,7 +446,8 @@ public class CliAppTests
 
     /// <summary>
     /// The library cuts each diagnostic to 200 characters, so an echo near the end arrives as a prefix only. The
-    /// leak check in <see cref="RunAsync"/> fails if any 16-character prefix of the ct (or the value itself) is printed.
+    /// leak check in <see cref="RunAsync"/> fails if the first 16 characters of <c>LongCt</c>, or either literal
+    /// <c>SECRETCT</c> or <c>ct=</c>, appears.
     /// </summary>
     private static async Task AssertTruncatedEchoIsHiddenAsync(string ct, int filler, string echo)
     {

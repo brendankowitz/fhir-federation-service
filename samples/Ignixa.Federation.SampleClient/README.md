@@ -9,7 +9,7 @@ The wire contract is `docs/superpowers/specs/2026-11-19-fhir-federation-service-
 ## What it demonstrates
 
 - **Search and paging.** `GET [base]/[type]?…`, then each `Bundle.link[relation=next]` followed exactly as given.
-  The link is opaque: the client never parses, edits or prints its `ct` value.
+  The link is opaque: the client never edits or prints its `ct` value; the CLI only looks at it to hide echoes.
 - **match / include / outcome.** `search.mode` separates matches from included resources and from `outcome`
   entries (for example "included resources truncated", `incomplete`). Outcomes are data, not errors.
 - **Identity is `fullUrl`.** Resource ids are only unique per shard, so `Patient/123` can exist on
@@ -80,11 +80,10 @@ dotnet run --project samples/Ignixa.Federation.SampleClient -- `
 
 Credentials are never accepted as arguments (an option such as `--token` is a usage error), so they stay out of
 process listings and command lines. The `Read-Host -AsSecureString` form above (it works in Windows PowerShell 5.1 and
-PowerShell 7) also keeps them off the screen and out of the typed
-command line; a token is trimmed, and one containing a line break is refused (exit code 2). The CLI never prints
-tokens, `ct` values, `next` links or query strings, or resource bodies, and it blanks out any echo of a followed
-`ct` in server diagnostics, including one the library cut short (diagnostics are limited to 200 characters, so a
-long `ct` is usually echoed as a prefix).
+PowerShell 7) also keeps them off the screen and out of the typed command line; a token is trimmed, and one containing
+a line break is refused (exit code 2). The CLI never prints tokens, `ct` values, `next` links or query strings, or
+resource bodies. It also blanks out echoes of a followed `ct` in server diagnostics, whether whole, encoded or
+decoded, or cut off after at least 8 characters.
 
 ### Output
 
@@ -122,7 +121,8 @@ The summary counts distinct matches and includes by `fullUrl`.
 dotnet run --project test/Ignixa.Federation.SampleClient.UnitTests
 ```
 
-The test project is an executable xunit.v3 project on Microsoft.Testing.Platform, so it is run with `dotnet run`.
+It is an executable xunit.v3 project; `dotnet run` uses xunit's own runner. `dotnet test` (MTP) works once the
+repository opts into MTP.
 
 ### Public-wire unit tests (this repository)
 
