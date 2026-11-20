@@ -37,7 +37,9 @@ public enum ShardCallFailure
 
     /// <summary>
     /// The <c>next</c> link is not a continuation of this shard's typed search (another origin, path or scheme, an
-    /// ambiguous form) or repeats the query just sent. It is never followed.
+    /// ambiguous form) or repeats the query just sent. It is never followed. A valid link whose redemption would exceed the
+    /// shard's <see cref="ShardRequestLimits"/> is also this failure, raised when the cursor is redeemed (not when the link
+    /// arrives), before anything is sent; the link cannot be used on this shard.
     /// </summary>
     InvalidNextLink,
 
@@ -53,4 +55,10 @@ public enum ShardCallFailure
     /// <see cref="HttpShardClient.GetCapabilitiesAsync"/>, which bypasses the breaker (design spec §8).
     /// </summary>
     CircuitOpen,
+
+    /// <summary>
+    /// A generated search exceeds the <see cref="ShardRequestLimits"/> of its method. No credential was acquired, nothing
+    /// was sent, and retrying it unchanged cannot help. Oversized backend continuations are <see cref="InvalidNextLink"/>.
+    /// </summary>
+    RequestTooLarge,
 }

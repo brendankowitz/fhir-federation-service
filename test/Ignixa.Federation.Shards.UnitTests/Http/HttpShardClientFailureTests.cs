@@ -481,14 +481,17 @@ public sealed class HttpShardClientFailureTests
         var credentials = new SyntheticCredentials();
         TimeSpan second = TimeSpan.FromSeconds(1);
 
-        Should.Throw<ArgumentNullException>(() => new HttpShardClient(null!, credentials, second, 1));
-        Should.Throw<ArgumentNullException>(() => new HttpShardClient(shard, null!, second, 1));
-        Should.Throw<ArgumentOutOfRangeException>(() => new HttpShardClient(shard, credentials, TimeSpan.Zero, 1));
-        Should.Throw<ArgumentOutOfRangeException>(() => new HttpShardClient(shard, credentials, TimeSpan.FromSeconds(-1), 1));
-        Should.Throw<ArgumentOutOfRangeException>(() => new HttpShardClient(shard, credentials, Timeout.InfiniteTimeSpan, 1));
-        Should.Throw<ArgumentOutOfRangeException>(() => new HttpShardClient(shard, credentials, second, 0));
-        Should.Throw<ArgumentOutOfRangeException>(() => new HttpShardClient(shard, credentials, second, (long)Array.MaxLength + 1));
-        new HttpShardClient(shard, credentials, second, Array.MaxLength).Dispose();
+        ShardRequestLimits limits = SyntheticLimits.Generous;
+
+        Should.Throw<ArgumentNullException>(() => new HttpShardClient(null!, credentials, second, 1, limits));
+        Should.Throw<ArgumentNullException>(() => new HttpShardClient(shard, null!, second, 1, limits));
+        Should.Throw<ArgumentNullException>(() => new HttpShardClient(shard, credentials, second, 1, null!));
+        Should.Throw<ArgumentOutOfRangeException>(() => new HttpShardClient(shard, credentials, TimeSpan.Zero, 1, limits));
+        Should.Throw<ArgumentOutOfRangeException>(() => new HttpShardClient(shard, credentials, TimeSpan.FromSeconds(-1), 1, limits));
+        Should.Throw<ArgumentOutOfRangeException>(() => new HttpShardClient(shard, credentials, Timeout.InfiniteTimeSpan, 1, limits));
+        Should.Throw<ArgumentOutOfRangeException>(() => new HttpShardClient(shard, credentials, second, 0, limits));
+        Should.Throw<ArgumentOutOfRangeException>(() => new HttpShardClient(shard, credentials, second, (long)Array.MaxLength + 1, limits));
+        new HttpShardClient(shard, credentials, second, Array.MaxLength, limits).Dispose();
     }
 
     private static string Padded(string json, int length) => json + new string(' ', length - Encoding.UTF8.GetByteCount(json));

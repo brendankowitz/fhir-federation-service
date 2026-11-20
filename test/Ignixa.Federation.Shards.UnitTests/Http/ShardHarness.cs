@@ -25,11 +25,13 @@ internal sealed class ShardHarness : IAsyncDisposable
     private readonly List<HttpShardClient> _extraClients = [];
     private readonly TimeSpan _callTimeout;
     private readonly long _maxResponseBytes;
+    private readonly ShardRequestLimits _limits;
 
-    private ShardHarness(string id, BackendProfile profile, TimeSpan callTimeout, long maxResponseBytes, bool trustLoopback, string? basePath, TimeProvider? clock, TimeProvider? deadlineClock)
+    private ShardHarness(string id, BackendProfile profile, TimeSpan callTimeout, long maxResponseBytes, bool trustLoopback, string? basePath, TimeProvider? clock, TimeProvider? deadlineClock, ShardRequestLimits limits)
     {
         _callTimeout = callTimeout;
         _maxResponseBytes = maxResponseBytes;
+        _limits = limits;
         Server = new LoopbackFhirServer();
         var options = new ShardOptions
         {
@@ -43,8 +45,8 @@ internal sealed class ShardHarness : IAsyncDisposable
         Shard = ShardRegistry.Create([options], [Repost, Follow, GetOnly]).Shards.Single();
         Resilience = new ShardResilience(Shard, clock);
         Client = trustLoopback
-            ? new HttpShardClient(Shard, Credentials, callTimeout, maxResponseBytes, Meter, Resilience, LoopbackCertificate.Trust, deadlineClock)
-            : new HttpShardClient(Shard, Credentials, callTimeout, maxResponseBytes, Meter, Resilience);
+            ? new HttpShardClient(Shard, Credentials, callTimeout, maxResponseBytes, limits, Meter, Resilience, LoopbackCertificate.Trust, deadlineClock)
+            : new HttpShardClient(Shard, Credentials, callTimeout, maxResponseBytes, limits, Meter, Resilience);
     }
 
     public LoopbackFhirServer Server { get; }
@@ -74,15 +76,16 @@ internal sealed class ShardHarness : IAsyncDisposable
         string id = "east",
         string? basePath = null,
         TimeProvider? clock = null,
-        TimeProvider? deadlineClock = null)
+        TimeProvider? deadlineClock = null,
+        ShardRequestLimits? limits = null)
     {
-        return new ShardHarness(id, profile ?? Repost, callTimeout ?? TimeSpan.FromSeconds(10), maxResponseBytes, trustLoopback, basePath, clock, deadlineClock);
+        return new ShardHarness(id, profile ?? Repost, callTimeout ?? TimeSpan.FromSeconds(10), maxResponseBytes, trustLoopback, basePath, clock, deadlineClock, limits ?? SyntheticLimits.Generous);
     }
 
     /// <summary>Another client for the same shard that shares this harness's breaker state but reports to its own meter.</summary>
     public HttpShardClient AddClient(RecordingMeter meter)
     {
-        var client = new HttpShardClient(Shard, Credentials, _callTimeout, _maxResponseBytes, meter, Resilience, LoopbackCertificate.Trust);
+        var client = new HttpShardClient(Shard, Credentials, _callTimeout, _maxResponseBytes, _limits, meter, Resilience, LoopbackCertificate.Trust);
         _extraClients.Add(client);
         return client;
     }

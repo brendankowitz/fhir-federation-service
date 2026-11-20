@@ -34,6 +34,13 @@ namespace Ignixa.Federation.Shards.Http;
 /// by sending only its query to the configured base, by GET or by POST to <c>_search</c> as the cursor says. A link that
 /// would immediately repeat the query just sent is refused; detecting a longer cycle across pages is the caller's
 /// responsibility (design spec §7.8).</para>
+/// <para><b>Request limits.</b> The <see cref="ShardRequestLimits"/> the client is built with are explicit and have no
+/// default. A GET search or redemption is measured as the origin-form target it would send (the configured base path,
+/// type and query as written, <c>_count</c> included) and a POST as its form body; equality is allowed. One byte over is
+/// refused before the span, the credential, the breaker or the meter, so nothing is sent or retried, and the call is never
+/// moved to the other method or trimmed. A generated search that does not fit fails as <see cref="ShardCallFailure.RequestTooLarge"/>.
+/// A redemption fails as <see cref="ShardCallFailure.InvalidNextLink"/>: the backend's <c>next</c> link is accepted into
+/// its cursor when the page arrives and is measured only when the cursor is redeemed.</para>
 /// <para><b>Self link.</b> The first page's <c>self</c> must be a usable URI reference (RFC 3986) without a fragment. Its
 /// path is not checked, because it is never requested; links are normalized to the configured base (design spec §4.2).</para>
 /// <para><b>Limits.</b> One deadline covers credential acquisition, attempts and validation. A credential provider that
@@ -85,6 +92,7 @@ public sealed class HttpShardClient : IShardClient, IDisposable
     private readonly IShardCredentialProvider _credentials;
     private readonly TimeSpan _callTimeout;
     private readonly long _maxResponseBytes;
+    private readonly ShardRequestLimits _limits;
     private readonly IShardTransferMeter? _meter;
     private readonly LinkResolver _links;
     private readonly HttpMessageInvoker _invoker;
@@ -96,9 +104,10 @@ public sealed class HttpShardClient : IShardClient, IDisposable
     /// <param name="credentials">Acquires the bearer token for <see cref="ShardDescriptor.Auth"/>, once per call.</param>
     /// <param name="callTimeout">The deadline for one whole call, from credential acquisition to the last body byte.</param>
     /// <param name="maxResponseBytes">The largest response body one call reads.</param>
+    /// <param name="limits">The largest search request this shard's backend accepts, enforced on every search and continuation.</param>
     /// <param name="meter">Observes actual sends and response bytes, or <see langword="null"/>.</param>
     /// <remarks>The client keeps its own <see cref="ShardResilience"/>, shared by its calls but by no other client.</remarks>
-    /// <exception cref="ArgumentNullException"><paramref name="shard"/> or <paramref name="credentials"/> is <see langword="null"/>.</exception>
+    /// <exception cref="ArgumentNullException"><paramref name="shard"/>, <paramref name="credentials"/> or <paramref name="limits"/> is <see langword="null"/>.</exception>
     /// <exception cref="ArgumentOutOfRangeException">
     /// <paramref name="callTimeout"/> is not positive or too long for a deadline, or <paramref name="maxResponseBytes"/> is
     /// not positive or exceeds <see cref="Array.MaxLength"/>.
@@ -108,8 +117,9 @@ public sealed class HttpShardClient : IShardClient, IDisposable
         IShardCredentialProvider credentials,
         TimeSpan callTimeout,
         long maxResponseBytes,
+        ShardRequestLimits limits,
         IShardTransferMeter? meter = null)
-        : this(shard, credentials, callTimeout, maxResponseBytes, meter, resilience: null, trustedTestCertificate: null)
+        : this(shard, credentials, callTimeout, maxResponseBytes, limits, meter, resilience: null, trustedTestCertificate: null)
     {
     }
 
@@ -118,9 +128,10 @@ public sealed class HttpShardClient : IShardClient, IDisposable
     /// <param name="credentials">Acquires the bearer token for <see cref="ShardDescriptor.Auth"/>, once per call.</param>
     /// <param name="callTimeout">The deadline for one whole call, from credential acquisition to the last body byte.</param>
     /// <param name="maxResponseBytes">The largest response body one call reads.</param>
+    /// <param name="limits">The largest search request this shard's backend accepts, enforced on every search and continuation.</param>
     /// <param name="meter">Observes actual sends and response bytes, or <see langword="null"/>.</param>
     /// <param name="resilience">The shard's breaker state, shared with every other client for the same shard.</param>
-    /// <exception cref="ArgumentNullException"><paramref name="shard"/>, <paramref name="credentials"/> or <paramref name="resilience"/> is <see langword="null"/>.</exception>
+    /// <exception cref="ArgumentNullException"><paramref name="shard"/>, <paramref name="credentials"/>, <paramref name="limits"/> or <paramref name="resilience"/> is <see langword="null"/>.</exception>
     /// <exception cref="ArgumentException"><paramref name="resilience"/> is for another shard.</exception>
     /// <exception cref="ArgumentOutOfRangeException">
     /// <paramref name="callTimeout"/> is not positive or too long for a deadline, or <paramref name="maxResponseBytes"/> is
@@ -131,9 +142,10 @@ public sealed class HttpShardClient : IShardClient, IDisposable
         IShardCredentialProvider credentials,
         TimeSpan callTimeout,
         long maxResponseBytes,
+        ShardRequestLimits limits,
         IShardTransferMeter? meter,
         ShardResilience resilience)
-        : this(shard, credentials, callTimeout, maxResponseBytes, meter, resilience ?? throw new ArgumentNullException(nameof(resilience)), trustedTestCertificate: null)
+        : this(shard, credentials, callTimeout, maxResponseBytes, limits, meter, resilience ?? throw new ArgumentNullException(nameof(resilience)), trustedTestCertificate: null)
     {
     }
 
@@ -142,9 +154,10 @@ public sealed class HttpShardClient : IShardClient, IDisposable
         IShardCredentialProvider credentials,
         TimeSpan callTimeout,
         long maxResponseBytes,
+        ShardRequestLimits limits,
         IShardTransferMeter? meter,
         X509Certificate2? trustedTestCertificate)
-        : this(shard, credentials, callTimeout, maxResponseBytes, meter, resilience: null, trustedTestCertificate)
+        : this(shard, credentials, callTimeout, maxResponseBytes, limits, meter, resilience: null, trustedTestCertificate)
     {
     }
 
@@ -152,6 +165,7 @@ public sealed class HttpShardClient : IShardClient, IDisposable
     /// <param name="credentials">Acquires the bearer token, once per call.</param>
     /// <param name="callTimeout">The deadline for one whole call.</param>
     /// <param name="maxResponseBytes">The largest response body one call reads.</param>
+    /// <param name="limits">The largest search request this shard's backend accepts.</param>
     /// <param name="meter">Observes actual sends and response bytes, or <see langword="null"/>.</param>
     /// <param name="resilience">The shard's breaker state, or <see langword="null"/> for a new one owned by this client.</param>
     /// <param name="trustedTestCertificate">
@@ -167,6 +181,7 @@ public sealed class HttpShardClient : IShardClient, IDisposable
         IShardCredentialProvider credentials,
         TimeSpan callTimeout,
         long maxResponseBytes,
+        ShardRequestLimits limits,
         IShardTransferMeter? meter,
         ShardResilience? resilience,
         X509Certificate2? trustedTestCertificate,
@@ -174,6 +189,7 @@ public sealed class HttpShardClient : IShardClient, IDisposable
     {
         ArgumentNullException.ThrowIfNull(shard);
         ArgumentNullException.ThrowIfNull(credentials);
+        ArgumentNullException.ThrowIfNull(limits);
         ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(callTimeout, TimeSpan.Zero);
         ArgumentOutOfRangeException.ThrowIfGreaterThan(callTimeout, MaxCallTimeout);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxResponseBytes);
@@ -187,6 +203,7 @@ public sealed class HttpShardClient : IShardClient, IDisposable
         _credentials = credentials;
         _callTimeout = callTimeout;
         _maxResponseBytes = maxResponseBytes;
+        _limits = limits;
         _meter = meter;
         _resilience = resilience ?? new ShardResilience(shard);
         _deadlineClock = deadlineClock ?? TimeProvider.System;
@@ -222,7 +239,7 @@ public sealed class HttpShardClient : IShardClient, IDisposable
         }
 
         string query = BuildQuery(request);
-        return CallAsync(request.Type, query, post, page => FirstPage(request, query, page), cancellationToken);
+        return CallAsync(request.Type, query, post, ShardCallFailure.RequestTooLarge, page => FirstPage(request, query, page), cancellationToken);
     }
 
     /// <inheritdoc/>
@@ -252,6 +269,7 @@ public sealed class HttpShardClient : IShardClient, IDisposable
             cursor.Type,
             query,
             post,
+            ShardCallFailure.InvalidNextLink,
             page => new ShardPage(
                 page.Entries,
                 NextCursor(page, cursor.Type, query, link => new ShardCursor(cursor.Shard, cursor.Type, link, cursor.Redemption)),
@@ -606,15 +624,24 @@ public sealed class HttpShardClient : IShardClient, IDisposable
         ResourceType type,
         string query,
         bool post,
+        ShardCallFailure tooLarge,
         Func<Searchset, ShardPage> interpret,
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        var uri = new Uri(post ? $"{_shard.CanonicalBaseUrl}/{type.Value}/_search" : $"{_shard.CanonicalBaseUrl}/{type.Value}?{query}", in Verbatim);
+        // The escaped canonical path and validated query are ASCII, so these lengths are the actual wire byte counts.
+        if (post ? query.Length > _limits.MaxPostBodyBytes : uri.PathAndQuery.Length > _limits.MaxGetTargetBytes)
+        {
+            throw Failure(
+                tooLarge,
+                post ? "The POST search form exceeds the shard's configured size limit." : "The GET search target exceeds the shard's configured size limit.",
+                fault: ShardFault.None);
+        }
+
         using Activity? activity = ShardActivity.StartBackendCall(_shard.Alias.Value, Stage);
         try
         {
-            var uri = new Uri(post ? $"{_shard.CanonicalBaseUrl}/{type.Value}/_search" : $"{_shard.CanonicalBaseUrl}/{type.Value}?{query}", in Verbatim);
-
             // The page is read and checked inside the exchange, so validation is under the same deadline and caller cancellation.
             return await ExchangeAsync(
                 post ? HttpMethod.Post : HttpMethod.Get,

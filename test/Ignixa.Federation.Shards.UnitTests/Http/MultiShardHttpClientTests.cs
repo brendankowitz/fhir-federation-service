@@ -215,7 +215,7 @@ public sealed class MultiShardHttpClientTests
         await using MultiShardRig rig = MultiShardRig.Start();
         using var credentials = new DisposalTrackingCredentials();
         using var meter = new DisposalTrackingMeter();
-        var router = new MultiShardHttpClient(rig.Registry, credentials, TimeSpan.FromSeconds(10), 1 << 20, meter, LoopbackCertificate.Trust);
+        var router = new MultiShardHttpClient(rig.Registry, credentials, TimeSpan.FromSeconds(10), 1 << 20, GenerousLimits(), meter, LoopbackCertificate.Trust);
         HttpShardClient borrowed = router.GetClient(rig.EastShard);
         var cursor = new ShardCursor(MultiShardRig.EastId, ShardHarness.Patient, rig.East.BaseUrl + "/Patient?ct=Mg", NextLinkRedemption.FollowGet);
 
@@ -248,7 +248,7 @@ public sealed class MultiShardHttpClientTests
                     throw failure;
                 }
 
-                var client = new HttpShardClient(descriptor, rig.Credentials, TimeSpan.FromSeconds(10), 1 << 20, rig.Meter, LoopbackCertificate.Trust);
+                var client = new HttpShardClient(descriptor, rig.Credentials, TimeSpan.FromSeconds(10), 1 << 20, SyntheticLimits.Generous, rig.Meter, LoopbackCertificate.Trust);
                 built.Add(client);
                 return client;
             }));
@@ -263,11 +263,17 @@ public sealed class MultiShardHttpClientTests
     {
         await using MultiShardRig rig = MultiShardRig.Start();
 
-        Should.Throw<ArgumentNullException>(() => new MultiShardHttpClient(null!, rig.Credentials, TimeSpan.FromSeconds(1), 1024));
-        Should.Throw<ArgumentNullException>(() => new MultiShardHttpClient(rig.Registry, null!, TimeSpan.FromSeconds(1), 1024));
-        Should.Throw<ArgumentOutOfRangeException>(() => new MultiShardHttpClient(rig.Registry, rig.Credentials, TimeSpan.Zero, 1024));
-        Should.Throw<ArgumentOutOfRangeException>(() => new MultiShardHttpClient(rig.Registry, rig.Credentials, TimeSpan.FromSeconds(1), 0));
+        IReadOnlyDictionary<ShardId, ShardRequestLimits> limits = GenerousLimits();
+
+        Should.Throw<ArgumentNullException>(() => new MultiShardHttpClient(null!, rig.Credentials, TimeSpan.FromSeconds(1), 1024, limits));
+        Should.Throw<ArgumentNullException>(() => new MultiShardHttpClient(rig.Registry, null!, TimeSpan.FromSeconds(1), 1024, limits));
+        Should.Throw<ArgumentNullException>(() => new MultiShardHttpClient(rig.Registry, rig.Credentials, TimeSpan.FromSeconds(1), 1024, null!));
+        Should.Throw<ArgumentOutOfRangeException>(() => new MultiShardHttpClient(rig.Registry, rig.Credentials, TimeSpan.Zero, 1024, limits));
+        Should.Throw<ArgumentOutOfRangeException>(() => new MultiShardHttpClient(rig.Registry, rig.Credentials, TimeSpan.FromSeconds(1), 0, limits));
     }
+
+    private static Dictionary<ShardId, ShardRequestLimits> GenerousLimits() =>
+        new() { [MultiShardRig.EastId] = SyntheticLimits.Generous, [MultiShardRig.WestId] = SyntheticLimits.Generous };
 
     private sealed class DisposalTrackingCredentials : IShardCredentialProvider, IDisposable
     {

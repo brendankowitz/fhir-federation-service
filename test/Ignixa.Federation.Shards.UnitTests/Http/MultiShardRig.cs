@@ -21,11 +21,13 @@ internal sealed class MultiShardRig : IAsyncDisposable
 
     private readonly TimeSpan _callTimeout;
     private readonly long _maxResponseBytes;
+    private readonly Dictionary<ShardId, ShardRequestLimits> _limits;
 
-    private MultiShardRig(TimeSpan callTimeout, long maxResponseBytes)
+    private MultiShardRig(TimeSpan callTimeout, long maxResponseBytes, ShardRequestLimits eastLimits, ShardRequestLimits westLimits)
     {
         _callTimeout = callTimeout;
         _maxResponseBytes = maxResponseBytes;
+        _limits = new() { [EastId] = eastLimits, [WestId] = westLimits };
         East = new LoopbackFhirServer();
         West = new LoopbackFhirServer();
         Registry = CreateRegistry();
@@ -48,8 +50,9 @@ internal sealed class MultiShardRig : IAsyncDisposable
 
     public ShardDescriptor WestShard => Registry.Shards[1];
 
-    public static MultiShardRig Start(TimeSpan? callTimeout = null, long maxResponseBytes = 1 << 20) =>
-        new(callTimeout ?? TimeSpan.FromSeconds(10), maxResponseBytes);
+    /// <summary>Starts the rig; each shard's limits are <see cref="SyntheticLimits.Generous"/> unless given.</summary>
+    public static MultiShardRig Start(TimeSpan? callTimeout = null, long maxResponseBytes = 1 << 20, ShardRequestLimits? eastLimits = null, ShardRequestLimits? westLimits = null) =>
+        new(callTimeout ?? TimeSpan.FromSeconds(10), maxResponseBytes, eastLimits ?? SyntheticLimits.Generous, westLimits ?? SyntheticLimits.Generous);
 
     /// <summary>The same configuration built again: its descriptors are equal in value to this registry's but are not the same objects.</summary>
     public ShardRegistry CreateRegistry() =>
@@ -59,7 +62,7 @@ internal sealed class MultiShardRig : IAsyncDisposable
 
     /// <summary>Another router over <paramref name="registry"/> on this rig's credentials and meter, trusting only the loopback leaf.</summary>
     public MultiShardHttpClient CreateRouter(ShardRegistry registry) =>
-        new(registry, Credentials, _callTimeout, _maxResponseBytes, Meter, LoopbackCertificate.Trust);
+        new(registry, Credentials, _callTimeout, _maxResponseBytes, _limits, Meter, LoopbackCertificate.Trust);
 
     /// <summary>A GET search for <c>name=Sarah</c>, page size 10, of <paramref name="shard"/>.</summary>
     public static ShardSearchRequest Search(ShardId shard) =>

@@ -512,8 +512,8 @@ public sealed class HttpShardClientBreakerTests
         await using var east = ShardHarness.Start(id: "east");
         await using var west = ShardHarness.Start(id: "west");
 
-        Should.Throw<ArgumentException>(() => new HttpShardClient(east.Shard, east.Credentials, TimeSpan.FromSeconds(1), 1024, null, west.Resilience));
-        Should.Throw<ArgumentNullException>(() => new HttpShardClient(east.Shard, east.Credentials, TimeSpan.FromSeconds(1), 1024, null, resilience: null!));
+        Should.Throw<ArgumentException>(() => new HttpShardClient(east.Shard, east.Credentials, TimeSpan.FromSeconds(1), 1024, SyntheticLimits.Generous, null, west.Resilience));
+        Should.Throw<ArgumentNullException>(() => new HttpShardClient(east.Shard, east.Credentials, TimeSpan.FromSeconds(1), 1024, SyntheticLimits.Generous, null, resilience: null!));
         Should.Throw<ArgumentNullException>(() => new ShardResilience(null!));
     }
 
@@ -523,7 +523,7 @@ public sealed class HttpShardClientBreakerTests
         await using var earlier = ShardHarness.Start(id: "east");
         await using var current = ShardHarness.Start(id: "east");
 
-        Should.Throw<ArgumentException>(() => new HttpShardClient(current.Shard, current.Credentials, TimeSpan.FromSeconds(1), 1024, null, earlier.Resilience));
+        Should.Throw<ArgumentException>(() => new HttpShardClient(current.Shard, current.Credentials, TimeSpan.FromSeconds(1), 1024, SyntheticLimits.Generous, null, earlier.Resilience));
     }
 
     private static async Task TripAsync(ShardHarness shard, int failures = ShardResilience.MinimumThroughput)

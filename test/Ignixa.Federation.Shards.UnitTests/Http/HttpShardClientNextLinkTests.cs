@@ -250,7 +250,7 @@ public sealed class HttpShardClientNextLinkTests
         var replayed = new ShardCursor(cursor.Shard, cursor.Type, cursor.Target, cursor.Redemption);
         shard.Server.Respond(ScriptedResponse.Json(Searchsets.Page(self: null)), ScriptedResponse.Json(Searchsets.Page(self: null)));
         using var replacement = new HttpShardClient(
-            shard.Shard, shard.Credentials, TimeSpan.FromSeconds(10), 1 << 20, meter: null, LoopbackCertificate.Trust);
+            shard.Shard, shard.Credentials, TimeSpan.FromSeconds(10), 1 << 20, SyntheticLimits.Generous, meter: null, LoopbackCertificate.Trust);
 
         await shard.Client.ContinueAsync(cursor, Ct);
         await replacement.ContinueAsync(replayed, Ct);

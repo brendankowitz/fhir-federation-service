@@ -34,8 +34,8 @@ internal sealed class RefreshHostFixture : IAsyncDisposable
         West = new LoopbackFhirServer();
         Registry = ShardRegistry.Create([Options("east", East), Options("west", West)], [Profile]);
         TimeSpan timeout = callTimeout ?? TimeSpan.FromSeconds(30);
-        EastClient = new HttpShardClient(Registry.Shards[0], new SyntheticCredentials(), timeout, 1 << 20, null, LoopbackCertificate.Trust);
-        WestClient = new HttpShardClient(Registry.Shards[1], new SyntheticCredentials(), timeout, 1 << 20, null, LoopbackCertificate.Trust);
+        EastClient = new HttpShardClient(Registry.Shards[0], new SyntheticCredentials(), timeout, 1 << 20, SyntheticLimits.Generous, null, LoopbackCertificate.Trust);
+        WestClient = new HttpShardClient(Registry.Shards[1], new SyntheticCredentials(), timeout, 1 << 20, SyntheticLimits.Generous, null, LoopbackCertificate.Trust);
     }
 
     public LoopbackFhirServer East { get; }

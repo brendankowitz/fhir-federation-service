@@ -18,6 +18,9 @@ namespace Ignixa.Federation.Shards.Http;
 /// stopped. It disposes only the clients it created; the credential provider and the transfer meter belong to the caller.
 /// A call that starts after disposal throws <see cref="ObjectDisposedException"/>.</para>
 /// <para>Calls may run concurrently before teardown. Calls on the same shard share that shard's resilience state.</para>
+/// <para><b>Request limits.</b> Every registered shard has exactly one explicit <see cref="ShardRequestLimits"/>; the map
+/// is copied at construction, and a missing, extra, duplicate or null entry is refused. The shard's own client, including
+/// the one <see cref="GetClient"/> lends, applies them (see <see cref="HttpShardClient"/>).</para>
 /// </remarks>
 public sealed class MultiShardHttpClient : IShardClient, IDisposable
 {
@@ -29,8 +32,17 @@ public sealed class MultiShardHttpClient : IShardClient, IDisposable
     /// <param name="credentials">Acquires each shard's bearer token, once per call; not owned or disposed by the router.</param>
     /// <param name="callTimeout">The deadline for one whole call, from credential acquisition to the last body byte.</param>
     /// <param name="maxResponseBytes">The largest response body one call reads.</param>
+    /// <param name="limits">
+    /// The configured search ceilings, with exactly one entry for every shard of
+    /// <paramref name="registry"/>. The router copies the entries, so later changes to the map have no effect, and keys are
+    /// matched by <see cref="ShardId"/> equality whatever comparer the map uses.
+    /// </param>
     /// <param name="meter">Observes actual sends and response bytes, or <see langword="null"/>; not owned or disposed by the router.</param>
-    /// <exception cref="ArgumentNullException"><paramref name="registry"/> or <paramref name="credentials"/> is <see langword="null"/>.</exception>
+    /// <exception cref="ArgumentNullException"><paramref name="registry"/>, <paramref name="credentials"/> or <paramref name="limits"/> is <see langword="null"/>.</exception>
+    /// <exception cref="ArgumentException">
+    /// <paramref name="limits"/> lacks an entry for a registered shard, names a shard the registry does not hold, repeats a
+    /// shard, or has a <see langword="null"/> value.
+    /// </exception>
     /// <exception cref="ArgumentOutOfRangeException">
     /// <paramref name="callTimeout"/> or <paramref name="maxResponseBytes"/> is outside what <see cref="HttpShardClient"/> accepts.
     /// </exception>
@@ -39,8 +51,9 @@ public sealed class MultiShardHttpClient : IShardClient, IDisposable
         IShardCredentialProvider credentials,
         TimeSpan callTimeout,
         long maxResponseBytes,
+        IReadOnlyDictionary<ShardId, ShardRequestLimits> limits,
         IShardTransferMeter? meter = null)
-        : this(registry, credentials, callTimeout, maxResponseBytes, meter, trustedTestCertificate: null)
+        : this(registry, credentials, callTimeout, maxResponseBytes, limits, meter, trustedTestCertificate: null)
     {
     }
 
@@ -50,9 +63,10 @@ public sealed class MultiShardHttpClient : IShardClient, IDisposable
         IShardCredentialProvider credentials,
         TimeSpan callTimeout,
         long maxResponseBytes,
+        IReadOnlyDictionary<ShardId, ShardRequestLimits> limits,
         IShardTransferMeter? meter,
         X509Certificate2? trustedTestCertificate)
-        : this(registry, shard => new HttpShardClient(shard, credentials, callTimeout, maxResponseBytes, meter, trustedTestCertificate))
+        : this(registry, ClientFactory(registry, credentials, callTimeout, maxResponseBytes, limits, meter, trustedTestCertificate))
     {
     }
 
@@ -85,7 +99,10 @@ public sealed class MultiShardHttpClient : IShardClient, IDisposable
     /// <exception cref="ArgumentNullException"><paramref name="request"/> is <see langword="null"/>.</exception>
     /// <exception cref="ArgumentException">The request's shard is not registered, or the owning client refuses the request. Nothing is sent.</exception>
     /// <exception cref="ObjectDisposedException">The router is disposed.</exception>
-    /// <exception cref="ShardCallException">The exchange failed or the response was not an exact answer to the request.</exception>
+    /// <exception cref="ShardCallException">
+    /// The exchange failed, the response was not an exact answer to the request, or the request does not fit the shard's
+    /// <see cref="ShardRequestLimits"/> (<see cref="ShardCallFailure.RequestTooLarge"/>, nothing sent).
+    /// </exception>
     public Task<ShardPage> SearchAsync(ShardSearchRequest request, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(request);
@@ -99,7 +116,10 @@ public sealed class MultiShardHttpClient : IShardClient, IDisposable
     /// is refused, not followed there. Nothing is sent.
     /// </exception>
     /// <exception cref="ObjectDisposedException">The router is disposed.</exception>
-    /// <exception cref="ShardCallException">The exchange failed or the response was not a readable page.</exception>
+    /// <exception cref="ShardCallException">
+    /// The exchange failed or the response was not a readable page, or the redemption does not fit the shard's
+    /// <see cref="ShardRequestLimits"/> (<see cref="ShardCallFailure.InvalidNextLink"/>, nothing sent).
+    /// </exception>
     public Task<ShardPage> ContinueAsync(ShardCursor cursor, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(cursor);
@@ -154,6 +174,35 @@ public sealed class MultiShardHttpClient : IShardClient, IDisposable
         {
             DisposeClients();
         }
+    }
+
+    private static Func<ShardDescriptor, HttpShardClient> ClientFactory(
+        ShardRegistry registry,
+        IShardCredentialProvider credentials,
+        TimeSpan callTimeout,
+        long maxResponseBytes,
+        IReadOnlyDictionary<ShardId, ShardRequestLimits> limits,
+        IShardTransferMeter? meter,
+        X509Certificate2? trustedTestCertificate)
+    {
+        // Copied under this router's own equality, so a caller's comparer or later edits cannot change which shard a limit binds to.
+        ArgumentNullException.ThrowIfNull(registry);
+        ArgumentNullException.ThrowIfNull(limits);
+        var bound = new Dictionary<ShardId, ShardRequestLimits>(registry.Shards.Count);
+        foreach ((ShardId id, ShardRequestLimits value) in limits)
+        {
+            if (value is null || !bound.TryAdd(id, value))
+            {
+                throw new ArgumentException("The limits must hold one non-null entry per shard.", nameof(limits));
+            }
+        }
+
+        if (bound.Count != registry.Shards.Count || registry.Shards.Any(shard => !bound.ContainsKey(shard.Id)))
+        {
+            throw new ArgumentException("The limits must hold exactly one entry for every registered shard.", nameof(limits));
+        }
+
+        return shard => new HttpShardClient(shard, credentials, callTimeout, maxResponseBytes, bound[shard.Id], meter, trustedTestCertificate);
     }
 
     private HttpShardClient OwnerOf(ShardId shard, string parameterName)
