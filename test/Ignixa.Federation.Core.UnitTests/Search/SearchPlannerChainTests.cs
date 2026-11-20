@@ -173,6 +173,25 @@ public sealed class SearchPlannerChainTests
         ShouldFail("Patient", "_has:Observation:subject:code=1", SearchFailureCode.UnsupportedAlternatives, planner: planner);
     }
 
+    // A distributed reverse hop sends `_id=` alternatives to the searched type, so every shard must advertise its `_id`.
+    [Fact]
+    public void ADistributedReverseChainNeedsTheSearchedTypeIdAdvertised()
+    {
+        ResourceSearchSupport patient = AllResources[0];
+        ResourceSearchSupport westPatient = new(
+            patient.Type,
+            [.. patient.Parameters.Where(p => p.Code != "_id")],
+            patient.SearchIncludes,
+            patient.SearchRevIncludes);
+        SearchCapabilities capabilities = Capabilities(westResources: [westPatient, .. AllResources.Skip(1)]);
+
+        ShouldFail("Patient", "_has:Observation:subject:code=1", SearchFailureCode.UnsupportedParameter, planner: Planner(capabilities));
+        PlanOk("Patient", "_has:Observation:subject:code=1", Planner(capabilities, "Observation.subject:Patient"))
+            .Occurrences[0].Action.ShouldBe(OccurrenceAction.Keep);
+        PlanOk("Observation", "subject:Patient.name=x", Planner(capabilities))
+            .Occurrences[0].Action.ShouldBe(OccurrenceAction.Replace);
+    }
+
     [Fact]
     public void TwoDistributedChainsOnOneReferenceAreARepetitionOfThatReference()
     {

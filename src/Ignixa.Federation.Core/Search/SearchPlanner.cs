@@ -465,7 +465,13 @@ public sealed class SearchPlanner
             return SearchFailureCode.UnsupportedParameter;
         }
 
+        // A distributed reverse hop is answered by `_id=` alternatives on the searched type, which must be advertised.
         bool passthrough = _passthrough.Contains(path.ToString());
+        if (!forward && !passthrough && _capabilities.FindParameter(path.Target, "_id") is null)
+        {
+            return SearchFailureCode.UnsupportedParameter;
+        }
+
         ReferencePathOperations required = (forward, passthrough) switch
         {
             (true, true) => ReferencePathOperations.NativeForward,
