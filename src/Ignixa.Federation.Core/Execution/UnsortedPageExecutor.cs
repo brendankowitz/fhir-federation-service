@@ -73,8 +73,30 @@ public sealed class UnsortedPageExecutor
         int index = resumeFrom is null ? 0 : IndexOf(ordered, resumeFrom);
         cancellationToken.ThrowIfCancellationRequested();
 
-        var scheduler = new FetchScheduler(_client, fetchBudget, cancellationToken);
         var matches = new List<ShardEntry>(pageSize);
+        var scheduler = new FetchScheduler(_client, fetchBudget, _maxParallelFetches, cancellationToken);
+        UnsortedContinuation? next;
+        await using (scheduler)
+        {
+            next = await FillAsync(ordered, index, resumeFrom, matches, pageSize, scheduler);
+        }
+
+        // Read after the join, so the count includes every speculative call that started.
+        return new UnsortedPage(matches, next, scheduler.Started);
+    }
+
+    /// <summary>
+    /// Fills <paramref name="matches"/> from the frontier stream onward and says where the next page starts. The first
+    /// frontier response that leaves the page unfilled starts the speculative fanout over every later stream, once.
+    /// </summary>
+    private static async Task<UnsortedContinuation?> FillAsync(
+        ShardStream[] ordered,
+        int index,
+        UnsortedContinuation? resumeFrom,
+        List<ShardEntry> matches,
+        int pageSize,
+        FetchScheduler scheduler)
+    {
         var redeemed = new HashSet<ShardCursor>();
         ShardSearchRequest? search = resumeFrom?.Search;
         ShardCursor? cursor = resumeFrom?.Cursor;
@@ -84,7 +106,7 @@ public sealed class UnsortedPageExecutor
             redeemed.Add(cursor);
         }
 
-        UnsortedContinuation? next = null;
+        bool fannedOut = false;
         while (index < ordered.Length)
         {
             ShardStream stream = ordered[index];
@@ -93,10 +115,13 @@ public sealed class UnsortedPageExecutor
             {
                 page = await scheduler.ContinueAsync(cursor);
             }
+            else if (search is not null)
+            {
+                page = await scheduler.SearchAsync(search);
+            }
             else
             {
-                search ??= stream.FirstPage(pageSize - matches.Count);
-                page = await scheduler.SearchAsync(search);
+                (page, search) = await scheduler.FirstPageAsync(stream, pageSize - matches.Count);
             }
 
             stream.Validate(page, redeemed);
@@ -115,8 +140,14 @@ public sealed class UnsortedPageExecutor
 
             if (matches.Count == pageSize)
             {
-                next = ContinuationAfter(ordered, index, page, start + taken, cursor, search, matches[^1].Key);
-                break;
+                return ContinuationAfter(ordered, index, page, start + taken, cursor, search, matches[^1].Key);
+            }
+
+            if (!fannedOut)
+            {
+                fannedOut = true;
+                int remaining = pageSize - matches.Count;
+                scheduler.Speculate(ordered.Skip(index + 1).Select(later => later.FirstPage(remaining)));
             }
 
             if (page.Next is not null)
@@ -133,9 +164,8 @@ public sealed class UnsortedPageExecutor
             }
         }
 
-        return new UnsortedPage(matches, next, scheduler.Started);
+        return null;
     }
-
     /// <summary>
     /// Says where the next page starts once this one is full. A fill inside a backend page replays the same input and skips
     /// through the last emitted key; a fill at the end of a backend page continues with its successor.
