@@ -244,7 +244,7 @@ public sealed class SearchPlanner
                 }
 
                 draft.Sort = value[0] == '-' ? LastUpdatedSort.Descending : LastUpdatedSort.Ascending;
-                draft.Occurrences.Add(new PlannedOccurrence(occurrence, OccurrenceKind.Control, OccurrenceAction.Keep, null));
+                draft.Occurrences.Add(new PlannedOccurrence(occurrence, OccurrenceKind.Sort, OccurrenceAction.Keep, null));
                 return null;
             case Include:
                 return PlanInclude(draft, occurrence, reverse: false);

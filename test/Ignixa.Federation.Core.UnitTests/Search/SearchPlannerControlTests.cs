@@ -164,7 +164,9 @@ public sealed class SearchPlannerControlTests
         QueryPlan plan = PlanOk("Patient", query);
 
         plan.Sort.ShouldBe(expected);
-        plan.Occurrences.ShouldHaveSingleItem().Action.ShouldBe(OccurrenceAction.Keep);
+        PlannedOccurrence occurrence = plan.Occurrences.ShouldHaveSingleItem();
+        occurrence.Kind.ShouldBe(OccurrenceKind.Sort);
+        occurrence.Action.ShouldBe(OccurrenceAction.Keep);
     }
 
     [Theory]

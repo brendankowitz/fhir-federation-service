@@ -18,6 +18,12 @@ public enum OccurrenceKind
     /// <summary>A <c>_revinclude</c>, which the federation answers per page.</summary>
     RevInclude,
 
-    /// <summary>A result control, such as <c>_count</c>, <c>_total</c> or <c>_sort</c>.</summary>
+    /// <summary>A result control, such as <c>_count</c>, <c>_total</c> or <c>_format</c>.</summary>
     Control,
+
+    /// <summary>
+    /// A <c>_lastUpdated</c> <c>_sort</c>, kept for every shard and applied by the federation's merge
+    /// (<see cref="QueryPlan.Sort"/>).
+    /// </summary>
+    Sort,
 }
