@@ -9,6 +9,8 @@ namespace Ignixa.Federation.Core.UnitTests.Execution;
 /// <summary>Selective speculative fanout, ordered emission over it, and joining it on every exit (design spec §7.1).</summary>
 public sealed class UnsortedPageExecutorSpeculationTests
 {
+    private const string SpeculativeBoom = "speculative boom";
+
     private static readonly string[] Exits = ["filled", "failed", "contract", "budget"];
 
     /// <summary>Runs each timing-sensitive test 20 times.</summary>
@@ -270,6 +272,10 @@ public sealed class UnsortedPageExecutorSpeculationTests
         client.InFlight.ShouldBe(0);
     }
 
+    /// <summary>
+    /// Both speculative failures, the faulted task and the synchronous throw, must be observed by the scheduler. The page
+    /// runs in a helper so nothing the test holds roots the discarded tasks, and their finalizers can report them.
+    /// </summary>
     [Theory]
     [MemberData(nameof(Iterations))]
     public async Task SpeculativeFailureOfAShardThePageNeverReaches_IsDiscarded(int iteration)
@@ -278,7 +284,7 @@ public sealed class UnsortedPageExecutorSpeculationTests
         var unobserved = new List<Exception>();
         void Record(object? sender, UnobservedTaskExceptionEventArgs args)
         {
-            if (args.Exception.Flatten().InnerExceptions.Any(e => e.Message.Contains("speculative boom", StringComparison.Ordinal)))
+            if (args.Exception.Flatten().InnerExceptions.Any(e => e.Message is SpeculativeBoom or FakeShardClient.SynchronousFailureMessage))
             {
                 lock (unobserved)
                 {
@@ -290,30 +296,19 @@ public sealed class UnsortedPageExecutorSpeculationTests
         TaskScheduler.UnobservedTaskException += Record;
         try
         {
-            var client = new FakeShardClient();
-            var gate = new TaskCompletionSource();
-            ShardCursor cursor = Fixture.Cursor(0, "1");
-            client.OnSearch(0, Fixture.Page(cursor, Fixture.Entries(0, "a")));
-            client.OnContinue(cursor, gate, Fixture.Page(null, Fixture.Entries(0, "b", "c")));
-            client.OnSearchThrows(1, new InvalidOperationException("speculative boom"));
-            client.OnSearchThrowsSynchronously(2);
+            string[] ids = await ExecuteDiscardingTwoFailedSpeculationsAsync();
 
-            Task<UnsortedPage> execution = Fixture.Executor(client, Fixture.Registry(3), 3).ExecuteAsync(Fixture.Streams(3), 3, null, 10, Token);
-            await client.WhenStarted(3);
-            await client.Calls.Single(c => c.Shard == Fixture.Shard(1)).Finished;
-            gate.SetResult();
-            UnsortedPage page = await execution;
+            ids.ShouldBe(Fixture.Ids(0, "a", "b", "c"));
+            for (int collections = 0; collections < 3; collections++)
+            {
+                GC.Collect();
+                GC.WaitForPendingFinalizers();
+            }
 
-            page.Ids().ShouldBe(Fixture.Ids(0, "a", "b", "c"));
-            UnsortedContinuation next = page.Next.ShouldNotBeNull();
-            next.Shard.ShouldBe(Fixture.Shard(1));
-            next.Search.ShouldBeNull();
-            next.Cursor.ShouldBeNull();
-
-            GC.Collect();
-            GC.WaitForPendingFinalizers();
-            GC.Collect();
-            unobserved.ShouldBeEmpty();
+            lock (unobserved)
+            {
+                unobserved.ShouldBeEmpty();
+            }
         }
         finally
         {
@@ -395,6 +390,34 @@ public sealed class UnsortedPageExecutorSpeculationTests
         next.Search.ShouldNotBeNull().PageSize.ShouldBe(2);
         next.LastEmitted.ShouldBe(Fixture.Key(1, "c"));
         chained.ShouldBe([.. Fixture.Ids(0, "a"), .. Fixture.Ids(1, "b", "c", "d", "e", "f", "g"), .. Fixture.Ids(2, "x", "y", "z")]);
+    }
+
+    /// <summary>
+    /// Fills a page from s0 while s1's speculative call faults and s2's client throws synchronously, and returns only the
+    /// page's ids. Not inlined, so once it returns nothing on the test's frames roots the scheduler or its discarded tasks.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static async Task<string[]> ExecuteDiscardingTwoFailedSpeculationsAsync()
+    {
+        var client = new FakeShardClient();
+        var gate = new TaskCompletionSource();
+        ShardCursor cursor = Fixture.Cursor(0, "1");
+        client.OnSearch(0, Fixture.Page(cursor, Fixture.Entries(0, "a")));
+        client.OnContinue(cursor, gate, Fixture.Page(null, Fixture.Entries(0, "b", "c")));
+        client.OnSearchThrows(1, new InvalidOperationException(SpeculativeBoom));
+        client.OnSearchThrowsSynchronously(2);
+
+        Task<UnsortedPage> execution = Fixture.Executor(client, Fixture.Registry(3), 3).ExecuteAsync(Fixture.Streams(3), 3, null, 10, Token);
+        await client.WhenStarted(3);
+        await client.Calls.Single(c => c.Shard == Fixture.Shard(1)).Finished;
+        gate.SetResult();
+        UnsortedPage page = await execution;
+
+        UnsortedContinuation next = page.Next.ShouldNotBeNull();
+        next.Shard.ShouldBe(Fixture.Shard(1));
+        next.Search.ShouldBeNull();
+        next.Cursor.ShouldBeNull();
+        return page.Ids();
     }
 
     /// <summary>

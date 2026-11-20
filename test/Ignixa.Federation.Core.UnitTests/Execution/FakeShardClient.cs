@@ -9,6 +9,9 @@ namespace Ignixa.Federation.Core.UnitTests.Execution;
 /// </summary>
 internal sealed class FakeShardClient : IShardClient
 {
+    /// <summary>The message of the exception a client scripted with <see cref="OnSearchThrowsSynchronously"/> throws.</summary>
+    public const string SynchronousFailureMessage = "Synchronous client failure.";
+
     private readonly Lock _lock = new();
     private readonly Dictionary<ShardId, Func<ShardSearchRequest, CancellationToken, Task<ShardPage>>> _searches = [];
     private readonly Dictionary<ShardCursor, Func<CancellationToken, Task<ShardPage>>> _continues = [];
@@ -145,7 +148,7 @@ internal sealed class FakeShardClient : IShardClient
         {
             if (_synchronousFailures.Contains(request.Shard))
             {
-                throw new InvalidOperationException("Synchronous client failure.");
+                throw new InvalidOperationException(SynchronousFailureMessage);
             }
 
             _searches.TryGetValue(request.Shard, out respond);
