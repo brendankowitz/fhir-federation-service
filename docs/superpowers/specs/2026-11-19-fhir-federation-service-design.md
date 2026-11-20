@@ -74,7 +74,10 @@ The 2025 prototype (≈14.5K LOC) proved the execution patterns but was coupled 
 ```jsonc
 "Federation": {
   "ProxyReads": true,
-  "ChainResolution": "Distributed",
+  "ChainResolution": {
+    "Default": "Distributed",
+    "Passthrough": [ "Observation.subject:Patient", "Encounter.subject:Patient", "Condition.subject:Patient" ]
+  },
   "Shards": [
     { "Id": "east", "Alias": "k7q2", "BaseUrl": "https://fhir-east.internal/", "Profile": "MicrosoftFhirServer",
       "Auth": { "Type": "ManagedIdentity", "Resource": "https://fhir-east.internal" },
@@ -177,9 +180,26 @@ Goal: retry-safe and scale-out-safe without a page cache, distributed locks, or 
 
 Each chain occurrence is an **independent existential test**; two occurrences of the same chain parameter may be satisfied by different targets.
 
-**Resolution mode** (`ChainResolution`):
-- **`Distributed`** (default): resolved by the federation across all shards, honouring cross-shard absolute references.
-- **`Passthrough`**: the chain parameter is forwarded unchanged; each shard resolves it locally. Exact **only** when the operator asserts there are no cross-shard references on chained paths (e.g. strict patient-compartment placement with shared data replicated). One unchanged parameter, no sub-queries, no key cap.
+**Resolution mode.** Both modes send the primary search to every shard; they differ in **where the join happens**.
+
+- **`Passthrough`** — *join inside each shard.* The chain parameter is forwarded unchanged; each shard resolves it against its own data; results are merged. One call per shard, no sub-queries, no key cap. Exact **only** if every reference on that path stays on the shard; a cross-shard absolute reference on a Passthrough path is a silently missed match.
+- **`Distributed`** — *join in the federation.* Sub-query the target on all shards, then send each shard a rewritten query with relative forms for its own keys and absolute forms for other shards' keys (below). Exact for same-shard and cross-shard references; costs an extra round, the `MaxChainKeys` cap and large request bodies.
+
+**Mode is chosen per reference path, not per deployment**, because placement is usually path-specific: with patient-compartment placement `Observation.subject → Patient` never leaves the shard, while `Observation.performer → Practitioner` may. Configuration (`ChainResolution`):
+
+- `Default`: `Distributed` (the safe mode).
+- `Passthrough`: a list of `SourceType.referenceParameter:TargetType` paths the operator asserts are shard-local (e.g. `Observation.subject:Patient`). A path is matched exactly; a chain whose hop is not listed is Distributed.
+- The same list governs `_has`: `Patient?_has:Observation:subject:code=X` uses Passthrough when `Observation.subject:Patient` is listed.
+- Every Passthrough path is verified by the patient-co-located oracle run, including a negative control that shows what a cross-shard reference on that path would miss (§15).
+
+Examples, with Sarah as `Patient/p1` on shard A and `Patient/p2` on shard B:
+
+| Query | Mode | Backend calls |
+|---|---|---|
+| `Observation?subject:Patient.name=Sarah` | Passthrough (`Observation.subject:Patient` listed) | every shard gets the query unchanged |
+| same | Distributed | `Patient?name=Sarah` on all shards → A: `Observation?subject=Patient/p1,https://B/Patient/p2`; B: `Observation?subject=Patient/p2,https://A/Patient/p1` |
+| `Patient?_has:Observation:subject:code=X` | Passthrough | every shard gets the query unchanged |
+| same | Distributed | `Observation?code=X` on all shards → resolve each `subject` to its owning shard → `Patient?_id=…` only on owning shards |
 
 **Admission rules:**
 - Target type unambiguous per hop (explicit type modifier or single-target reference parameter); else 400 asking for a type modifier.
@@ -335,7 +355,7 @@ OpenTelemetry: request span; child span per backend call (shard alias, stage, st
 2. **Differential oracle:**
    - *Unique-id corpus:* synthetic data with ids unique across shards. Oracle = one server holding the union with all references relative; shards hold a partition where same-shard references are relative and cross-shard references absolute. Federation results are mapped `(shard, type, id) → (type, id)` and compared with the oracle: set equality with multiplicity over the **concatenation of all pages**, per-page include membership, and for `_lastUpdated` sorts equal sort-key sequences with set equality within tie groups. Seeding preserves `meta.lastUpdated`, or `_lastUpdated` cases assert invariants only.
    - *Colliding-id corpus:* the same ids on several shards. Expected = the tagged union of each shard's own answer to the per-shard rewritten query.
-   - Placements: random, and patient-co-located (also used for `Passthrough` chains).
+   - Placements: random, and patient-co-located. Each configured `Passthrough` path runs under patient-co-located placement and must equal the oracle; a negative-control dataset adds one cross-shard absolute reference on that path and asserts the Passthrough result misses it while Distributed finds it, documenting exactly what the operator's assertion covers.
    - Backends: Microsoft FHIR Server R4 containers on SQL Server containers (Testcontainers); Ignixa containers (`ghcr.io/brendankowitz/ignixa-fhir`) in Phase 5. Must run in CI without Azure.
 3. **Fault injection:** fake shard that delays, 5xx's, drops parameters from `self`, returns out-of-order pages, foreign-host or cyclic `next` links, malformed Bundles.
 4. **Compatibility:** each certified profile runs the query corpus and the semantic-certification datasets (AND occurrences, modifiers, OR alternatives) against a real instance; generates the modifier and chain-path matrices.
@@ -349,7 +369,7 @@ OpenTelemetry: request span; child span per backend call (shard alias, stage, st
 | 0 | Scaffold; `IShardClient` (strict, tripwire, link-origin check, re-POST redemption, tracing); `MicrosoftFhirServer` profile + verification probes; capability aggregation; **rewriter + classifier spike, no execution** | Chain / `_has` / include / modifier corpus classified and rewritten correctly against `ParameterTrace`; MS FHIR Server passes probes |
 | 1 | AuthN + role policy + SMART refusal; unsorted search; shaping; token snapshots; proxied read; failure semantics | Oracle set equality (both corpora); token tests; multi-instance paging incl. kill and concurrent redemption |
 | 2 | Targeted includes / revincludes | Oracle with includes, per-page membership |
-| 3 | Chains and `_has` (depth 1), distributed and passthrough; live budget | Oracle with chains in both modes; `too-costly` cases |
+| 3 | Chains and `_has` (depth 1), distributed and per-path passthrough; live budget | Oracle with chains in both modes, incl. Passthrough negative controls; `too-costly` cases |
 | 4 | `_lastUpdated` merge; `_total`; count-only | Ordered oracle equality |
 | 5 | `Ignixa` profile; load at 16 and 50 shards; audit | Ignixa compatibility green; bounds hold |
 
@@ -397,6 +417,7 @@ Config key names; token envelope wire format; exact default limits within the st
 | Audit (Fable M5) | §10.3 |
 | Profiles asserted, not verified (Fable N5) | §9.2 |
 | Distributed-only chains too costly (Fable round 2) | §7.5 `Passthrough` |
+| Deployment-wide chain mode doesn't match path-specific placement (owner, 2026-11-19) | §7.5 per-path `Passthrough` list, `Distributed` default |
 | Standalone vs Ignixa-hosted (Fable) | Standalone: Ignixa's seam hands over `SearchOptions.Expression`, reintroducing expression→string serialisation; Application layer unpublished |
 | Topology hiding & content rewriting (Astra, Fable) | Dropped by D4 |
 
