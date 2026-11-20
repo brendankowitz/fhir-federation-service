@@ -4,7 +4,7 @@ namespace Ignixa.Federation.SampleClient;
 
 /// <summary>
 /// The command-line front end. Exit codes: 0 ok, 2 usage error, 3 continuation expired, 4 federation or HTTP error,
-/// 5 link outside the allowed scope. Output never includes tokens, continuation (<c>next</c>) links or query strings,
+/// 5 link outside the allowed scope (or no alternate link to read). Output never includes tokens, continuation (<c>next</c>) links or query strings,
 /// or resource bodies.
 /// </summary>
 public static class CliApp
@@ -29,7 +29,7 @@ public static class CliApp
           SHARD_ACCESS_TOKEN       Bearer token for --direct-shard shards only (optional).
 
         Exit codes: 0 ok, 2 usage error, 3 continuation expired (restart the search),
-        4 federation or HTTP error, 5 link outside the allowed scope.
+        4 federation or HTTP error, 5 link outside the allowed scope or the first match has no alternate link.
         """;
 
     /// <param name="args">Command-line arguments.</param>
@@ -47,20 +47,21 @@ public static class CliApp
         HttpMessageHandler? federationHandler = null,
         Func<Uri, HttpMessageHandler>? shardHandlerFactory = null)
     {
-        if (args.Any(arg => arg is "--help" or "-h"))
-        {
-            await stdout.WriteLineAsync(Usage);
-            return 0;
-        }
-
         if (!CliOptions.TryParse(args, env, out var options, out var error))
         {
+            if (error is null)
+            {
+                await stdout.WriteLineAsync(Usage);
+                return 0;
+            }
+
             return await UsageErrorAsync(stderr, error);
         }
 
+        Redactor redactor = new();
         try
         {
-            return await ExecuteAsync(options, stdout, stderr, federationHandler, shardHandlerFactory);
+            return await ExecuteAsync(options, stdout, stderr, redactor, federationHandler, shardHandlerFactory);
         }
         catch (ArgumentException ex)
         {
@@ -79,7 +80,7 @@ public static class CliApp
             await stderr.WriteLineAsync($"error: {ex.Message}");
             foreach (var issue in ex.Issues)
             {
-                await stderr.WriteLineAsync($"  issue {Describe(issue)}");
+                await stderr.WriteLineAsync($"  issue {Describe(issue, redactor)}");
             }
 
             return 4;
@@ -89,10 +90,28 @@ public static class CliApp
             await stderr.WriteLineAsync($"error: {ex.Message}");
             return 5;
         }
-        catch (Exception ex) when (ex is InvalidDataException or JsonException)
+        catch (InvalidDataException ex)
+        {
+            // The library's messages are fixed text (for example a repeated next link); none quotes the response.
+            await stderr.WriteLineAsync($"error: {ex.Message}");
+            return 4;
+        }
+        catch (JsonException)
         {
             // Not ex.Message: a JSON error message can quote a position in the response.
             await stderr.WriteLineAsync("error: the response was not a valid FHIR response.");
+            return 4;
+        }
+        catch (TaskCanceledException)
+        {
+            // HttpClient reports its own timeout this way; the CLI has no other cancellation.
+            await stderr.WriteLineAsync("error: the request timed out.");
+            return 4;
+        }
+        catch (IOException)
+        {
+            // The connection broke while the body was being read (HttpIOException). Not ex.Message: it is transport text.
+            await stderr.WriteLineAsync("error: the response could not be read.");
             return 4;
         }
         catch (HttpRequestException ex)
@@ -106,6 +125,7 @@ public static class CliApp
         CliOptions options,
         TextWriter stdout,
         TextWriter stderr,
+        Redactor redactor,
         HttpMessageHandler? federationHandler,
         Func<Uri, HttpMessageHandler>? shardHandlerFactory)
     {
@@ -132,7 +152,8 @@ public static class CliApp
         {
             pageNumber++;
             results.Add(page);
-            await PrintPageAsync(stdout, pageNumber, page);
+            redactor.Remember(page.NextLink);
+            await PrintPageAsync(stdout, pageNumber, page, redactor);
 
             if (page.HasNext && pageNumber == options.MaxPages)
             {
@@ -149,7 +170,7 @@ public static class CliApp
             : await ReadFirstMatchAsync(client, results, options.Read, stdout, stderr);
     }
 
-    private static async Task PrintPageAsync(TextWriter stdout, int number, SearchPage page)
+    private static async Task PrintPageAsync(TextWriter stdout, int number, SearchPage page, Redactor redactor)
     {
         await stdout.WriteLineAsync(
             $"page {number}: matches={page.Matches.Count} includes={page.Includes.Count} outcomes={page.Outcomes.Count}");
@@ -162,7 +183,7 @@ public static class CliApp
 
         foreach (var outcome in page.Outcomes)
         {
-            await stdout.WriteLineAsync($"outcome {Describe(outcome)}");
+            await stdout.WriteLineAsync($"outcome {Describe(outcome, redactor)}");
         }
     }
 
@@ -206,14 +227,50 @@ public static class CliApp
         return 2;
     }
 
-    private static string Describe(OperationIssue issue) =>
+    private static string Describe(OperationIssue issue, Redactor redactor) =>
         $"{Clean(issue.Severity)}/{Clean(issue.Code)}"
-        + (issue.Diagnostics is null ? "" : $": {Clean(issue.Diagnostics)}")
+        + (issue.Diagnostics is null ? "" : $": {redactor.Hide(Clean(issue.Diagnostics))}")
         + (issue.SourceShard is null ? "" : $" (shard={Clean(issue.SourceShard)})");
 
     /// <summary>A URL as scheme, host, port and path only: no user info, query or fragment.</summary>
     private static string Plain(Uri url) =>
-        $"{url.Scheme}://{url.IdnHost}{(url.IsDefaultPort ? "" : $":{url.Port}")}{url.AbsolutePath}";
+        url.GetComponents(UriComponents.SchemeAndServer | UriComponents.Path, UriFormat.UriEscaped);
+
+    /// <summary>
+    /// Remembers the query of each continuation link the federation issued and blanks it out of server text.
+    /// A server could echo the opaque <c>ct</c> in a diagnostic; the CLI promises never to print it.
+    /// </summary>
+    private sealed class Redactor
+    {
+        private const string Mask = "[hidden]";
+
+        private readonly List<string> _secrets = [];
+
+        public void Remember(Uri? continuationLink)
+        {
+            if (continuationLink is null || continuationLink.Query.Length < 2)
+            {
+                return;
+            }
+
+            var query = continuationLink.Query[1..];
+            _secrets.Add(query);
+            foreach (var pair in query.Split('&'))
+            {
+                if (pair.StartsWith("ct=", StringComparison.Ordinal) && pair.Length > 3)
+                {
+                    _secrets.Add(pair[3..]);
+                    _secrets.Add(Uri.UnescapeDataString(pair[3..]));
+                }
+            }
+
+            // Longest first, so a whole query is blanked before the values inside it.
+            _secrets.Sort((a, b) => b.Length.CompareTo(a.Length));
+        }
+
+        public string Hide(string text) =>
+            _secrets.Aggregate(text, (current, secret) => current.Replace(secret, Mask, StringComparison.Ordinal));
+    }
 
     /// <summary>Server-supplied text is shown on one line; control characters could otherwise forge output lines.</summary>
     private static string Clean(string text) =>

@@ -41,7 +41,7 @@ dotnet run --project samples/Ignixa.Federation.SampleClient -- --help
 Search a federation (the host below is an example):
 
 ```powershell
-$env:FEDERATION_ACCESS_TOKEN = "<your federation token>"   # optional; omit for anonymous
+$env:FEDERATION_ACCESS_TOKEN = Read-Host -MaskInput 'Federation token'   # optional; omit for anonymous
 dotnet run --project samples/Ignixa.Federation.SampleClient -- `
     --base https://fed.example/fhir/ --type Patient --param name=smith --max-pages 3
 ```
@@ -52,7 +52,7 @@ Read the first match through the federation, or directly from its shard:
 dotnet run --project samples/Ignixa.Federation.SampleClient -- `
     --base https://fed.example/fhir/ --type Patient --param name=smith --read alternate
 
-$env:SHARD_ACCESS_TOKEN = "<your shard token>"             # optional; used only for --direct-shard shards
+$env:SHARD_ACCESS_TOKEN = Read-Host -MaskInput 'Shard token'              # optional; used only for --direct-shard shards
 dotnet run --project samples/Ignixa.Federation.SampleClient -- `
     --base https://fed.example/fhir/ --type Patient --param name=smith `
     --read direct --direct-shard https://shard-east.example/fhir/
@@ -78,14 +78,24 @@ dotnet run --project samples/Ignixa.Federation.SampleClient -- `
 | `FEDERATION_ACCESS_TOKEN` | Optional bearer token, sent only to the federation base. |
 | `SHARD_ACCESS_TOKEN` | Optional bearer token, sent only to `--direct-shard` shards. |
 
-Credentials are never accepted as arguments (an option such as `--token` is a usage error), so they stay out of shell
-history. The CLI never prints tokens, `ct` values, `next` links or query strings, or resource bodies.
+Credentials are never accepted as arguments (an option such as `--token` is a usage error), so they stay out of
+process listings and command lines. `Read-Host -MaskInput` above also keeps them off the screen and out of the typed
+command line; a token is trimmed, and one containing a line break is refused (exit code 2). The CLI never prints
+tokens, `ct` values, `next` links or query strings, or resource bodies, and it blanks out any echo of a followed
+`ct` in server diagnostics.
 
 ### Output
+
+This is the real output of a two-page search with `--read alternate`, run against a scripted handler (synthetic data;
+no network). Page 2 repeats the `Organization/9` include, which the summary counts once, and carries an `outcome`
+entry:
 
 ```
 page 1: matches=1 includes=1 outcomes=0
 match  https://shard-east.example/fhir/Patient/123  (shard=k7q2)
+include  https://shard-east.example/fhir/Organization/9  (shard=k7q2)
+page 2: matches=1 includes=1 outcomes=1
+match  https://shard-west.example/fhir/Patient/123  (shard=p9xm)
 include  https://shard-east.example/fhir/Organization/9  (shard=k7q2)
 outcome warning/incomplete: included resources truncated (shard=p9xm)
 summary: pages=2 matches=2 includes=1 outcomes=1
@@ -99,10 +109,10 @@ The summary counts distinct matches and includes by `fullUrl`.
 | Code | Meaning |
 | --- | --- |
 | 0 | Success. |
-| 2 | Usage error (including a non-HTTPS base URL or a credential passed as an argument). |
+| 2 | Usage error (including a non-HTTPS base URL, a credential passed as an argument, or a token with a line break). |
 | 3 | Continuation expired (HTTP 410). Restart the search from the original query. |
-| 4 | Federation or HTTP error. The status and parsed OperationOutcome issues are shown, not the body. |
-| 5 | A link was outside the allowed scope and was not followed, including `--read direct` for a shard not given with `--direct-shard`. |
+| 4 | Federation or HTTP error: a non-2xx status or redirect (the status and parsed OperationOutcome issues are shown, not the body), a timeout, a response that could not be read, or one that is not a valid FHIR response. |
+| 5 | A link was outside the allowed scope and was not followed, including `--read direct` for a shard not given with `--direct-shard`. Also `--read alternate` when the first match has no alternate link (the federation may have proxied reads disabled); no request is sent. |
 
 ## Tests
 

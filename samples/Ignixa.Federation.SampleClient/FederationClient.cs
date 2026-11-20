@@ -16,8 +16,8 @@ namespace Ignixa.Federation.SampleClient;
 /// </remarks>
 public sealed class FederationClient : IDisposable
 {
-    private readonly FhirEndpoint _federation;
-    private readonly List<FhirEndpoint> _shards;
+    private readonly ScopedEndpoint _federation;
+    private readonly List<ScopedEndpoint> _shards;
 
     /// <param name="options">Endpoints and credentials.</param>
     /// <param name="federationHandler">Transport for the federation; by default a plain no-redirect handler.</param>
@@ -30,15 +30,15 @@ public sealed class FederationClient : IDisposable
         HttpMessageHandler? federationHandler = null,
         Func<Uri, HttpMessageHandler>? shardHandlerFactory = null)
     {
-        _federation = new FhirEndpoint(options.FederationBaseUrl, options.FederationAccessToken, NoRedirects(federationHandler));
+        _federation = new ScopedEndpoint(options.FederationBaseUrl, options.FederationAccessToken, NoRedirects(federationHandler));
         _shards =
         [
-            .. options.DirectReadShards.Select(shard => new FhirEndpoint(
+            .. options.DirectReadShards.Select(shard => new ScopedEndpoint(
                 shard.BaseUrl, shard.AccessToken, NoRedirects(shardHandlerFactory?.Invoke(shard.BaseUrl)))),
         ];
 
         // A URL must belong to exactly one endpoint, or it could be sent with the wrong credential.
-        List<FhirEndpoint> all = [_federation, .. _shards];
+        List<ScopedEndpoint> all = [_federation, .. _shards];
         for (var i = 0; i < all.Count; i++)
         {
             for (var j = i + 1; j < all.Count; j++)

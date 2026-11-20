@@ -33,12 +33,15 @@ internal sealed record CliOptions(
     // habit is noticed at once; the value is never echoed.
     private static readonly string[] CredentialWords = ["token", "bearer", "authorization", "password", "secret", "credential"];
 
-    /// <summary>Parses the arguments; on failure <paramref name="error"/> says why, without repeating any argument value.</summary>
+    /// <summary>
+    /// Parses the arguments. On failure <paramref name="error"/> says why, without repeating any argument value; it is
+    /// null when the failure is only that help was asked for (<c>-h</c> or <c>--help</c> in option position).
+    /// </summary>
     public static bool TryParse(
         string[] args,
         IReadOnlyDictionary<string, string?> env,
         [NotNullWhen(true)] out CliOptions? options,
-        [NotNullWhen(false)] out string? error)
+        out string? error)
     {
         options = null;
         string? baseText = null;
@@ -51,6 +54,12 @@ internal sealed record CliOptions(
         for (var i = 0; i < args.Length; i++)
         {
             var (name, inlineValue) = Split(args[i]);
+            if (name is "-h" or "--help")
+            {
+                error = null;
+                return false;
+            }
+
             if (!name.StartsWith("--"))
             {
                 error = "unexpected argument; options start with '--'.";
@@ -63,7 +72,8 @@ internal sealed record CliOptions(
                 return false;
             }
 
-            var value = inlineValue ?? (i + 1 < args.Length ? args[++i] : null);
+            // A following token that is itself an option is not a value, so "--base --type Patient" is caught here.
+            var value = inlineValue ?? (i + 1 < args.Length && !args[i + 1].StartsWith("--") ? args[++i] : null);
             if (value is null)
             {
                 error = $"{name} needs a value.";
@@ -96,7 +106,20 @@ internal sealed record CliOptions(
 
                     break;
                 case "--read":
-                    if (!Enum.TryParse(value, ignoreCase: true, out read) || !Enum.IsDefined(read))
+                    // Matched by name: Enum.TryParse would also accept "1" and "none,alternate".
+                    if (value.Equals("none", StringComparison.OrdinalIgnoreCase))
+                    {
+                        read = ReadMode.None;
+                    }
+                    else if (value.Equals("alternate", StringComparison.OrdinalIgnoreCase))
+                    {
+                        read = ReadMode.Alternate;
+                    }
+                    else if (value.Equals("direct", StringComparison.OrdinalIgnoreCase))
+                    {
+                        read = ReadMode.Direct;
+                    }
+                    else
                     {
                         error = "--read must be none, alternate or direct.";
                         return false;
@@ -131,11 +154,26 @@ internal sealed record CliOptions(
             return false;
         }
 
-        error = null;
-        options = new CliOptions(
-            baseUrl, type, parameters, maxPages, read, directShards,
-            Variable(env, FederationTokenVariable), Variable(env, ShardTokenVariable));
+        if (!TryReadToken(env, FederationTokenVariable, out var federationToken, out error)
+            || !TryReadToken(env, ShardTokenVariable, out var shardToken, out error))
+        {
+            return false;
+        }
+
+        options = new CliOptions(baseUrl, type, parameters, maxPages, read, directShards, federationToken, shardToken);
         return true;
+    }
+
+    /// <summary>
+    /// Reads a token from the environment, trimmed. A line break inside it would be a header-injection attempt (or a
+    /// pasted multi-line value) and is refused; the error names the variable, never the value.
+    /// </summary>
+    private static bool TryReadToken(
+        IReadOnlyDictionary<string, string?> env, string name, out string? token, out string? error)
+    {
+        token = Variable(env, name)?.Trim();
+        error = token is not null && token.AsSpan().ContainsAny('\r', '\n') ? $"{name} contains a line break." : null;
+        return error is null;
     }
 
     private static (string Name, string? Value) Split(string arg) =>

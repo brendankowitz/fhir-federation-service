@@ -12,7 +12,7 @@ internal sealed record RecordedRequest(Uri Uri, string? Authorization, string? A
 /// </summary>
 internal sealed class ScriptedHandler : HttpMessageHandler
 {
-    private readonly Queue<HttpResponseMessage> _responses = new();
+    private readonly Queue<Func<HttpResponseMessage>> _responses = new();
 
     public List<RecordedRequest> Requests { get; } = [];
 
@@ -27,11 +27,18 @@ internal sealed class ScriptedHandler : HttpMessageHandler
             response.Headers.Location = new Uri(location);
         }
 
-        _responses.Enqueue(response);
+        _responses.Enqueue(() => response);
         return this;
     }
 
     public ScriptedHandler Ok(string body) => Respond(HttpStatusCode.OK, body);
+
+    /// <summary>The next request fails at the transport level (timeout, truncated body, ...) instead of getting a response.</summary>
+    public ScriptedHandler Throw(Exception failure)
+    {
+        _responses.Enqueue(() => throw failure);
+        return this;
+    }
 
     protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
     {
@@ -41,7 +48,7 @@ internal sealed class ScriptedHandler : HttpMessageHandler
             request.Headers.Accept.ToString()));
 
         return _responses.TryDequeue(out var response)
-            ? Task.FromResult(response)
+            ? Task.FromResult(response())
             : throw new InvalidOperationException($"No scripted response left for request #{Requests.Count}.");
     }
 }

@@ -8,12 +8,12 @@ namespace Ignixa.Federation.SampleClient;
 /// Every request goes through <see cref="GetAsync"/>, which is the only place a token is attached and only after the
 /// target passed the scope check, so a credential cannot reach any other scheme, host, port or path.
 /// </summary>
-internal sealed class FhirEndpoint : IDisposable
+internal sealed class ScopedEndpoint : IDisposable
 {
     private readonly HttpClient _http;
     private readonly Func<CancellationToken, ValueTask<string?>>? _accessToken;
 
-    public FhirEndpoint(Uri baseUrl, Func<CancellationToken, ValueTask<string?>>? accessToken, HttpMessageHandler handler)
+    public ScopedEndpoint(Uri baseUrl, Func<CancellationToken, ValueTask<string?>>? accessToken, HttpMessageHandler handler)
     {
         if (!baseUrl.IsAbsoluteUri
             || baseUrl.Scheme != Uri.UriSchemeHttps
