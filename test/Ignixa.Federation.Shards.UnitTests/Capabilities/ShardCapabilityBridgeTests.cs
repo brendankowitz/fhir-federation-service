@@ -1,4 +1,5 @@
 using Ignixa.Federation.Core.Configuration;
+using Ignixa.Federation.Core.Identity;
 using Ignixa.Federation.Core.Search;
 using Ignixa.Federation.Core.Shards;
 using Ignixa.Federation.Shards.Capabilities;
@@ -36,10 +37,10 @@ public sealed class ShardCapabilityBridgeTests
         mapped.Resources.Select(r => r.Type.Value).ShouldBe(["Organization", "Patient"], ignoreOrder: true);
         ResourceSearchSupport patient = mapped.Resources.Single(r => r.Type.Value == "Patient");
         patient.Parameters.Count(p => p.Code == "_id" && p.Type == SearchParamType.Token && p.Definition is null).ShouldBe(1);
-        patient.Parameters.Where(p => p.Code == "name").Select(p => (p.Type, p.Definition?.OriginalString))
+        patient.Parameters.Where(p => p.Code == "name").Select(p => (p.Type, p.Definition))
             .ShouldBe([(SearchParamType.String, NameDefinition), (expectedType, expectedDefinition)], ignoreOrder: true);
         ResourceSearchSupport organization = mapped.Resources.Single(r => r.Type.Value == "Organization");
-        organization.Parameters.Select(p => (p.Code, p.Type, p.Definition?.OriginalString))
+        organization.Parameters.Select(p => (p.Code, p.Type, p.Definition))
             .ShouldBe([("_id", SearchParamType.Token, null), ("name", expectedType, expectedDefinition)], ignoreOrder: true);
 
         var admitted = new SearchCapabilities(registry, [mapped]);
@@ -67,9 +68,57 @@ public sealed class ShardCapabilityBridgeTests
         SearchParameterSupport parameter = mapped.Resources.ShouldHaveSingleItem().Parameters.ShouldHaveSingleItem();
         parameter.Code.ShouldBe("code-A");
         parameter.Type.ShouldBe(expectedType);
-        Uri actual = parameter.Definition.ShouldNotBeNull();
-        actual.IsAbsoluteUri.ShouldBeTrue();
-        actual.OriginalString.ShouldBe(definition);
+        parameter.Definition.ShouldBe(definition);
+    }
+
+    [Fact]
+    public void VersionedHostOnlyCanonicalSurvivesProjectionWithoutLosingAnUnrelatedSearch()
+    {
+        const string definition = "https://example.invalid|1";
+        string parameters = CapabilityJson.Arr(
+            CapabilityJson.Param("family", "string", definition),
+            CapabilityJson.Param("name", "string", NameDefinition));
+        ShardCapabilityEvidence evidence = ReadPatient(",\"searchParam\":" + parameters);
+        ShardRegistry registry = Registry();
+
+        ShardSearchCapability mapped = ShardCapabilityBridge.Create(registry.Shards.Single(), evidence, Certification());
+
+        mapped.Resources.ShouldHaveSingleItem().Parameters.Single(p => p.Code == "family").Definition.ShouldBe(definition);
+        var planner = new SearchPlanner(new SearchCapabilities(registry, [mapped]), new ChainResolutionOptions(), new LimitOptions());
+        Plan(planner, "family=Jones").Failure.ShouldNotBeNull().Code.ShouldBe(SearchFailureCode.UnsupportedParameter);
+        Plan(planner, "name=Jones").Plan.ShouldNotBeNull();
+    }
+
+    [Theory]
+    [InlineData(NameDefinition + "#alternate", false)]
+    [InlineData(NameDefinition + "|1", false)]
+    [InlineData(null, true)]
+    public void PlannerRejectsConflictingDefinitionsButAllowsMissingDefinitions(string? commonDefinition, bool nameSupported)
+    {
+        string parameters = CapabilityJson.Arr(
+            CapabilityJson.Param("name", "string", NameDefinition),
+            CapabilityJson.Param("family", "string"));
+        string resources = CapabilityJson.Arr(CapabilityJson.SearchableResource("Patient", ",\"searchParam\":" + parameters));
+        string common = CapabilityJson.Arr(CapabilityJson.Param("name", "string", commonDefinition));
+        ShardCapabilityEvidence evidence = CapabilityJson.Read(CapabilityJson.ServerStatement(resources, common));
+        ShardRegistry registry = Registry();
+
+        ShardSearchCapability mapped = ShardCapabilityBridge.Create(registry.Shards.Single(), evidence, Certification());
+
+        mapped.Resources.ShouldHaveSingleItem().Parameters.Where(p => p.Code == "name").Select(p => p.Definition)
+            .ShouldBe([NameDefinition, commonDefinition], ignoreOrder: true);
+        var planner = new SearchPlanner(new SearchCapabilities(registry, [mapped]), new ChainResolutionOptions(), new LimitOptions());
+        SearchPlanResult name = Plan(planner, "name=Jones");
+        if (nameSupported)
+        {
+            name.Plan.ShouldNotBeNull();
+        }
+        else
+        {
+            name.Failure.ShouldNotBeNull().Code.ShouldBe(SearchFailureCode.UnsupportedParameter);
+        }
+
+        Plan(planner, "family=Jones").Plan.ShouldNotBeNull();
     }
 
     [Fact]
@@ -136,6 +185,9 @@ public sealed class ShardCapabilityBridgeTests
 
     private static SearchCertification Certification() =>
         new(new Dictionary<SearchParamType, IReadOnlyCollection<string>>(), [], [], [], []);
+
+    private static SearchPlanResult Plan(SearchPlanner planner, string query) =>
+        planner.Plan(ResourceType.Parse("Patient"), SearchQuery.Parse(query).Query.ShouldNotBeNull());
 
     private static ShardRegistry Registry() => ShardRegistry.Create(
         [new ShardOptions

@@ -11,10 +11,9 @@ public static class ShardCapabilityBridge
     /// <param name="shard">The registered shard.</param>
     /// <param name="evidence">The advertisement received from that shard.</param>
     /// <param name="certification">Trusted proofs for the same shard. No proofs are inferred from the advertisement or profile.</param>
-    /// <returns>Planner input with the registered identity, all advertised declarations, and the supplied proofs.</returns>
+    /// <returns>Planner input with the registered identity, exact advertised declarations, and the supplied proofs.</returns>
     /// <exception cref="ArgumentNullException">An argument is <see langword="null"/>.</exception>
     /// <exception cref="ArgumentException">The advertisement has no searchable resources or a code the planner cannot represent.</exception>
-    /// <exception cref="UriFormatException">An advertised canonical cannot be represented as an absolute <see cref="Uri"/>.</exception>
     public static ShardSearchCapability Create(ShardDescriptor shard, ShardCapabilityEvidence evidence, SearchCertification certification)
     {
         ArgumentNullException.ThrowIfNull(shard);
@@ -48,5 +47,5 @@ public static class ShardCapabilityBridge
             SearchParameterType.Special => SearchParamType.Special,
             _ => throw new ArgumentOutOfRangeException(nameof(parameter), "The advertised search parameter type is not an R4 type."),
         },
-        parameter.Definition is { } definition ? new Uri(definition, UriKind.Absolute) : null);
+        parameter.Definition);
 }
