@@ -1,0 +1,61 @@
+<Project>
+
+  <PropertyGroup>
+    <TargetFramework>net11.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <AnalysisLevel>latest-All</AnalysisLevel>
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+    <Deterministic>true</Deterministic>
+    <ContinuousIntegrationBuild Condition="'$(CI)' == 'true' or '$(GITHUB_ACTIONS)' == 'true'">true</ContinuousIntegrationBuild>
+    <RootNamespace>$(MSBuildProjectName)</RootNamespace>
+  </PropertyGroup>
+
+  <!-- NuGet audit: vulnerable packages fail the build. Pin a patched version instead of suppressing NU1901-NU1904. -->
+  <PropertyGroup>
+    <NuGetAudit>true</NuGetAudit>
+    <NuGetAuditMode>all</NuGetAuditMode>
+    <NuGetAuditLevel>low</NuGetAuditLevel>
+  </PropertyGroup>
+
+  <!-- Package metadata. This is the only build file that names the repository. -->
+  <PropertyGroup>
+    <VersionPrefix>0.1.0</VersionPrefix>
+    <VersionSuffix>alpha</VersionSuffix>
+    <IsPackable>false</IsPackable>
+    <Authors>Brendan Kowitz</Authors>
+    <Company>Brendan Kowitz</Company>
+    <Product>Ignixa Federation</Product>
+    <Copyright>Copyright (c) 2026 Brendan Kowitz</Copyright>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageProjectUrl>https://github.com/brendankowitz/fhir-federation-service</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/brendankowitz/fhir-federation-service</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageTags>fhir;federation;search;gateway;ignixa</PackageTags>
+  </PropertyGroup>
+
+  <!-- Packages carry the license text at the package root alongside the SPDX PackageLicenseExpression. -->
+  <ItemGroup Condition="'$(IsPackable)' == 'true'">
+    <None Include="$(MSBuildThisFileDirectory)LICENSE" Pack="true" PackagePath="\" Visible="false" />
+  </ItemGroup>
+
+  <!-- Production code under src/: public API must be documented (CS1591 stays an error via TreatWarningsAsErrors). -->
+  <PropertyGroup Condition="$(MSBuildProjectDirectory.StartsWith('$(MSBuildThisFileDirectory)src'))">
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+  </PropertyGroup>
+
+  <!-- Test projects under test/. -->
+  <PropertyGroup Condition="$(MSBuildProjectDirectory.StartsWith('$(MSBuildThisFileDirectory)test'))">
+    <IsPackable>false</IsPackable>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <!-- xunit.v3 test projects are executables hosted by Microsoft.Testing.Platform. -->
+    <OutputType>Exe</OutputType>
+  </PropertyGroup>
+
+  <ItemGroup Condition="$(MSBuildProjectDirectory.StartsWith('$(MSBuildThisFileDirectory)test'))">
+    <Using Include="Xunit" />
+  </ItemGroup>
+
+</Project>
