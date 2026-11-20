@@ -391,8 +391,8 @@ public sealed class ForwardChainResolver
 
         /// <summary>
         /// Gets whether the complete initial request for <paramref name="parameters"/> with <c>_count</c> =
-        /// <paramref name="count"/> fits the ceiling for <paramref name="method"/>: the form body for POST, or the escaped
-        /// request-target path and query for GET.
+        /// <paramref name="count"/> fits the ceiling for <paramref name="method"/>: the form body for POST, or the verbatim
+        /// request-target (the canonical base path, <c>/Type?</c> and every raw pair, as transport writes it) for GET.
         /// </summary>
         public bool Fits(ResourceType type, IReadOnlyList<ParameterOccurrence> parameters, int count, ShardSearchMethod method)
         {
@@ -403,7 +403,11 @@ public sealed class ForwardChainResolver
                 return Encoding.UTF8.GetByteCount(query) <= Bound.MaxPostBodyBytes!.Value; // Only POST-capable shards are sent POST.
             }
 
-            string target = new Uri($"{Shard.CanonicalBaseUrl}/{type.Value}?{query}", UriKind.Absolute).PathAndQuery;
+            // The registry's canonical base is https with no terminal slash, so its path is whatever follows the authority.
+            // Nothing is decoded or re-escaped: System.Uri would decode escaped unreserved characters and expand a raw '|'.
+            string baseUrl = Shard.CanonicalBaseUrl;
+            int path = baseUrl.IndexOf('/', Uri.UriSchemeHttps.Length + "://".Length, StringComparison.Ordinal);
+            string target = $"{(path < 0 ? string.Empty : baseUrl[path..])}/{type.Value}?{query}";
             return Encoding.UTF8.GetByteCount(target) <= Bound.MaxGetTargetBytes;
         }
     }

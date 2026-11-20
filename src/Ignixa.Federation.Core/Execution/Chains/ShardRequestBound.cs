@@ -14,8 +14,9 @@ namespace Ignixa.Federation.Core.Execution.Chains;
 /// </para>
 /// <para>
 /// <see cref="ForwardChainResolver"/> measures each complete initial request in UTF-8 bytes before sending or exposing it.
-/// A POST is the form-encoded body. A GET is the escaped request-target (<c>System.Uri</c> path and query) of the shard's
-/// canonical base path plus <c>/Type?</c> and every pair. Both include every separator and the largest <c>_count</c> the
+/// A POST is the form-encoded body. A GET is the verbatim request-target as transport writes it, not a canonicalized
+/// <c>System.Uri</c> form: the shard's canonical base path, <c>/Type?</c> and every raw pair in order, so escaped unreserved
+/// characters stay escaped and a raw <c>|</c> stays one byte. Both include every separator and the largest <c>_count</c> the
 /// consuming executor can send. Headers, the scheme and the host are not counted, so a bound must leave room for them. A
 /// request over its bound is refused rather than split. A bound is a configured fact, never inferred from a backend
 /// profile, and it is not enforcement on the wire.

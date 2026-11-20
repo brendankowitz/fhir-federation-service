@@ -189,8 +189,8 @@ public sealed class ForwardChainRefusalTests
     {
         ShardRegistry registry = Registry();
         var backend = new ChainBackend(registry).Patient(East, "orchid", "Orchid");
-        // The raw pipe stays in the occurrence but occupies three bytes in the escaped request target.
-        int target = Encoding.UTF8.GetByteCount("/fhir/Observation?code=a%7Cb&subject=Patient%2Forchid&subject=Patient%2Forchid&_count=20");
+        // The raw pipe is sent as one byte: the request target is the verbatim text, not an escaped form of it.
+        int target = Encoding.UTF8.GetByteCount("/fhir/Observation?code=a|b&subject=Patient%2Forchid&subject=Patient%2Forchid&_count=20");
         ForwardChainResolver resolver = Resolver(
             backend.Client,
             registry,
@@ -204,6 +204,38 @@ public sealed class ForwardChainRefusalTests
             // East's target fits exactly; west's longer foreign spelling fits its large ceiling.
             ShardSearchRequest east = result.ShouldBeOfType<ForwardChainReady>().Stream(East);
             (east.Method, east.PageSize).ShouldBe((ShardSearchMethod.Get, 20));
+        }
+        else
+        {
+            ShouldRefuse(result, ForwardChainRefusalReason.RequestTooLarge, -1, East);
+        }
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    public async Task EqualPairPrimaryRequestWithEscapedUnreservedSpelling_IsMeasuredVerbatim(int slack)
+    {
+        ShardRegistry registry = Registry();
+        var backend = new ChainBackend(registry).Patient(East, "orchid", "Orchid");
+        // `c%6Fde=a%62c` and `code=abc` are equal after one decode, so east is sent GET. A canonicalizing target would
+        // decode the escapes and measure four bytes less than the text on the wire.
+        const string EscapedCode = "c%6Fde=a%62c";
+        int target = Encoding.UTF8.GetByteCount($"/fhir/Observation?{EscapedCode}&subject=Patient%2Forchid&code=abc&_count=20");
+        ForwardChainResolver resolver = Resolver(
+            backend.Client,
+            registry,
+            bound: s => s.Id == East ? new ShardRequestBound(target + slack, 1_000_000) : ProfileBound(s));
+
+        ForwardChainResolution result = await resolver.ResolveAsync(Plan(registry, $"{EscapedCode}&{Chain}&code=abc"), Token);
+
+        backend.Client.Calls.Count.ShouldBe(2); // The one chain's witness search on each shard; nothing else is called.
+        backend.Client.Calls.ShouldAllBe(c => c.Search!.Type == Patient);
+        if (slack == 0)
+        {
+            ShardSearchRequest east = result.ShouldBeOfType<ForwardChainReady>().Stream(East);
+            east.Method.ShouldBe(ShardSearchMethod.Get);
+            east.Parameters.ShouldBe([new ParameterOccurrence("c%6Fde", "a%62c"), QueryRewriter.Encode("subject", "Patient/orchid"), new ParameterOccurrence("code", "abc")]);
         }
         else
         {

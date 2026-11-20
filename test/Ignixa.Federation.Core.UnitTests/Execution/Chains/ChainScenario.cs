@@ -37,6 +37,7 @@ internal static class ChainScenario
         "Observation?code=a%2Cb&code=a%2Cb&@Observation.subject:Patient",
         "Observation?code=a%20b&code=a%20b&@Observation.subject:Patient",
         "Observation?code=a%7Cb&@Observation.subject:Patient&@Observation.subject:Patient",
+        "Observation?code=abc&@Observation.subject:Patient&code=abc",
     ];
 
     public static IReadOnlySet<ResourceType> AllReadable { get; } = new HashSet<ResourceType> { Patient, Observation, Practitioner };
