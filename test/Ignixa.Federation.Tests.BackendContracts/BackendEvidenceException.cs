@@ -1,3 +1,5 @@
+using System.Diagnostics.CodeAnalysis;
+
 namespace Ignixa.Federation.Tests.BackendContracts;
 
 /// <summary>
@@ -27,6 +29,8 @@ public enum BackendFailureKind
 /// exception type names. They never include response bodies, endpoints, connection strings, or the
 /// inner exception, because those can carry credentials.
 /// </summary>
+[SuppressMessage("Design", "CA1032:Implement standard exception constructors",
+    Justification = "Every evidence failure needs a classification and a sanitized message, never an inner exception.")]
 public sealed class BackendEvidenceException : Exception
 {
     public BackendEvidenceException(BackendFailureKind kind, string detail)

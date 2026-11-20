@@ -9,14 +9,14 @@ public sealed class ReferenceBackendFixture : IAsyncLifetime
     private MicrosoftFhirSqlBackend? _backend;
 
     /// <summary>The base the test client uses against the backend, with a trailing slash.</summary>
-    public string LocalBaseUrl => Backend.LocalBaseUrl;
+    internal string LocalBaseUrl => Backend.LocalBaseUrl;
     public string SoftwareIdentity => Backend.SoftwareIdentity;
 
     private MicrosoftFhirSqlBackend Backend =>
         _backend ?? throw new InvalidOperationException("The backend fixture was not initialized.");
 
     public async ValueTask InitializeAsync() =>
-        _backend = await MicrosoftFhirSqlBackend.StartAsync(TestContext.Current.CancellationToken);
+        _backend = await MicrosoftFhirSqlBackend.StartAsync(SeedData.Reference, TestContext.Current.CancellationToken);
 
     /// <summary>Runs <c>Observation?subject={subjectValue}</c> and returns the accounted-for matches.</summary>
     public Task<SearchsetEvidence> SearchObservationsBySubjectAsync(string subjectValue, CancellationToken cancellationToken) =>

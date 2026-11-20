@@ -34,7 +34,7 @@ public sealed class BackendEvidenceTests
         var failure = Assert.Throws<BackendEvidenceException>(() => BackendHttpClient.ReadSoftwareIdentity(metadata));
 
         Assert.Equal(BackendFailureKind.Startup, failure.Kind);
-        Assert.DoesNotContain("Do not print", failure.Message);
+        Assert.DoesNotContain("Do not print", failure.Message, StringComparison.Ordinal);
     }
 
     private const string LocalQueryDescription = "subject=<own base>/Patient/dup";
@@ -52,9 +52,9 @@ public sealed class BackendEvidenceTests
 
         Assert.False(comparison.IsEqual);
         string report = comparison.Describe();
-        Assert.StartsWith("[contract]", report);
-        Assert.Contains("unexpected: [obs-foreign-absolute-dup, obs-foreign-b-absolute-dup]", report);
-        Assert.Contains("missing: []", report);
+        Assert.StartsWith("[contract]", report, StringComparison.Ordinal);
+        Assert.Contains("unexpected: [obs-foreign-absolute-dup, obs-foreign-b-absolute-dup]", report, StringComparison.Ordinal);
+        Assert.Contains("missing: []", report, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -70,8 +70,8 @@ public sealed class BackendEvidenceTests
 
         Assert.False(comparison.IsEqual);
         string report = comparison.Describe();
-        Assert.Contains("unexpected: [obs-foreign-b-absolute-dup]", report);
-        Assert.Contains("missing: []", report);
+        Assert.Contains("unexpected: [obs-foreign-b-absolute-dup]", report, StringComparison.Ordinal);
+        Assert.Contains("missing: []", report, StringComparison.Ordinal);
 
         SearchsetEvidence exactBackend = SearchsetEvidence.Parse(Searchset(SeedData.ForeignAbsoluteObservationId));
         Assert.True(ReferenceSearchContractTests.CompareForeignAQuery(exactBackend).IsEqual);
@@ -113,13 +113,15 @@ public sealed class BackendEvidenceTests
                     _ => Task.FromResult(SearchsetEvidence.Parse(
                         Build(["obs-relative-dup", UnreservedId], selfLink: UntrustedLink))),
                 },
+                "Observation",
+                SeedData.AllObservationIds,
                 TimeSpan.FromMilliseconds(20),
                 TestContext.Current.CancellationToken));
 
         Assert.Equal(BackendFailureKind.IncompleteSearch, failure.Kind);
-        Assert.Contains(expectedDetail, failure.Message);
-        Assert.DoesNotContain(UnreservedId, failure.Message);
-        Assert.DoesNotContain(UntrustedLink, failure.Message);
+        Assert.Contains(expectedDetail, failure.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain(UnreservedId, failure.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain(UntrustedLink, failure.Message, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -132,8 +134,8 @@ public sealed class BackendEvidenceTests
 
         Assert.False(comparison.IsEqual);
         string report = comparison.Describe();
-        Assert.Contains("missing: [obs-relative-dup]", report);
-        Assert.Contains("unexpected: []", report);
+        Assert.Contains("missing: [obs-relative-dup]", report, StringComparison.Ordinal);
+        Assert.Contains("unexpected: []", report, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -157,7 +159,7 @@ public sealed class BackendEvidenceTests
             EvidenceLabel.Contract, LocalQueryDescription, LocalQueryExpected, actual);
 
         Assert.False(comparison.IsEqual);
-        Assert.Contains("unexpected: [obs-relative-dup]", comparison.Describe());
+        Assert.Contains("unexpected: [obs-relative-dup]", comparison.Describe(), StringComparison.Ordinal);
     }
 
     [Fact]
@@ -168,7 +170,7 @@ public sealed class BackendEvidenceTests
         MatchComparison comparison = MatchComparison.Compare(
             EvidenceLabel.Characterization, "subject=Patient/dup", ["obs-relative-dup", "obs-own-absolute-dup"], actual);
 
-        Assert.StartsWith("[characterization]", comparison.Describe());
+        Assert.StartsWith("[characterization]", comparison.Describe(), StringComparison.Ordinal);
     }
 
     [Fact]
@@ -180,8 +182,8 @@ public sealed class BackendEvidenceTests
         string report = MatchComparison.Compare(
             EvidenceLabel.Contract, LocalQueryDescription, LocalQueryExpected, actual).Describe();
 
-        Assert.DoesNotContain("stray-id-", report);
-        Assert.Contains("unreserved", report);
+        Assert.DoesNotContain("stray-id-", report, StringComparison.Ordinal);
+        Assert.Contains("unreserved", report, StringComparison.Ordinal);
         Assert.InRange(report.Length, 1, 1_500);
     }
 
@@ -242,7 +244,7 @@ public sealed class BackendEvidenceTests
         BackendEvidenceException failure = Assert.Throws<BackendEvidenceException>(() => SearchsetEvidence.Parse(body));
 
         Assert.Equal(BackendFailureKind.IncompleteSearch, failure.Kind);
-        Assert.DoesNotContain(body, failure.Message);
+        Assert.DoesNotContain(body, failure.Message, StringComparison.Ordinal);
     }
 
     [Theory]

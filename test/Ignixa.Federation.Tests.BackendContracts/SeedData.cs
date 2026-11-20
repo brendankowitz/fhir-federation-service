@@ -26,6 +26,9 @@ internal static class SeedData
         ControlObservationId,
     ];
 
+    /// <summary>The reference-witness seed. Readiness waits for every Observation.</summary>
+    public static BackendSeed Reference { get; } = new("Observation", ObservationIds, Resources);
+
     /// <summary>Seed ids in the order they are written. Patients come first so local references resolve.</summary>
     public static IReadOnlyList<string> AllObservationIds => ObservationIds;
 

@@ -18,45 +18,17 @@ public sealed class SearchsetEvidence
     /// <summary>Resource ids of all match entries, in ordinal order. Repeats are kept.</summary>
     public IReadOnlyList<string> MatchIds { get; }
 
+    /// <param name="json">The response body.</param>
+    /// <param name="resourceType">The type every entry must be a match of.</param>
     /// <exception cref="BackendEvidenceException">The response is not a complete searchset.</exception>
-    public static SearchsetEvidence Parse(string json)
+    public static SearchsetEvidence Parse(string json, string resourceType = "Observation")
     {
-        JsonDocument document;
-        try
-        {
-            document = JsonDocument.Parse(json);
-        }
-        catch (JsonException)
-        {
-            throw Incomplete("response body is not valid JSON");
-        }
-
-        using (document)
+        using (JsonDocument document = SearchsetJson.ParseCompleteSearchset(json))
         {
             JsonElement root = document.RootElement;
-            if (root.ValueKind != JsonValueKind.Object
-                || StringMember(root, "resourceType") != "Bundle"
-                || StringMember(root, "type") != "searchset")
-            {
-                throw Incomplete("response is not a searchset Bundle");
-            }
-
-            foreach (JsonElement link in Array(root, "link"))
-            {
-                if (StringMember(link, "relation") is not { Length: > 0 } relation)
-                {
-                    throw Incomplete("a searchset link has no relation");
-                }
-
-                if (relation == "next")
-                {
-                    throw Incomplete("a next link is present, so one page does not hold every match");
-                }
-            }
-
             var ids = new List<string>();
             int nonMatchEntries = 0;
-            foreach (JsonElement entry in Array(root, "entry"))
+            foreach (JsonElement entry in SearchsetJson.Array(root, "entry"))
             {
                 if (entry.ValueKind != JsonValueKind.Object)
                 {
@@ -64,12 +36,12 @@ public sealed class SearchsetEvidence
                 }
 
                 JsonElement resource = entry.TryGetProperty("resource", out JsonElement r) ? r : default;
-                string? id = resource.ValueKind == JsonValueKind.Object ? StringMember(resource, "id") : null;
+                string? id = resource.ValueKind == JsonValueKind.Object ? SearchsetJson.StringMember(resource, "id") : null;
                 string? mode = entry.TryGetProperty("search", out JsonElement search) && search.ValueKind == JsonValueKind.Object
-                    ? StringMember(search, "mode")
+                    ? SearchsetJson.StringMember(search, "mode")
                     : null;
 
-                if (mode == "match" && StringMember(resource, "resourceType") == "Observation" && id is { Length: > 0 })
+                if (mode == "match" && SearchsetJson.StringMember(resource, "resourceType") == resourceType && id is { Length: > 0 })
                 {
                     ids.Add(id);
                 }
@@ -81,7 +53,7 @@ public sealed class SearchsetEvidence
 
             if (nonMatchEntries > 0)
             {
-                throw Incomplete($"{nonMatchEntries} entries are not Observation matches (include or outcome entries, or entries without an id)");
+                throw Incomplete($"{nonMatchEntries} entries are not {resourceType} matches (include or outcome entries, or entries without an id)");
             }
 
             if (!root.TryGetProperty("total", out JsonElement total) ||
@@ -100,24 +72,5 @@ public sealed class SearchsetEvidence
         }
     }
 
-    private static BackendEvidenceException Incomplete(string detail) => new(BackendFailureKind.IncompleteSearch, detail);
-
-    private static string? StringMember(JsonElement element, string name) =>
-        element.ValueKind == JsonValueKind.Object
-        && element.TryGetProperty(name, out JsonElement value)
-        && value.ValueKind == JsonValueKind.String
-            ? value.GetString()
-            : null;
-
-    private static IEnumerable<JsonElement> Array(JsonElement element, string name)
-    {
-        if (!element.TryGetProperty(name, out JsonElement value))
-        {
-            return [];
-        }
-
-        return value.ValueKind == JsonValueKind.Array
-            ? value.EnumerateArray()
-            : throw Incomplete($"the searchset {name} field is not an array");
-    }
+    private static BackendEvidenceException Incomplete(string detail) => SearchsetJson.Incomplete(detail);
 }

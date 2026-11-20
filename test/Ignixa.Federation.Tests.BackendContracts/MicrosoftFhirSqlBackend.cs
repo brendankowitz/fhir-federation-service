@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Security.Cryptography;
 using Docker.DotNet;
 using Docker.DotNet.Models;
@@ -51,18 +52,20 @@ internal sealed class MicrosoftFhirSqlBackend : IAsyncDisposable
     public string SoftwareIdentity { get; private set; } = string.Empty;
 
     /// <summary>
-    /// Starts SQL Server and the FHIR server, seeds <see cref="SeedData"/>, and returns only after the
-    /// seeded Observations are searchable. Anything started before a failure is removed again.
+    /// Starts SQL Server and the FHIR server, seeds <paramref name="seed"/>, and returns only after the
+    /// seeded resources are searchable. Anything started before a failure is removed again.
     /// </summary>
     /// <exception cref="BackendEvidenceException">Docker is unavailable, startup or seeding failed or timed out.</exception>
-    public static async Task<MicrosoftFhirSqlBackend> StartAsync(CancellationToken cancellationToken)
+    [SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope",
+        Justification = "The fixture owns the returned backend; failure invokes bounded cleanup and reports its outcome.")]
+    public static async Task<MicrosoftFhirSqlBackend> StartAsync(BackendSeed seed, CancellationToken cancellationToken)
     {
         var backend = new MicrosoftFhirSqlBackend();
         using var budget = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         budget.CancelAfter(StartupBudget);
         try
         {
-            await backend.StartCoreAsync(budget.Token);
+            await backend.StartCoreAsync(seed, budget.Token);
             return backend;
         }
         catch (Exception e)
@@ -88,6 +91,8 @@ internal sealed class MicrosoftFhirSqlBackend : IAsyncDisposable
         }
     }
 
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types",
+        Justification = "A failed diagnostic must not block cleanup or expose Docker exception details.")]
     private static async Task<string?> DescribeContainerAsync(string label, string? name)
     {
         if (name is null)
@@ -98,7 +103,7 @@ internal sealed class MicrosoftFhirSqlBackend : IAsyncDisposable
         using var budget = new CancellationTokenSource(TimeSpan.FromSeconds(5));
         try
         {
-            using IDockerClient docker = new DockerClientBuilder().WithEndpoint(DockerEndpoint).Build();
+            using DockerClient docker = new DockerClientBuilder().WithEndpoint(DockerEndpoint).Build();
             ContainerInspectResponse report = await docker.Containers.InspectContainerAsync(name, budget.Token);
             return report.State switch
             {
@@ -143,7 +148,7 @@ internal sealed class MicrosoftFhirSqlBackend : IAsyncDisposable
     private static async Task RemoveContainerAsync(string name, CancellationToken cancellationToken)
     {
         // With Ryuk disabled, Testcontainers 4.17 DisposeAsync stops containers but does not delete them.
-        using IDockerClient docker = new DockerClientBuilder().WithEndpoint(DockerEndpoint).Build();
+        using DockerClient docker = new DockerClientBuilder().WithEndpoint(DockerEndpoint).Build();
         try
         {
             await docker.Containers.RemoveContainerAsync(
@@ -155,6 +160,8 @@ internal sealed class MicrosoftFhirSqlBackend : IAsyncDisposable
         }
     }
 
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types",
+        Justification = "Report every removal failure without leaking Docker exception details or skipping the remaining resources.")]
     private static async Task<string?> TryRemoveAsync(string name, Func<CancellationToken, Task>? remove)
     {
         if (remove is null)
@@ -174,7 +181,7 @@ internal sealed class MicrosoftFhirSqlBackend : IAsyncDisposable
         }
     }
 
-    private async Task StartCoreAsync(CancellationToken cancellationToken)
+    private async Task StartCoreAsync(BackendSeed seed, CancellationToken cancellationToken)
     {
         // Avoid giving a helper container the host Docker socket. Delete the owned resources ourselves.
         string runId = Guid.NewGuid().ToString("N");
@@ -185,7 +192,7 @@ internal sealed class MicrosoftFhirSqlBackend : IAsyncDisposable
             "creating the private Docker network (is a Docker engine reachable?)",
             async () =>
             {
-                using IDockerClient docker = new DockerClientBuilder().WithEndpoint(DockerEndpoint).Build();
+                using DockerClient docker = new DockerClientBuilder().WithEndpoint(DockerEndpoint).Build();
                 await docker.System.PingAsync(cancellationToken);
                 TestcontainersSettings.ResourceReaperEnabled = false;
 
@@ -265,8 +272,13 @@ internal sealed class MicrosoftFhirSqlBackend : IAsyncDisposable
         Client = new BackendHttpClient(new Uri(LocalBaseUrl));
 
         SoftwareIdentity = await WaitForMetadataAsync(server, cancellationToken);
-        await SeedAsync(cancellationToken);
-        await WaitForSeedSearchableAsync(Client.SearchObservationsAsync, SeedSearchableBudget, cancellationToken);
+        await SeedAsync(seed, cancellationToken);
+        await WaitForSeedSearchableAsync(
+            (query, ct) => Client.SearchAsync(seed.ResourceType, query, ct),
+            seed.ResourceType,
+            seed.Ids,
+            SeedSearchableBudget,
+            cancellationToken);
     }
 
     private async Task<string> WaitForMetadataAsync(IContainer server, CancellationToken cancellationToken)
@@ -300,9 +312,9 @@ internal sealed class MicrosoftFhirSqlBackend : IAsyncDisposable
         }
     }
 
-    private async Task SeedAsync(CancellationToken cancellationToken)
+    private async Task SeedAsync(BackendSeed seed, CancellationToken cancellationToken)
     {
-        foreach (SeedResource resource in SeedData.Resources(LocalBaseUrl))
+        foreach (SeedResource resource in seed.Resources(LocalBaseUrl))
         {
             await Client.PutAsync(resource, cancellationToken);
         }
@@ -310,15 +322,18 @@ internal sealed class MicrosoftFhirSqlBackend : IAsyncDisposable
 
     /// <summary>
     /// Metadata alone says nothing about the search index. This polls an <c>_id</c> search until every
-    /// seeded Observation is returned, so a later missing id is a contract result and not lag.
+    /// seeded resource is returned, so a later missing id or total is a contract result and not lag.
+    /// It never uses a count query to gate readiness.
     /// </summary>
     internal static async Task WaitForSeedSearchableAsync(
         Func<string, CancellationToken, Task<SearchsetEvidence>> search,
+        string resourceType,
+        IReadOnlyCollection<string> seededIds,
         TimeSpan budget,
         CancellationToken cancellationToken)
     {
-        string query = $"_id={string.Join(',', SeedData.AllObservationIds)}";
-        string[] expected = [.. SeedData.AllObservationIds.Order(StringComparer.Ordinal)];
+        string query = $"_id={string.Join(',', seededIds)}";
+        string[] expected = [.. seededIds.Order(StringComparer.Ordinal)];
 
         using var phase = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         phase.CancelAfter(budget);
@@ -336,7 +351,7 @@ internal sealed class MicrosoftFhirSqlBackend : IAsyncDisposable
                     }
 
                     int seededCount = expected.Intersect(found.MatchIds, StringComparer.Ordinal).Count();
-                    lastObservation = $"complete search page contained {seededCount} of {expected.Length} seeded Observations ({found.MatchIds.Count} total matches)";
+                    lastObservation = $"complete search page contained {seededCount} of {expected.Length} seeded {resourceType}s ({found.MatchIds.Count} total matches)";
                 }
                 catch (BackendEvidenceException e) when (e.Kind == BackendFailureKind.IncompleteSearch)
                 {

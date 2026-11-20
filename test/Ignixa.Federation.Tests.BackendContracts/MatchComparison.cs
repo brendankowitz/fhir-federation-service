@@ -37,7 +37,7 @@ public sealed class MatchComparison
 
     public bool IsEqual => _missing.Length == 0 && _unexpected.Length == 0;
 
-    public static MatchComparison Compare(
+    internal static MatchComparison Compare(
         EvidenceLabel label,
         string queryDescription,
         IReadOnlyCollection<string> expected,

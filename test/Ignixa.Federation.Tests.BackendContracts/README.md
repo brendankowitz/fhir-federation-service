@@ -1,13 +1,13 @@
 # Backend contract tests
 
-These tests run one real Microsoft FHIR Server R4 on SQL Server and record how it answers reference
-searches. They produce the evidence behind design §4.1 (identity and references), §7.5 (distributed
-chain rewrite) and §7.6 (includes and revincludes) of
+These tests run real Microsoft FHIR Server R4 on SQL Server and record how it answers reference
+searches and ordinary count requests. The reference witness covers design §4.1 (identity and references),
+§7.5 (distributed chain rewrite) and §7.6 (includes and revincludes) of
 [the design](../../docs/superpowers/specs/2026-11-19-fhir-federation-service-design.md).
 
 This is not a profile certification and not a federation end-to-end test. No federation code runs here.
 
-## What is tested
+## Reference search witness
 
 One backend is started and seeded once. The three cases share it and report separately.
 
@@ -50,6 +50,41 @@ mistakes are caught:
 An offline fixture check also verifies each observation's outgoing `subject.reference` spelling.
 It does not require the server to preserve that spelling on read-back.
 
+## Patient count witness (`_count=0`)
+
+A second, separate witness records whether the backend reports an exact filtered `total` for a
+`_count=0` Patient search. It starts its own backend (a second fixture) and seeds three Patients. The two
+fixtures run separately: the count collection disables parallelization, so the two SQL backends never
+run at the same time.
+
+| Patient | `gender` |
+| --- | --- |
+| `count-female-1` | `female` |
+| `count-female-2` | `female` |
+| `count-male-1` | `male` |
+
+| Method | Filter | Expected `total` |
+| --- | --- | --- |
+| GET, POST | none | 3 |
+| GET, POST | `gender=female` | 2 |
+| GET, POST | `gender=unknown` | 0 |
+
+Six live cases (two theories of three rows). Expected totals are literals in the test. Both filtered
+rows catch a backend that ignores the filter and returns 3. Exact query shapes:
+
+- GET: `Patient?_count=0` or `Patient?_count=0&gender=<value>`
+- POST: `Patient/_search` with an `application/x-www-form-urlencoded` body `_count=0` or
+  `_count=0&gender=<value>`
+
+Both send `Prefer: handling=strict` and no `_total` parameter, so the answer is the backend's own
+default behavior. A response counts as evidence only if it is a searchset with no entries, no `next`
+link and a present non-negative integer `total`; anything else is `[incomplete-search]`. A well-formed
+but different total is `[contract]`; HTTP 400, 422 or 501 is `[unsupported-capability]`.
+
+Readiness for this backend still uses the positive `_id` search for the three seeded Patients. A count
+query never gates readiness. Offline tests (`PatientCountEvidenceTests`, no Docker) cover the parser,
+the sanitized report, the request construction, the seed shape, and the generalized readiness.
+
 ## Run it
 
 Requires .NET SDK 11.0.100 and a local Docker engine for `linux/amd64` containers. The harness uses
@@ -60,11 +95,12 @@ dotnet run --project test/Ignixa.Federation.Tests.BackendContracts/Ignixa.Federa
 ```
 
 The command exits non-zero if a case fails. To run only the offline tests, replace the options after
-`--` with `--filter-class Ignixa.Federation.Tests.BackendContracts.BackendEvidenceTests`.
+`--` with `--filter-class '*EvidenceTests'`. The full run has 87 tests: 78 offline and 9 live
+(3 reference, 6 count).
+
 The first live run can take several minutes to pull images and initialize the SQL schema.
 
-`dotnet test` does not work for this project until the repository opts in to the test platform runner
-at the root. Use `dotnet run` as above.
+The project is intentionally outside the main solution; use the standalone command above.
 
 ## Constraints
 
@@ -114,6 +150,8 @@ base and can include foreign references, so it is not an exact-local query.
 ## Evidence status
 
 - Local (Windows, no Docker engine): the project builds with the .NET 11.0.100 SDK. The offline tests pass.
-  The three live cases run and fail with `[prerequisite]`, as they should without Docker.
-- Pending CI: startup, port binding, and match sets have not been verified against the live pair.
-  The first Linux run in `.github/workflows/backend-contracts.yml` supplies that evidence.
+  The nine live cases (three reference, six count) run and fail with `[prerequisite]`, as they should
+  without Docker: 87 total, 78 passed, 9 failed, 0 skipped.
+- Pending Docker or CI: startup, port binding, match sets and the Patient count totals have not been
+  verified against a live backend. The first Linux run in `.github/workflows/backend-contracts.yml`
+  supplies that evidence. Until then the count witness is not accepted.

@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Text.Json;
@@ -16,15 +17,17 @@ internal sealed class BackendHttpClient : IDisposable
 
     private readonly HttpClient _http;
 
+    [SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope",
+        Justification = "HttpClient owns and disposes its handler.")]
     public BackendHttpClient(Uri baseAddress)
     {
-        var handler = new HttpClientHandler
+        _http = new HttpClient(new HttpClientHandler
         {
             AllowAutoRedirect = false,
             UseProxy = false,
             UseCookies = false,
-        };
-        _http = new HttpClient(handler, disposeHandler: true)
+            CheckCertificateRevocationList = true,
+        })
         {
             BaseAddress = baseAddress,
             Timeout = RequestTimeout,
@@ -37,7 +40,7 @@ internal sealed class BackendHttpClient : IDisposable
     {
         try
         {
-            using HttpResponseMessage response = await _http.GetAsync("metadata", cancellationToken);
+            using HttpResponseMessage response = await _http.GetAsync(new Uri("metadata", UriKind.Relative), cancellationToken);
             return response.StatusCode == HttpStatusCode.OK
                 ? ReadSoftwareIdentity(await response.Content.ReadAsStringAsync(cancellationToken))
                 : null;
@@ -99,7 +102,7 @@ internal sealed class BackendHttpClient : IDisposable
         HttpStatusCode status;
         try
         {
-            using HttpResponseMessage response = await _http.PutAsync($"{resource.ResourceType}/{resource.Id}", content, cancellationToken);
+            using HttpResponseMessage response = await _http.PutAsync(new Uri($"{resource.ResourceType}/{resource.Id}", UriKind.Relative), content, cancellationToken);
             status = response.StatusCode;
         }
         catch (HttpRequestException e)
@@ -122,9 +125,18 @@ internal sealed class BackendHttpClient : IDisposable
     /// backend must reject a search it cannot honor instead of silently ignoring a parameter.
     /// </summary>
     /// <param name="query">Already URL-encoded search parameters, without a leading <c>?</c>.</param>
-    public async Task<SearchsetEvidence> SearchObservationsAsync(string query, CancellationToken cancellationToken)
+    public Task<SearchsetEvidence> SearchObservationsAsync(string query, CancellationToken cancellationToken) =>
+        SearchAsync("Observation", query, cancellationToken);
+
+    /// <summary>
+    /// Runs <c>GET {resourceType}?{query}&amp;_count=100&amp;_total=accurate</c> with strict handling and
+    /// accounts for every match of that type on the single complete page.
+    /// </summary>
+    /// <param name="resourceType">A reserved resource type name.</param>
+    /// <param name="query">Already URL-encoded search parameters, without a leading <c>?</c>.</param>
+    public async Task<SearchsetEvidence> SearchAsync(string resourceType, string query, CancellationToken cancellationToken)
     {
-        using var request = new HttpRequestMessage(HttpMethod.Get, $"Observation?{query}&_count=100&_total=accurate");
+        using var request = new HttpRequestMessage(HttpMethod.Get, $"{resourceType}?{query}&_count=100&_total=accurate");
         request.Headers.TryAddWithoutValidation("Prefer", "handling=strict");
 
         HttpStatusCode status;
@@ -146,7 +158,7 @@ internal sealed class BackendHttpClient : IDisposable
 
         return status switch
         {
-            HttpStatusCode.OK => SearchsetEvidence.Parse(body),
+            HttpStatusCode.OK => SearchsetEvidence.Parse(body, resourceType),
             HttpStatusCode.BadRequest or HttpStatusCode.UnprocessableEntity or HttpStatusCode.NotImplemented =>
                 throw new BackendEvidenceException(
                     BackendFailureKind.UnsupportedCapability,
@@ -155,6 +167,91 @@ internal sealed class BackendHttpClient : IDisposable
                 BackendFailureKind.IncompleteSearch,
                 $"the search returned unexpected HTTP {(int)status}, which is not evidence either way."),
         };
+    }
+
+    /// <summary>
+    /// Builds the ordinary count request for Patients: <c>_count=0</c> and an optional <c>gender</c>
+    /// filter, as a query string for GET or a form body for <c>POST Patient/_search</c>. It carries no
+    /// <c>_total</c>, so the count is the server's answer to <c>_count=0</c> alone, and it asks for
+    /// strict handling so an unsupported parameter is rejected and not ignored.
+    /// </summary>
+    /// <param name="method">GET or POST.</param>
+    /// <param name="gender">A reserved gender code, or <see langword="null"/> for no filter.</param>
+    internal static HttpRequestMessage BuildCountRequest(HttpMethod method, string? gender)
+    {
+        List<KeyValuePair<string, string>> parameters = [new("_count", "0")];
+        if (gender is not null)
+        {
+            parameters.Add(new("gender", gender));
+        }
+
+        HttpRequestMessage request;
+        if (method == HttpMethod.Get)
+        {
+            string query = string.Join('&', parameters.Select(p => $"{p.Key}={Uri.EscapeDataString(p.Value)}"));
+            request = new HttpRequestMessage(HttpMethod.Get, $"Patient?{query}");
+        }
+        else if (method == HttpMethod.Post)
+        {
+            request = new HttpRequestMessage(HttpMethod.Post, "Patient/_search") { Content = new FormUrlEncodedContent(parameters) };
+        }
+        else
+        {
+            throw new ArgumentOutOfRangeException(nameof(method), "Only GET and POST have a count request shape.");
+        }
+
+        request.Headers.TryAddWithoutValidation("Prefer", "handling=strict");
+        return request;
+    }
+
+    /// <summary>
+    /// Sends <see cref="BuildCountRequest"/> and accounts for the response as a count. Failures name only
+    /// the method, the HTTP status and fixed text, never a response body or a server link.
+    /// </summary>
+    public async Task<CountEvidence> CountPatientsAsync(HttpMethod method, string? gender, CancellationToken cancellationToken)
+    {
+        using HttpRequestMessage request = BuildCountRequest(method, gender);
+        string operation = $"the {method.Method} count";
+
+        HttpStatusCode status;
+        string body;
+        try
+        {
+            using HttpResponseMessage response = await _http.SendAsync(request, cancellationToken);
+            status = response.StatusCode;
+            body = await response.Content.ReadAsStringAsync(cancellationToken);
+        }
+        catch (HttpRequestException)
+        {
+            throw new BackendEvidenceException(BackendFailureKind.IncompleteSearch, $"{operation} got no response.");
+        }
+        catch (TaskCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            throw new BackendEvidenceException(BackendFailureKind.IncompleteSearch, $"{operation} timed out after {RequestTimeout.TotalSeconds:0} s.");
+        }
+
+        switch (status)
+        {
+            case HttpStatusCode.OK:
+                try
+                {
+                    return CountEvidence.Parse(body);
+                }
+                catch (BackendEvidenceException e)
+                {
+                    throw new BackendEvidenceException(e.Kind, $"{operation} response is not evidence: {e.Detail}.");
+                }
+
+            case HttpStatusCode.BadRequest or HttpStatusCode.UnprocessableEntity or HttpStatusCode.NotImplemented:
+                throw new BackendEvidenceException(
+                    BackendFailureKind.UnsupportedCapability,
+                    $"the backend rejected {operation} with HTTP {(int)status}. This is a capability answer, not a count.");
+
+            default:
+                throw new BackendEvidenceException(
+                    BackendFailureKind.IncompleteSearch,
+                    $"{operation} returned unexpected HTTP {(int)status}, which is not evidence either way.");
+        }
     }
 
     public void Dispose() => _http.Dispose();
