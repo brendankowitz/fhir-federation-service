@@ -1,4 +1,4 @@
-# FHIR Federation Service — Design
+# Ignixa Federation — Design
 
 **Status:** Draft v4 — two review rounds by GPT-6.2 Astra (FHIR semantics, algorithms) and Claude Fable 5.2 (scope, architecture, security, operability), then owner decisions D1–D7 (§18). Awaiting final approval.
 **Date:** 2026-11-19
@@ -52,7 +52,7 @@ The 2025 prototype (≈14.5K LOC) proved the execution patterns but was coupled 
 
 ## 3. Constraints
 
-- .NET 10, ASP.NET Core Minimal APIs, central package management, warnings-as-errors, nullable, xUnit + Shouldly + NSubstitute — Ignixa conventions (`brendankowitz/ignixa-fhir` `AGENTS.md`).
+- .NET 11, ASP.NET Core Minimal APIs, central package management, warnings-as-errors, nullable, xUnit + Shouldly + NSubstitute — Ignixa conventions (`brendankowitz/ignixa-fhir` `AGENTS.md`).
 - Ignixa consumed **only via published NuGet** (`0.6.82` at time of writing): `Ignixa.Abstractions`, `Ignixa.Specification`, `Ignixa.Serialization`, `Ignixa.Search`, `Ignixa.FhirPath`. `Ignixa.Api`, `.Application`, `.Domain`, `.DataLayer.*` are not published and must not be depended on. (`Ignixa.Search` references `Microsoft.AspNetCore.Http.Abstractions`; acceptable.)
 - Shards are standard FHIR R4 REST servers over HTTPS. **v1 certified backends: Microsoft FHIR Server / Azure Health Data Services (primary), then Ignixa** (D3). Each certified backend has a verified `BackendProfile` (§9.2) and a compatibility run.
 - **Size envelope (D6):** designed, tested and documented for up to 16 shards; load-tested at 16 and 50. 16 is a soft, documented limit (configurable), not a hard cap: sorted, chained and include queries need every shard, so all-shard availability is ≈98.4% at 16 shards and ≈95% at 50 (at 99.9% per shard), and each such page costs one backend call per shard. For scale, with storage items 1–4 roughly 4 shards of 128 TB hold 1 PiB, so 16 shards cover ≈4 PiB. One federation per deployment; no multi-tenancy.
@@ -295,7 +295,7 @@ Clients that follow `fullUrl` directly authenticate to the shard with their own 
 
 - **`entry.fullUrl = {shardBaseUrl}/{type}/{id}`** — the resource's real URL. Relative references inside the entry resolve against its shard, matching §4.1, so `_include`d targets (same-shard or cross-shard by absolute reference) resolve in-Bundle by exact `fullUrl` match.
 - **`entry.link`** `relation=alternate`, `url=[base]/shards/{alias}/{type}/{id}` — present only when `ProxyReads` is on, for clients without shard access.
-- **`entry.extension[source-shard]`** `valueString = alias` (`https://github.com/brendankowitz/fhir-federation-service/StructureDefinition/source-shard`).
+- **`entry.extension[source-shard]`** `valueString = alias` (`http://ignixa.io/federation/StructureDefinition/source-shard`; a stable identifier that need not resolve, defined as one constant in Core).
 - `search.mode` = `match` / `include` / `outcome`; `search.score` dropped.
 - Resources returned byte-for-byte as the shard returned them.
 - `Bundle.link`: `self` (applied predicates), `next` (`[base]/[type]?ct=…`). No `previous`/`last`.
@@ -323,15 +323,16 @@ flowchart LR
 ### 12.1 Projects
 
 ```text
+Ignixa.Federation.slnx
 src/
-  Fhir.Federation.Core/      # planner, rewriter, reference classifier, merge, budget, token snapshot model
-  Fhir.Federation.Shards/    # registry, IShardClient (HTTP), backend profiles, auth handlers, resilience, capability fetch
-  Fhir.Federation.Api/       # host: minimal APIs, authN/Z, shaping, DI, OpenTelemetry
+  Ignixa.Federation.Core/      # planner, rewriter, reference classifier, merge, budget, token snapshot model
+  Ignixa.Federation.Shards/    # registry, IShardClient (HTTP), backend profiles, auth handlers, resilience, capability fetch
+  Ignixa.Federation.Api/       # host: minimal APIs, authN/Z, shaping, DI, OpenTelemetry
 test/
-  Fhir.Federation.Core.UnitTests/
-  Fhir.Federation.Shards.UnitTests/
-  Fhir.Federation.Tests.Integration/   # federation + backend containers + oracle
-  Fhir.Federation.Tests.Compatibility/ # certified backend profile runs
+  Ignixa.Federation.Core.UnitTests/
+  Ignixa.Federation.Shards.UnitTests/
+  Ignixa.Federation.Tests.Integration/   # federation + backend containers + oracle
+  Ignixa.Federation.Tests.Compatibility/ # certified backend profile runs
 ```
 
 `IShardClient` takes parameter occurrence lists and returns entries plus an opaque stream cursor. No mediator.
@@ -420,6 +421,7 @@ Config key names; token envelope wire format; exact default limits within the st
 | Deployment-wide chain mode doesn't match path-specific placement (owner, 2026-11-19) | §7.5 per-path `Passthrough` list, `Distributed` default |
 | Standalone vs Ignixa-hosted (Fable) | Standalone: Ignixa's seam hands over `SearchOptions.Expression`, reintroducing expression→string serialisation; Application layer unpublished |
 | Topology hiding & content rewriting (Astra, Fable) | Dropped by D4 |
+| Rename (2026-11-20, Forge) | Rename-only: product Ignixa Federation, .NET 11, Ignixa.Federation.* projects, source-shard extension URL; no design change |
 
 ## 20. Prior art
 

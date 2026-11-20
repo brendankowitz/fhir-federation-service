@@ -1,0 +1,29 @@
+# Build output
+[Bb]in/
+[Oo]bj/
+artifacts/
+publish/
+
+# Test and coverage output
+TestResults/
+coverage/
+coverage*.xml
+coverage*.json
+coverage*.info
+*.coverage
+*.coveragexml
+*.trx
+
+# IDE and user files
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+*.DotSettings.user
+launchSettings.json.user
+
+# Misc
+*.log
+.DS_Store
+Thumbs.db

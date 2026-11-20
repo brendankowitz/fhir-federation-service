@@ -1,0 +1,34 @@
+# Skeleton for local runs. shard-a and shard-b are PLACEHOLDERS (busybox static file servers, not FHIR servers)
+# until PR p4/p9 wire a real backend. The federation starts against them but cannot answer searches yet.
+# Shard registry field names (Id, Alias, BaseUrl, Profile) follow spec section 4.2.
+services:
+  federation:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: ghcr.io/brendankowitz/ignixa-federation:local
+    ports:
+      - "5201:8080"
+    environment:
+      Federation__Shards__0__Id: shard-a
+      Federation__Shards__0__Alias: k7q2
+      Federation__Shards__0__BaseUrl: http://shard-a:8080/
+      Federation__Shards__0__Profile: MicrosoftFhirServer
+      Federation__Shards__1__Id: shard-b
+      Federation__Shards__1__Alias: p9xm
+      Federation__Shards__1__BaseUrl: http://shard-b:8080/
+      Federation__Shards__1__Profile: MicrosoftFhirServer
+    depends_on:
+      - shard-a
+      - shard-b
+
+  # Placeholder: stands in for a FHIR R4 server. The Microsoft FHIR Server image needs a SQL Server
+  # alongside it, so it is not used here.
+  shard-a:
+    image: busybox:stable
+    command: ["httpd", "-f", "-p", "8080"]
+
+  # Placeholder, as shard-a.
+  shard-b:
+    image: busybox:stable
+    command: ["httpd", "-f", "-p", "8080"]
