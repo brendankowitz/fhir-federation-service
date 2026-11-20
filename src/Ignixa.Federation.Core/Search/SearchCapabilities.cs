@@ -80,13 +80,21 @@ public sealed class SearchCapabilities
 
     internal bool EveryShard(Func<SearchCertification, bool> proven) => _shards.All(s => proven(s.Certification));
 
-    /// <summary>Gets every shard's certification of <paramref name="path"/> when each proves all of <paramref name="required"/>.</summary>
+    /// <summary>
+    /// Gets every shard's certification of <paramref name="path"/> when each proves all of <paramref name="required"/>. A
+    /// reference-search operation also needs coverage attested for the current <see cref="Registry"/> version: coverage of
+    /// another registry says nothing about references stored under its bases, so it proves no reference search. A stale
+    /// attestation leaves the shard's other operations proven.
+    /// </summary>
     internal FrozenDictionary<ShardId, ReferencePathCertification>? CertifiedPath(ReferencePath path, ReferencePathOperations required)
     {
+        bool searchesByReference = (required & (ReferencePathOperations.DistributedForward | ReferencePathOperations.RevIncludeSearch)) != 0;
         var certified = new Dictionary<ShardId, ReferencePathCertification>(_shards.Length);
         foreach (ShardSearchCapability shard in _shards)
         {
-            if (shard.Certification.FindPath(path) is not { } certification || (certification.Operations & required) != required)
+            if (shard.Certification.FindPath(path) is not { } certification
+                || (certification.Operations & required) != required
+                || (searchesByReference && !string.Equals(certification.CoveredRegistryVersion, Registry.Version, StringComparison.Ordinal)))
             {
                 return null;
             }

@@ -6,6 +6,8 @@ namespace Ignixa.Federation.Core.UnitTests.Search;
 
 public sealed class ReferencePathCertificationTests
 {
+    private static readonly string Covered = Registry().Version;
+
     [Fact]
     public void FormatsAsTheConfiguredPassthroughSpelling()
     {
@@ -29,7 +31,8 @@ public sealed class ReferencePathCertificationTests
             ObservationSubjectPatient,
             ReferencePathOperations.DistributedForward,
             ReferenceSearchForms.None,
-            ReferenceSearchForms.CanonicalAbsolute));
+            ReferenceSearchForms.CanonicalAbsolute,
+            Covered));
     }
 
     [Fact]
@@ -39,18 +42,20 @@ public sealed class ReferencePathCertificationTests
             ObservationSubjectPatient,
             ReferencePathOperations.RevIncludeSearch,
             ReferenceSearchForms.Relative,
-            ReferenceSearchForms.LinkBaseAliases));
+            ReferenceSearchForms.LinkBaseAliases,
+            Covered));
     }
 
-    // Relative notation names the shard's own resource; it cannot stand for a foreign one.
+    // Design spec §7.5: a key on another shard is emitted only in absolute forms drawn from that shard's registered bases.
     [Fact]
-    public void RejectsAForeignFormPolicyThatMatchesRelativeReferences()
+    public void RejectsAForeignFormPolicyThatEmitsRelativeReferences()
     {
         Should.Throw<ArgumentException>(() => new ReferencePathCertification(
             ObservationSubjectPatient,
             ReferencePathOperations.DistributedForward,
             ReferenceSearchForms.Relative,
-            ReferenceSearchForms.CanonicalAbsolute | ReferenceSearchForms.Relative));
+            ReferenceSearchForms.CanonicalAbsolute | ReferenceSearchForms.Relative,
+            Covered));
     }
 
     [Fact]
@@ -73,6 +78,7 @@ public sealed class ReferencePathCertificationTests
             ReferenceSearchForms.None);
 
         certification.Operations.ShouldBe(ReferencePathOperations.NativeForward | ReferencePathOperations.NativeReverse);
+        certification.CoveredRegistryVersion.ShouldBeNull();
     }
 
     [Fact]
@@ -83,5 +89,86 @@ public sealed class ReferencePathCertificationTests
             ReferencePathOperations.None,
             ReferenceSearchForms.None,
             ReferenceSearchForms.None));
+    }
+
+    [Theory]
+    [InlineData(ReferencePathOperations.DistributedForward)]
+    [InlineData(ReferencePathOperations.RevIncludeSearch)]
+    public void RejectsAReferenceSearchWithoutRegistryCoverage(ReferencePathOperations operations)
+    {
+        Should.Throw<ArgumentException>(() => new ReferencePathCertification(
+            ObservationSubjectPatient,
+            operations,
+            ReferenceSearchForms.Relative,
+            ReferenceSearchForms.CanonicalAbsolute));
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("v1")]
+    [InlineData("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcde")]
+    [InlineData("0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF")]
+    [InlineData("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdeg")]
+    public void RejectsCoverageThatIsNotARegistryVersion(string version)
+    {
+        Should.Throw<ArgumentException>(() => new ReferencePathCertification(
+            ObservationSubjectPatient,
+            ReferencePathOperations.DistributedForward,
+            ReferenceSearchForms.Relative,
+            ReferenceSearchForms.CanonicalAbsolute,
+            version));
+    }
+
+    [Fact]
+    public void RejectsRegistryCoverageForOperationsThatSearchNoReferences()
+    {
+        Should.Throw<ArgumentException>(() => new ReferencePathCertification(
+            ObservationSubjectPatient,
+            ReferencePathOperations.NativeForward | ReferencePathOperations.DistributedReverse | ReferencePathOperations.IncludeExtraction,
+            ReferenceSearchForms.None,
+            ReferenceSearchForms.None,
+            Covered));
+    }
+
+    [Theory]
+    [InlineData(4 | 64)]
+    [InlineData(4 | 128)]
+    [InlineData(-1)]
+    public void RejectsUndefinedOperations(int operations)
+    {
+        Should.Throw<ArgumentException>(() => new ReferencePathCertification(
+            ObservationSubjectPatient,
+            (ReferencePathOperations)operations,
+            ReferenceSearchForms.Relative,
+            ReferenceSearchForms.CanonicalAbsolute,
+            Covered));
+    }
+
+    [Theory]
+    [InlineData(1 | 8, 2)]
+    [InlineData(1, 2 | 16)]
+    [InlineData(-1, 2)]
+    public void RejectsUndefinedForms(int ownSide, int foreign)
+    {
+        Should.Throw<ArgumentException>(() => new ReferencePathCertification(
+            ObservationSubjectPatient,
+            ReferencePathOperations.DistributedForward,
+            (ReferenceSearchForms)ownSide,
+            (ReferenceSearchForms)foreign,
+            Covered));
+    }
+
+    [Fact]
+    public void AcceptsCanonicalOnlyEmissionWithRegistryCoverage()
+    {
+        var certification = new ReferencePathCertification(
+            ObservationSubjectPatient,
+            ReferencePathOperations.DistributedForward | ReferencePathOperations.RevIncludeSearch,
+            ReferenceSearchForms.CanonicalAbsolute,
+            ReferenceSearchForms.CanonicalAbsolute,
+            Covered);
+
+        certification.ForeignForms.ShouldBe(ReferenceSearchForms.CanonicalAbsolute);
+        certification.CoveredRegistryVersion.ShouldBe(Covered);
     }
 }

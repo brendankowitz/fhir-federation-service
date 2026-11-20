@@ -18,7 +18,8 @@ public sealed class SearchPlannerChainTests
                 ObservationSubjectPatient,
                 operations,
                 searchesByReference ? ReferenceSearchForms.Relative : ReferenceSearchForms.None,
-                searchesByReference ? ReferenceSearchForms.CanonicalAbsolute : ReferenceSearchForms.None),
+                searchesByReference ? ReferenceSearchForms.CanonicalAbsolute : ReferenceSearchForms.None,
+                searchesByReference ? Registry().Version : null),
             FullPath(PatientOrganization),
         ]);
     }
