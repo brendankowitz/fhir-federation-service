@@ -1,0 +1,134 @@
+# Ignixa.Federation.SampleClient
+
+A small .NET 11 console sample for developers writing a client of the FHIR federation service. It is a worked
+example to copy from, not an SDK: no third-party packages, no retries, no token acquisition.
+
+The wire contract is `docs/superpowers/specs/2026-11-19-fhir-federation-service-design.md`
+(§4 identity, §5 request surface, §7.4 continuation tokens, §8 failures, §10 security, §11 response shaping).
+
+## What it demonstrates
+
+- **Search and paging.** `GET [base]/[type]?…`, then each `Bundle.link[relation=next]` followed exactly as given.
+  The link is opaque: the client never parses, edits or prints its `ct` value.
+- **match / include / outcome.** `search.mode` separates matches from included resources and from `outcome`
+  entries (for example "included resources truncated", `incomplete`). Outcomes are data, not errors.
+- **Identity is `fullUrl`.** Resource ids are only unique per shard, so `Patient/123` can exist on
+  `shard-east.example` and `shard-west.example` at once. The sample keys matches and includes by `fullUrl`; those are two
+  entries. An include repeated on a later page is counted once.
+- **410 means restart, not replay.** An expired continuation ends the run (exit code 3). The client does not retry
+  or restart; start a new search from the original query.
+- **Follow-up read, two ways** (the CLI reads the first match):
+  - `--read alternate`: `entry.link[relation=alternate]`, the federation's proxied route
+    `shards/{alias}/{type}/{id}`, using the **federation** credential.
+  - `--read direct`: `GET entry.fullUrl` on the shard itself. Opt-in: the shard must be listed with
+    `--direct-shard`. It uses the client's own **shard** credential and never the federation token.
+- **Credential confinement.** A token is attached only after the target is checked to be inside its configured HTTPS
+  base (same host and port, path on a segment boundary: `/fhir/` allows `/fhir/Patient`, not `/fhirx/Patient`). A
+  link that points elsewhere is rejected before any request is sent (exit code 5).
+- **Redirects are never followed.** Any 3xx is an error. A handler that auto-redirects is refused.
+
+The library is `FederationClient`; `CliApp` is the command line on top of it.
+
+## Build and run
+
+Requires the .NET SDK 11. From the repository root:
+
+```powershell
+dotnet build samples/Ignixa.Federation.SampleClient
+dotnet run --project samples/Ignixa.Federation.SampleClient -- --help
+```
+
+Search a federation (the host below is an example):
+
+```powershell
+$env:FEDERATION_ACCESS_TOKEN = "<your federation token>"   # optional; omit for anonymous
+dotnet run --project samples/Ignixa.Federation.SampleClient -- `
+    --base https://fed.example/fhir/ --type Patient --param name=smith --max-pages 3
+```
+
+Read the first match through the federation, or directly from its shard:
+
+```powershell
+dotnet run --project samples/Ignixa.Federation.SampleClient -- `
+    --base https://fed.example/fhir/ --type Patient --param name=smith --read alternate
+
+$env:SHARD_ACCESS_TOKEN = "<your shard token>"             # optional; used only for --direct-shard shards
+dotnet run --project samples/Ignixa.Federation.SampleClient -- `
+    --base https://fed.example/fhir/ --type Patient --param name=smith `
+    --read direct --direct-shard https://shard-east.example/fhir/
+```
+
+### Options
+
+| Option | Meaning |
+| --- | --- |
+| `--base <url>` | Federation base URL, absolute `https`. Or set `FEDERATION_BASE_URL`. |
+| `--type <ResourceType>` | Resource type to search. |
+| `--param name=value` | Search parameter; repeatable. `ct` is not accepted: only the federation issues it. |
+| `--max-pages <n>` | Stop after n pages (default 5). If more pages exist, the CLI says so. |
+| `--read none\|alternate\|direct` | Also read the first match (default `none`). |
+| `--direct-shard <url>` | A shard base URL that may be read directly; repeatable. |
+| `-h`, `--help` | Usage. |
+
+### Environment variables
+
+| Variable | Use |
+| --- | --- |
+| `FEDERATION_BASE_URL` | Default for `--base`. |
+| `FEDERATION_ACCESS_TOKEN` | Optional bearer token, sent only to the federation base. |
+| `SHARD_ACCESS_TOKEN` | Optional bearer token, sent only to `--direct-shard` shards. |
+
+Credentials are never accepted as arguments (an option such as `--token` is a usage error), so they stay out of shell
+history. The CLI never prints tokens, `ct` values, `next` links or query strings, or resource bodies.
+
+### Output
+
+```
+page 1: matches=1 includes=1 outcomes=0
+match  https://shard-east.example/fhir/Patient/123  (shard=k7q2)
+include  https://shard-east.example/fhir/Organization/9  (shard=k7q2)
+outcome warning/incomplete: included resources truncated (shard=p9xm)
+summary: pages=2 matches=2 includes=1 outcomes=1
+Patient/123 read via alternate from https://fed.example/fhir/shards/k7q2/Patient/123
+```
+
+The summary counts distinct matches and includes by `fullUrl`.
+
+### Exit codes
+
+| Code | Meaning |
+| --- | --- |
+| 0 | Success. |
+| 2 | Usage error (including a non-HTTPS base URL or a credential passed as an argument). |
+| 3 | Continuation expired (HTTP 410). Restart the search from the original query. |
+| 4 | Federation or HTTP error. The status and parsed OperationOutcome issues are shown, not the body. |
+| 5 | A link was outside the allowed scope and was not followed, including `--read direct` for a shard not given with `--direct-shard`. |
+
+## Tests
+
+```powershell
+dotnet run --project test/Ignixa.Federation.SampleClient.UnitTests
+```
+
+The test project is an executable xunit.v3 project on Microsoft.Testing.Platform, so it is run with `dotnet run`.
+
+### Public-wire unit tests (this repository)
+
+These drive `FederationClient` and `CliApp` against a scripted `HttpMessageHandler` that replays canned responses and
+records every request (URI and `Authorization` header). The data is synthetic (`fed.example`, `shard-east.example`,
+`shard-west.example`, fake tokens). There is no network and no running service.
+
+They show that, for the responses the spec describes, the client:
+
+- treats `fullUrl` as identity (colliding `Patient/123` stay two entries) and de-duplicates repeated includes;
+- follows `next` verbatim, stops when it is absent, and refuses a repeated link;
+- surfaces `outcome` entries as data and turns HTTP failures into exceptions without the body, `ct` or tokens;
+- sends nothing after a 410, and never follows a redirect;
+- keeps each token on its own endpoint and rejects out-of-scope links before sending;
+- gives the CLI the documented output and exit codes, with no token or `ct` on stdout or stderr.
+
+### Live-service validation (not covered here)
+
+Checking the sample against a running federation and real shards (actual `next` and 410 behavior, proxied reads,
+shard authorization) needs a deployed service and is **not** part of these tests. It comes later. A passing unit test
+run says the client follows the contract as written; it does not show that a particular deployment does.
