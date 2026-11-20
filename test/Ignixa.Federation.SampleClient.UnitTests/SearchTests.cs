@@ -61,7 +61,7 @@ public class SearchTests
     }
 
     [Fact]
-    public async Task Next_link_is_followed_verbatim_and_paging_stops_without_next()
+    public async Task Next_link_is_followed_as_given_and_paging_stops_without_next()
     {
         // Raw and percent-encoded reserved characters mixed, so decoding and re-encoding would change the URL.
         const string ct = "AbC+d/e==%2Bf";

@@ -41,6 +41,8 @@ dotnet run --project samples/Ignixa.Federation.SampleClient -- --help
 
 Search a federation (the host below is an example):
 
+No federation serves search yet, so these commands show the shape of a run rather than something you can run against a live service today.
+
 ```powershell
 $env:FEDERATION_ACCESS_TOKEN = [Net.NetworkCredential]::new('', (Read-Host -AsSecureString 'Federation token')).Password   # optional; omit for anonymous
 dotnet run --project samples/Ignixa.Federation.SampleClient -- `
