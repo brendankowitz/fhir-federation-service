@@ -176,6 +176,43 @@ public sealed class OraclePageComparatorTests
     }
 
     [Fact]
+    public void Oracle_MatchReturnedUnderShardBase_FailsOwnershipAgainstOracleBase()
+    {
+        // East seeds obs-orchid-1, so this entry passes only if the oracle is wrongly judged against shard bases.
+        var c = OracleFixtures.Bind("include.forward", "cross-shard", Bases);
+        JsonNode[] oracle =
+        [
+            Page(next: true, Match(OracleUrl, "Observation", "obs-orchid-2"), Include(OracleUrl, "Patient", "p-orchid")),
+            Page(next: true, Match(OracleUrl, "Observation", "obs-cedar-1"), Include(OracleUrl, "Patient", "p-cedar")),
+            Page(next: false, Match(East, "Observation", "obs-orchid-1"), Include(OracleUrl, "Patient", "p-orchid")),
+        ];
+
+        var failures = OraclePageComparator.Compare(c, CrossShardIncludeForwardFederation(), oracle);
+
+        failures.ShouldNotContain(f => f.StartsWith("[include.forward] federation", StringComparison.Ordinal));
+        failures.ShouldHaveSingleItem().ShouldBe(
+            "[include.forward] oracle page 3: fullUrl http://127.0.0.1:5101/fhir/Observation/obs-orchid-1 is not <oracle base>Type/id");
+    }
+
+    [Fact]
+    public void Oracle_IncludeOmittedOnPageWhoseMatchNeedsIt_FailsIncludeCheck()
+    {
+        var c = OracleFixtures.Bind("include.forward", "cross-shard", Bases);
+        JsonNode[] oracle =
+        [
+            Page(next: true, Match(OracleUrl, "Observation", "obs-orchid-2"), Include(OracleUrl, "Patient", "p-orchid")),
+            Page(next: true, Match(OracleUrl, "Observation", "obs-cedar-1"), Include(OracleUrl, "Patient", "p-cedar")),
+            Page(next: false, Match(OracleUrl, "Observation", "obs-orchid-1")),
+        ];
+
+        var failures = OraclePageComparator.Compare(c, CrossShardIncludeForwardFederation(), oracle);
+
+        failures.ShouldNotContain(f => f.StartsWith("[include.forward] federation", StringComparison.Ordinal));
+        failures.ShouldHaveSingleItem().ShouldBe(
+            "[include.forward] oracle page 3: missing include Patient/p-orchid (required by Observation/obs-orchid-1)");
+    }
+
+    [Fact]
     public void CollisionIncludeUnpaged_AllWitnessesWithBothPatientDupIncludes_Passes()
     {
         var c = OracleFixtures.Bind("collision.include.unpaged", "per-shard", Bases);
