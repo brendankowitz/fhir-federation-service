@@ -15,7 +15,7 @@
 
 ---
 
-> **Project status.** Ignixa Federation is at the scaffold stage. The repository has three .NET projects, two health endpoints, telemetry names, CI, and a Docker skeleton. It does not search anything yet and is not usable for production. The [design spec](docs/superpowers/specs/2026-11-19-fhir-federation-service-design.md) is the plan, and the [status table](#project-status-by-capability) says what exists.
+> **Project status.** Ignixa Federation is at the scaffold stage. The repository has three .NET projects, two health endpoints, telemetry names, CI, and a Docker skeleton, plus the shard contract, registry model, and options validation in `Core`. It does not search anything yet and is not usable for production. The [design spec](docs/superpowers/specs/2026-11-19-fhir-federation-service-design.md) is the plan, and the [status table](#project-status-by-capability) says what exists.
 
 ---
 
@@ -160,7 +160,7 @@ The planned shard registry is the `Federation` section of the host configuration
 }
 ```
 
-The host does not read the `Federation` section today. `Core` binds and validates this shape (`FederationOptions`, `ShardRegistry`), but nothing registers it in the host yet. `appsettings.json` contains an empty `Shards` array, and the host ignores it. The spec leaves final key names to the implementation ([§17](docs/superpowers/specs/2026-11-19-fhir-federation-service-design.md#17-left-to-the-builder)).
+The host does not read the `Federation` section today. `Core` defines and validates this shape (`FederationOptions`, `FederationOptionsValidator`, `ShardRegistry`), and a unit test binds the example above, but nothing registers it in the host yet. `appsettings.json` contains an empty `Shards` array, and the host ignores it. The spec leaves final key names to the implementation ([§17](docs/superpowers/specs/2026-11-19-fhir-federation-service-design.md#17-left-to-the-builder)).
 
 ## Repository layout
 

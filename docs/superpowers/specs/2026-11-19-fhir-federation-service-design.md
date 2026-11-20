@@ -422,6 +422,7 @@ Config key names; token envelope wire format; exact default limits within the st
 | Standalone vs Ignixa-hosted (Fable) | Standalone: Ignixa's seam hands over `SearchOptions.Expression`, reintroducing expression→string serialisation; Application layer unpublished |
 | Topology hiding & content rewriting (Astra, Fable) | Dropped by D4 |
 | Rename (2026-11-20, Forge) | Rename-only: product Ignixa Federation, .NET 11, Ignixa.Federation.* projects, source-shard extension URL; no design change |
+| Registry and IShardClient contract placement (2026-11-20, Forge/Astra) | §12.1: the shard registry and IShardClient contract (Core.Shards), ParameterOccurrence (Core.Search) and options (Core.Configuration) are in Core; Shards holds the HTTP implementation and concrete profiles; v1 behaviour unchanged |
 
 ## 20. Prior art
 

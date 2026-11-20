@@ -2,7 +2,7 @@
 
   <PropertyGroup>
     <IsPackable>true</IsPackable>
-    <Description>Shard backend abstractions and call instrumentation for Ignixa Federation, a read-only FHIR R4 search federation gateway.</Description>
+    <Description>Shard backend call instrumentation for Ignixa Federation, a read-only FHIR R4 search federation gateway.</Description>
   </PropertyGroup>
 
   <ItemGroup>

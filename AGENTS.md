@@ -4,7 +4,7 @@ Conventions for humans and coding agents working in this repository. Read it bef
 
 ## What this is
 
-Ignixa Federation is a read-only FHIR R4 search federation gateway. It fans a search out across shard FHIR servers and merges the results. Today only the scaffold exists: three projects, two health endpoints, telemetry names, CI, and a Docker skeleton.
+Ignixa Federation is a read-only FHIR R4 search federation gateway. It fans a search out across shard FHIR servers and merges the results. Today the scaffold exists (three projects, two health endpoints, telemetry names, CI, and a Docker skeleton), plus the shard contract, registry model, and options validation in `Core`.
 
 The design spec is the authority for behaviour: [docs/superpowers/specs/2026-11-19-fhir-federation-service-design.md](docs/superpowers/specs/2026-11-19-fhir-federation-service-design.md). Code that conflicts with the spec is a bug, or a spec change that the pull request must call out. [REVIEW.md](REVIEW.md) lists the invariants that reviewers check.
 
