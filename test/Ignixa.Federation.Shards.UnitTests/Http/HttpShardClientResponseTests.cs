@@ -11,11 +11,13 @@ public sealed class HttpShardClientResponseTests
 {
     private static CancellationToken Ct => TestContext.Current.CancellationToken;
 
-    [Fact]
-    public async Task Entries_KeepBackendOrderIdentityVersionInstantAndExactBytes()
+    [Theory]
+    [InlineData("Zo\\u00eb")]
+    [InlineData("Zo\u00eb")]
+    public async Task Entries_KeepBackendOrderIdentityVersionInstantAndExactBytes(string givenName)
     {
         await using var shard = ShardHarness.Start();
-        string first = "{ \"resourceType\" : \"Patient\",\"id\":\"b-2\",\"meta\":{\"versionId\":\"7\",\"lastUpdated\":\"2025-12-31T23:59:59.1234567+05:30\"},\"name\":[{\"given\":[\"Zo\\u00eb\"]}],\"active\":true }";
+        string first = "{ \"resourceType\" : \"Patient\",\"id\":\"b-2\",\"meta\":{\"versionId\":\"7\",\"lastUpdated\":\"2025-12-31T23:59:59.1234567+05:30\"},\"name\":[{\"given\":[\"" + givenName + "\"]}],\"active\":true }";
         string second = "{\"id\":\"a.1\",\"resourceType\":\"Patient\"}";
         string third = Searchsets.Patient("c3", versionId: "W/x", lastUpdated: "2026-01-02T03:04:05Z");
         shard.Server.Respond(ScriptedResponse.Json(shard.SarahPage(
@@ -37,9 +39,25 @@ public sealed class HttpShardClientResponseTests
             null,
             new DateTimeOffset(2026, 1, 2, 3, 4, 5, TimeSpan.Zero),
         ]);
-        page.Entries.Select(e => Encoding.UTF8.GetString(e.Resource.Span)).ShouldBe([first, second, third]);
+        page.Entries[0].Resource.ToArray().ShouldBe(Encoding.UTF8.GetBytes(first));
+        page.Entries[1].Resource.ToArray().ShouldBe(Encoding.UTF8.GetBytes(second));
+        page.Entries[2].Resource.ToArray().ShouldBe(Encoding.UTF8.GetBytes(third));
         page.Total.ShouldBe(3);
         page.IsExhausted.ShouldBeTrue();
+    }
+
+    [Fact]
+    public async Task InvalidUtf8InAnUnconsumedResourceString_IsMalformed()
+    {
+        await using var shard = ShardHarness.Start();
+        const string patient = """{"resourceType":"Patient","id":"p1","name":[{"given":["~"]}]}""";
+        ScriptedResponse response = ScriptedResponse.Json(shard.SarahPage(entries: Searchsets.Entry(patient)));
+        response.Body[Array.IndexOf(response.Body, (byte)'~')] = 0xC3; // A UTF-8 lead byte with no continuation.
+        shard.Server.Respond(response);
+
+        ShardCallException failure = await Should.ThrowAsync<ShardCallException>(() => shard.Client.SearchAsync(shard.SarahRequest(), Ct));
+
+        failure.Failure.ShouldBe(ShardCallFailure.MalformedResponse);
     }
 
     [Theory]

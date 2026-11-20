@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Runtime.InteropServices;
 using System.Text.Json;
+using System.Text.Unicode;
 using System.Text.RegularExpressions;
 using Ignixa.Federation.Core.Identity;
 using Ignixa.Federation.Core.Shards;
@@ -47,6 +48,12 @@ internal sealed partial class Searchset
     /// <exception cref="ShardCallException">The body is not a searchset this client can represent exactly.</exception>
     public static Searchset Read(ReadOnlyMemory<byte> body, ShardDescriptor shard, ResourceType type)
     {
+        // JsonDocument can leave strings undecoded when we copy a raw resource.
+        if (!Utf8.IsValid(body.Span))
+        {
+            throw Malformed(shard, "The body is not valid UTF-8.");
+        }
+
         try
         {
             using JsonDocument document = JsonDocument.Parse(body, Strict);
