@@ -32,4 +32,8 @@ public sealed record ParameterOccurrence(string Key, string Value)
         : Value.AsSpan().IndexOfAny("&#") >= 0
             ? throw new ArgumentException("Parameter value must be one split value, without a raw '&' or '#'.", nameof(Value))
         : Value;
+
+    /// <summary>Formats the type name without the wire text.</summary>
+    /// <returns>The parameter occurrence type name.</returns>
+    public override string ToString() => nameof(ParameterOccurrence);
 }
