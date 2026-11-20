@@ -524,6 +524,7 @@ public sealed class OraclePageComparatorTests
     [InlineData(1, """[{"relation":"next","url":"  "}]""", new[] { "link 1 (next) url is not a nonblank string", "no next link, but further pages were supplied (page list over-followed)" })]
     [InlineData(1, """[{"relation":"self","url":"http://harness.invalid/self"},{"relation":"next","url":7}]""", new[] { "link 2 (next) url is not a nonblank string", "no next link, but further pages were supplied (page list over-followed)" })]
     [InlineData(2, """[{"relation":"next"}]""", new[] { "link 1 (next) url is not a nonblank string" })]
+    [InlineData(2, """[{"relation":"Next","url":"http://harness.invalid/next"}]""", new[] { "last supplied page has a next link (page list truncated)" })]
     [InlineData(2, "null", new[] { "link is not an array" })]
     [InlineData(1, "null", new[] { "link is not an array", "no next link, but further pages were supplied (page list over-followed)" })]
     [InlineData(2, """{"relation":"next","url":"http://harness.invalid/next"}""", new[] { "link is not an array" })]

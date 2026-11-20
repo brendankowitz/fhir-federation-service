@@ -144,7 +144,7 @@ internal static class OraclePageComparator
                 {
                     Fail(page, $"link {index + 1} is not an object with a string relation");
                 }
-                else if (relation == "next")
+                else if (string.Equals(relation, "next", StringComparison.OrdinalIgnoreCase))
                 {
                     nextLinks++;
                     if (Text(links[index], "url") is { } url && !string.IsNullOrWhiteSpace(url))
