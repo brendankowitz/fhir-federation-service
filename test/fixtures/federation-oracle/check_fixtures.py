@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Offline checks for the federation-oracle fixtures (stdlib only).
 
-Verifies seed integrity and the seven named cases in manifest.json against the
-seeds. It is not a FHIR validator or search engine. Usage: check_fixtures.py [root]
+Verifies seed integrity and the named cases in manifest.json against the seeds.
+Expected answers are re-derived with one source-aware reference resolver over a
+(shard, "Type/id") index. It is not a FHIR validator or search engine.
+Usage: check_fixtures.py [root]
 """
 import json
 import re
@@ -15,19 +17,40 @@ STATUS = {"registered", "preliminary", "final", "amended", "corrected",
           "cancelled", "entered-in-error", "unknown"}
 KEYS = {"Patient": {"resourceType", "id", "active", "name"},
         "Observation": {"resourceType", "id", "status", "code", "subject"}}
-CASES = {"chain.colocated.passthrough", "chain.colocated.distributed",
-         "chain.cross-shard.passthrough-control", "chain.cross-shard.distributed",
-         "collision.tagged-union", "include.forward", "include.reverse"}
+HUMAN_NAME_KEYS = {"family", "given"}
 CHAIN_QUERY = "Observation?subject:Patient.name=Orchid"
-INCLUDE_QUERIES = {
-    "include.forward": "Observation?_include=Observation:subject:Patient&_count=1",
-    "include.reverse": "Patient?_revinclude=Observation:subject:Patient&_count=1",
+FWD = "Observation?_include=Observation:subject:Patient"
+REV = "_revinclude=Observation:subject:Patient"
+# Non-unique-chain cases: id -> (kind, corpus, query, _count or None for an unpaged case)
+SPEC = {
+    "include.forward": ("include-forward", "unique-id", FWD + "&_count=1", 1),
+    "include.forward.unpaged": ("include-forward", "unique-id", FWD, None),
+    "include.reverse": ("include-reverse", "unique-id", "Patient?" + REV + "&_count=1", 1),
+    "collision.tagged-union": ("identity-union", "collision", "Patient?name=Orchid&_count=1", 1),
+    "collision.chain.distributed.east": ("chain-forward", "collision", "Observation?subject:Patient.given=Eli", None),
+    "collision.chain.distributed.west": ("chain-forward", "collision", "Observation?subject:Patient.given=Gus", None),
+    "collision.include.paged": ("include-forward", "collision", FWD + "&_count=1", 1),
+    "collision.include.unpaged": ("include-forward", "collision", FWD, None),
+    "collision.revinclude.paged": ("include-reverse", "collision", "Patient?name=Orchid&" + REV + "&_count=1", 1),
 }
+CASES = set(SPEC) | {"chain.colocated.passthrough", "chain.colocated.distributed",
+                     "chain.cross-shard.passthrough-control", "chain.cross-shard.distributed"}
 
 
 def need(ok, msg):
     if not ok:
         raise AssertionError(msg)
+
+
+def given_matches(patient, value):  # string search: case-insensitive prefix
+    return any(g.casefold().startswith(value.casefold()) for g in patient["name"][0]["given"])
+
+
+def name_matches(patient, value):  # `name` covers family and given (HumanName is restricted to those)
+    return given_matches(patient, value) or patient["name"][0]["family"].casefold().startswith(value.casefold())
+
+
+MATCH = {"name": name_matches, "given": given_matches}
 
 
 def shape(r):
@@ -39,6 +62,7 @@ def shape(r):
         names = r.get("name")
         need(isinstance(names, list) and len(names) == 1, f"Patient/{i}: expected one name")
         name = names[0]
+        need(set(name) <= HUMAN_NAME_KEYS, f"Patient/{i}: unexpected HumanName keys {sorted(set(name) - HUMAN_NAME_KEYS)}")
         need(isinstance(name.get("family"), str) and name["family"], f"Patient/{i}: name.family required")
         given = name.get("given")
         need(isinstance(given, list) and given and all(isinstance(n, str) and n for n in given),
@@ -70,57 +94,71 @@ def check(root):
                 shape(r)
         return shards
 
-    def index(shards):  # "Type/id" -> (shard, resource); ids are unique in this corpus
+    def subject(idx, k):  # source-aware: a relative reference stays on its shard, an absolute one names its owner
+        literal = idx[k]["subject"]["reference"]
+        ref = REF.fullmatch(literal)
+        need(ref is not None, f"{k[1]}: bad subject reference {literal}")
+        prefix, patient_id = ref.groups()
+        owner = shard_of.get(prefix) if prefix else k[0]
+        need(owner and (not prefix or owner != k[0]), f"{k[1]}: bad subject reference {literal}")
+        return owner, "Patient/" + patient_id
+
+    def index(shards, unique):  # (shard, "Type/id") -> resource
         idx = {}
         for s, rs in shards.items():
             for r in rs:
-                k = f"{r['resourceType']}/{r['id']}"
-                need(k not in idx, f"duplicate id {k}")
-                idx[k] = (s, r)
-        for k, (s, r) in idx.items():  # each subject is local, or absolute and owned by another shard
-            if r["resourceType"] != "Observation":
-                continue
-            literal = r["subject"]["reference"]
-            ref = REF.fullmatch(literal)
-            need(ref is not None, f"{k}: bad subject reference {literal}")
-            prefix, patient_id = ref.groups()
-            home = shard_of.get(prefix) if prefix else s
-            need(home and (not prefix or home != s), f"{k}: bad subject reference {literal}")
-            target = idx.get(f"Patient/{patient_id}")
-            need(target and target[0] == home, f"{k}: reference does not resolve on its owning shard")
+                k = (s, f"{r['resourceType']}/{r['id']}")
+                need(k not in idx, f"duplicate id {k[1]} on {s}")
+                idx[k] = r
+        need(not unique or len({t for _, t in idx}) == len(idx), "duplicate id in a unique-id corpus")
+        for k in idx:
+            if k[1].startswith("Observation/"):
+                need(subject(idx, k) in idx, f"{k[1]}: reference does not resolve on its owning shard")
         return idx
 
-    def relative(r):  # drop the base from an absolute subject reference
-        return {**r, "subject": {"reference": "Patient/" + REF.fullmatch(r["subject"]["reference"])[2]}} \
-            if r["resourceType"] == "Observation" else r
+    def select(idx, query):  # Patients chosen by the query's name/given parameter (all without one)
+        p = re.search(r"\b(name|given)=(\w+)", query)
+        return [k for k, r in idx.items() if r["resourceType"] == "Patient" and (not p or MATCH[p[1]](r, p[2]))]
+
+    def chain(idx, ident, query):  # Observations whose resolved subject is a selected Patient
+        chosen = set(select(idx, query))
+        return sorted(ident(k) for k in idx if k[1].startswith("Observation/") and subject(idx, k) in chosen)
+
+    def relations(idx, ident, query, forward):  # match identity -> sorted include identities
+        obs = [k for k in idx if k[1].startswith("Observation/")]
+        if forward:
+            return {ident(k): [ident(subject(idx, k))] for k in obs}
+        return {ident(p): sorted(ident(k) for k in obs if subject(idx, k) == p) for p in select(idx, query)}
 
     uniq = m["corpora"]["unique-id"]
-    oracle = index({"oracle": load({"oracle": uniq["oracle"]})["oracle"]})
-    placed = {n: index(load(files)) for n, files in uniq["placements"].items()}
+    oracle = index({"oracle": load({"oracle": uniq["oracle"]})["oracle"]}, True)
+    placed = {n: index(load(files), True) for n, files in uniq["placements"].items()}
     colo, cross = placed["colocated"], placed["cross-shard"]
+    coll = index(load(m["corpora"]["collision"]["placements"]["per-shard"]), False)
     mv = uniq["crossShardVariant"]
+    tid, url = (lambda k: k[1]), (lambda k: base[k[0]] + k[1])
+    ctx = {"unique-id": (oracle, tid), "collision": (coll, url)}
 
+    relative = lambda r: {**r, "subject": {"reference": "Patient/" + REF.fullmatch(r["subject"]["reference"])[2]}} \
+        if r["resourceType"] == "Observation" else r
+    body = lambda idx: {t: r for (_, t), r in idx.items()}
+    home = lambda idx: {t: s for (s, t) in idx}
     for idx in placed.values():
-        need({k: relative(r) for k, (_, r) in idx.items()} == {k: r for k, (_, r) in oracle.items()},
-             "placement does not normalize to the oracle")
-    need({k: r for k, (_, r) in colo.items()} == {k: r for k, (_, r) in oracle.items()},
-         "colocated placement must use the oracle's relative references")
-    moved = [k for k in colo if colo[k][0] != cross[k][0]]
-    need(moved == [mv["movedResource"]] and (colo[moved[0]][0], cross[moved[0]][0]) == (mv["fromShard"], mv["toShard"]),
+        need({t: relative(r) for t, r in body(idx).items()} == body(oracle), "placement does not normalize to the oracle")
+    need(body(colo) == body(oracle), "colocated placement must use the oracle's relative references")
+    moved = [t for t in home(colo) if home(colo)[t] != home(cross)[t]]
+    need(moved == [mv["movedResource"]] and (home(colo)[moved[0]], home(cross)[moved[0]]) == (mv["fromShard"], mv["toShard"]),
          f"cross-shard placement must relocate exactly {mv['movedResource']}, moved {moved}")
-    need([k for k in colo if colo[k][1] != cross[k][1]] == moved
-         and cross[moved[0]][1]["subject"]["reference"] == mv["subjectReference"],
+    need([t for t in body(colo) if body(colo)[t] != body(cross)[t]] == moved
+         and body(cross)[moved[0]]["subject"]["reference"] == mv["subjectReference"],
          "only the moved Observation's subject may change, to the manifest absolute reference")
 
-    fam = lambda idx, k: idx[k][1]["name"][0]["family"]
-    obs = sorted(k for k in oracle if k.startswith("Observation/"))
-    subject = lambda idx, k: "Patient/" + REF.fullmatch(idx[k][1]["subject"]["reference"])[2]
-    orchid = [k for k in obs if fam(oracle, subject(oracle, k)) == "Orchid"]
-    need(0 < len(orchid) < len(obs), "chain needs matching and nonmatching Observations")
+    obs = sorted(t for _, t in oracle if t.startswith("Observation/"))
+    orchid = chain(oracle, tid, CHAIN_QUERY)
 
-    need({c["id"] for c in m["cases"]} == CASES and len(m["cases"]) == len(CASES), "case ids must be the seven named cases")
+    need({c["id"] for c in m["cases"]} == CASES and len(m["cases"]) == len(CASES), "case ids must be the named cases")
     for c in m["cases"]:
-        cid, expected = c["id"], c.get("expectedMatches")
+        cid = c["id"]
         if cid.startswith("chain."):
             _, placement, mode = cid.split(".")
             passthrough = mode.startswith("passthrough")
@@ -130,10 +168,11 @@ def check(root):
                  and c["placement"] == placement and c["role"] == role
                  and c["mode"] == ("Passthrough" if passthrough else "Distributed"),
                  f"{cid}: chain query, mode, or placement changed")
-            idx = placed[c["placement"]]
-            local = {s: sorted(k for k in obs if idx[k][0] == s and k in orchid and "://" not in idx[k][1]["subject"]["reference"])
+            expected, idx = sorted(c["expectedMatches"]), placed[placement]
+            local = {s: sorted(t for (sh, t), r in idx.items()
+                               if sh == s and t in orchid and "://" not in r["subject"]["reference"])
                      for s in base}  # Passthrough keeps only locally resolvable subjects
-            survivors = sorted(k for v in local.values() for k in v)
+            survivors = sorted(t for v in local.values() for t in v)
             if passthrough:
                 need(c["perShardMatches"] == local and expected == survivors, f"{cid}: Passthrough answer differs from local survivors")
                 need(c.get("missedVsOracle", []) == sorted(set(orchid) - set(survivors)), f"{cid}: missedVsOracle differs")
@@ -141,33 +180,51 @@ def check(root):
                 need(expected == orchid and "perShardMatches" not in c, f"{cid}: Distributed answer must equal the oracle")
             if role == "negative-control":
                 need(survivors and c["missedVsOracle"], f"{cid}: control needs a surviving and a missed witness")
-            else:
-                need(expected == orchid, f"{cid}: oracle-equivalence answer differs from the oracle")
-        elif cid == "collision.tagged-union":
-            need(c["kind"] == "identity-union" and c["corpus"] == "collision"
-                 and c["placement"] == "per-shard" and c["comparison"] == "tagged-union"
-                 and c["query"] == "Patient?name=Orchid", f"{cid}: collision query or comparison changed")
-            shards = load(m["corpora"]["collision"]["placements"]["per-shard"])
-            ids = Counter(r["id"] for rs in shards.values() for r in rs if r["resourceType"] == "Patient")
-            need(ids["dup"] == 2 and len(shards) == 2, f"{cid}: Patient/dup must exist on both shards")
-            full = Counter(base[s] + "Patient/" + r["id"] for s, rs in shards.items() for r in rs if r["name"][0]["family"] == "Orchid")
-            need(Counter(c["expectedFullUrls"]) == full and len(full) == 2, f"{cid}: expectedFullUrls must list both owning fullUrls")
-            need(c["perShardMatches"] == {s: ["Patient/dup"] for s in base}, f"{cid}: perShardMatches differ")
+            continue
+
+        kind, corpus, query, count = SPEC[cid]
+        idx, ident = ctx[corpus]
+        unique = corpus == "unique-id"
+        need(c["kind"] == kind and c["corpus"] == corpus and c["query"] == query and c.get("count") == count
+             and (Counter(c.get("placements", [])) == Counter(placed.keys()) if unique
+                  else c.get("placement") == "per-shard" and c.get("comparison") == "tagged-union"),
+             f"{cid}: case shape, query, or count changed")
+        expected = c["expectedMatches" if unique else "expectedFullUrls"]
+        if kind == "identity-union":
+            found = select(idx, query)
+            need(Counter(t for _, t in found)["Patient/dup"] == 2, f"{cid}: Patient/dup must exist on both shards")
+            need(Counter(expected) == Counter(ident(k) for k in found) and len(found) == 2,
+                 f"{cid}: expectedFullUrls must list both owning fullUrls")
+            need(c["perShardMatches"] == {s: sorted(t for sh, t in found if sh == s) for s in base}, f"{cid}: perShardMatches differ")
+            need(c["expectedGiven"] == {ident(k): idx[k]["name"][0]["given"] for k in found},
+                 f"{cid}: expectedGiven differs from the seeds (given names bound to fullUrls)")
+        elif kind == "chain-forward":
+            need(c["chainPath"] == "Observation.subject:Patient" and c["mode"] == "Distributed",
+                 f"{cid}: chain path or mode changed")
+            need(sorted(expected) == chain(idx, ident, query), f"{cid}: Distributed answer must equal the seeds' chain result")
         else:
-            fwd = cid == "include.forward"
-            matches = obs if fwd else sorted(k for k in oracle if k.startswith("Patient/"))
-            rel = {k: [subject(oracle, k)] for k in obs} if fwd else \
-                {p: [k for k in obs if subject(oracle, k) == p] for p in matches}
-            need(c["kind"] == ("include-forward" if fwd else "include-reverse")
-                 and c["corpus"] == "unique-id" and Counter(c["placements"]) == Counter(placed.keys())
-                 and c["query"] == INCLUDE_QUERIES[cid] and c["count"] == 1,
-                 f"{cid}: needs both placements and the paged include query")
-            need(expected == matches and c["includeRelations"] == rel, f"{cid}: matches or per-match include relations differ")
-            targets = Counter(t for v in rel.values() for t in v)
-            if fwd:
-                need(len(targets) >= 2 and max(targets.values()) >= 2, f"{cid}: needs differing and repeated targets")
-            else:
-                need(max(map(len, rel.values())) > c["count"], f"{cid}: needs an include fanout above _count")
+            forward = kind == "include-forward"
+            rel = relations(idx, ident, query, forward)
+            norm = lambda d: {k: sorted(v) for k, v in d.items()}
+            need(sorted(expected) == sorted(rel) and norm(c["includeRelations"]) == norm(rel),
+                 f"{cid}: matches or per-match include relations differ")
+            if count:  # paged: the target recurs on later pages, or a match's fanout exceeds _count
+                targets = Counter(t for v in rel.values() for t in v)
+                need(len(rel) > count, f"{cid}: needs more matches than _count")
+                if forward:
+                    need(len(targets) >= 2 and max(targets.values()) >= 2, f"{cid}: needs differing and repeated targets")
+                else:
+                    need(max(map(len, rel.values())) > count, f"{cid}: needs an include fanout above _count")
+                continue
+            witnesses = set(c["coEmitted"])  # unpaged: one page must hold the discriminating witnesses together
+            need(len(witnesses) >= 2 and witnesses <= set(rel), f"{cid}: needs two or more co-emitted witnesses")
+            shared = sorted({t for w in witnesses for t in rel[w]})
+            need(sorted(c["witnessIncludes"]) == shared, f"{cid}: witness includes differ from the witnesses' targets")
+            need(sum(len(rel[w]) for w in witnesses) > len(shared), f"{cid}: witnesses must share an include target")
+            if not unique:  # same Type/id owned by two shards: dedupe by Type/id would drop one include
+                need(len({tuple(u.split("/")[-2:]) for u in shared}) < len(shared),
+                     f"{cid}: needs two include fullUrls with the same Type/id")
+    need(0 < len(orchid) < len(obs), "chain needs matching and nonmatching Observations")
 
 
 def main(argv):

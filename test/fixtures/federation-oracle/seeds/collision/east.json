@@ -1,4 +1,7 @@
 [
   {"resourceType": "Patient", "id": "dup", "active": true, "name": [{"family": "Orchid", "given": ["Eli"]}]},
-  {"resourceType": "Patient", "id": "east-only", "active": true, "name": [{"family": "Cedar", "given": ["Fay"]}]}
+  {"resourceType": "Patient", "id": "east-only", "active": true, "name": [{"family": "Cedar", "given": ["Fay"]}]},
+  {"resourceType": "Observation", "id": "obs-dup", "status": "final",
+     "code": {"coding": [{"system": "https://example.org/fhir/CodeSystem/oracle", "code": "oracle-code"}]},
+   "subject": {"reference": "Patient/dup"}}
 ]

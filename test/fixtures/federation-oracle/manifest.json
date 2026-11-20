@@ -1,7 +1,7 @@
 {
   "formatVersion": 1,
   "fhirVersion": "4.0.1",
-  "description": "Hand-authored answers for the federation differential oracle. See README.md. Match and include identities are oracle identities (Type/id) for the unique-id corpus.",
+  "description": "Hand-authored answers for the federation differential oracle. See README.md. Match and include identities are oracle identities (Type/id) for the unique-id corpus and owning fullUrls for the collision corpus.",
   "shards": [
     {"id": "east", "ordinal": 0, "baseUrl": "https://fhir-east.example.org/"},
     {"id": "west", "ordinal": 1, "baseUrl": "https://fhir-west.example.org/"}
@@ -84,9 +84,96 @@
       "corpus": "collision",
       "placement": "per-shard",
       "comparison": "tagged-union",
-      "query": "Patient?name=Orchid",
+      "query": "Patient?name=Orchid&_count=1",
+      "count": 1,
       "perShardMatches": {"east": ["Patient/dup"], "west": ["Patient/dup"]},
-      "expectedFullUrls": ["https://fhir-east.example.org/Patient/dup", "https://fhir-west.example.org/Patient/dup"]
+      "expectedFullUrls": ["https://fhir-east.example.org/Patient/dup", "https://fhir-west.example.org/Patient/dup"],
+      "expectedGiven": {
+        "https://fhir-east.example.org/Patient/dup": ["Eli"],
+        "https://fhir-west.example.org/Patient/dup": ["Gus"]
+      }
+    },
+    {
+      "id": "collision.chain.distributed.east",
+      "kind": "chain-forward",
+      "corpus": "collision",
+      "placement": "per-shard",
+      "mode": "Distributed",
+      "comparison": "tagged-union",
+      "chainPath": "Observation.subject:Patient",
+      "query": "Observation?subject:Patient.given=Eli",
+      "expectedFullUrls": ["https://fhir-east.example.org/Observation/obs-dup", "https://fhir-west.example.org/Observation/obs-dup-xref"]
+    },
+    {
+      "id": "collision.chain.distributed.west",
+      "kind": "chain-forward",
+      "corpus": "collision",
+      "placement": "per-shard",
+      "mode": "Distributed",
+      "comparison": "tagged-union",
+      "chainPath": "Observation.subject:Patient",
+      "query": "Observation?subject:Patient.given=Gus",
+      "expectedFullUrls": ["https://fhir-west.example.org/Observation/obs-dup"]
+    },
+    {
+      "id": "collision.include.paged",
+      "kind": "include-forward",
+      "corpus": "collision",
+      "placement": "per-shard",
+      "comparison": "tagged-union",
+      "query": "Observation?_include=Observation:subject:Patient&_count=1",
+      "count": 1,
+      "expectedFullUrls": [
+        "https://fhir-east.example.org/Observation/obs-dup",
+        "https://fhir-west.example.org/Observation/obs-dup",
+        "https://fhir-west.example.org/Observation/obs-dup-xref"
+      ],
+      "includeRelations": {
+        "https://fhir-east.example.org/Observation/obs-dup": ["https://fhir-east.example.org/Patient/dup"],
+        "https://fhir-west.example.org/Observation/obs-dup": ["https://fhir-west.example.org/Patient/dup"],
+        "https://fhir-west.example.org/Observation/obs-dup-xref": ["https://fhir-east.example.org/Patient/dup"]
+      }
+    },
+    {
+      "id": "collision.include.unpaged",
+      "kind": "include-forward",
+      "corpus": "collision",
+      "placement": "per-shard",
+      "comparison": "tagged-union",
+      "query": "Observation?_include=Observation:subject:Patient",
+      "coEmitted": [
+        "https://fhir-east.example.org/Observation/obs-dup",
+        "https://fhir-west.example.org/Observation/obs-dup",
+        "https://fhir-west.example.org/Observation/obs-dup-xref"
+      ],
+      "witnessIncludes": ["https://fhir-east.example.org/Patient/dup", "https://fhir-west.example.org/Patient/dup"],
+      "expectedFullUrls": [
+        "https://fhir-east.example.org/Observation/obs-dup",
+        "https://fhir-west.example.org/Observation/obs-dup",
+        "https://fhir-west.example.org/Observation/obs-dup-xref"
+      ],
+      "includeRelations": {
+        "https://fhir-east.example.org/Observation/obs-dup": ["https://fhir-east.example.org/Patient/dup"],
+        "https://fhir-west.example.org/Observation/obs-dup": ["https://fhir-west.example.org/Patient/dup"],
+        "https://fhir-west.example.org/Observation/obs-dup-xref": ["https://fhir-east.example.org/Patient/dup"]
+      }
+    },
+    {
+      "id": "collision.revinclude.paged",
+      "kind": "include-reverse",
+      "corpus": "collision",
+      "placement": "per-shard",
+      "comparison": "tagged-union",
+      "query": "Patient?name=Orchid&_revinclude=Observation:subject:Patient&_count=1",
+      "count": 1,
+      "expectedFullUrls": ["https://fhir-east.example.org/Patient/dup", "https://fhir-west.example.org/Patient/dup"],
+      "includeRelations": {
+        "https://fhir-east.example.org/Patient/dup": [
+          "https://fhir-east.example.org/Observation/obs-dup",
+          "https://fhir-west.example.org/Observation/obs-dup-xref"
+        ],
+        "https://fhir-west.example.org/Patient/dup": ["https://fhir-west.example.org/Observation/obs-dup"]
+      }
     },
     {
       "id": "include.forward",
@@ -95,6 +182,21 @@
       "placements": ["colocated", "cross-shard"],
       "query": "Observation?_include=Observation:subject:Patient&_count=1",
       "count": 1,
+      "expectedMatches": ["Observation/obs-cedar-1", "Observation/obs-orchid-1", "Observation/obs-orchid-2"],
+      "includeRelations": {
+        "Observation/obs-cedar-1": ["Patient/p-cedar"],
+        "Observation/obs-orchid-1": ["Patient/p-orchid"],
+        "Observation/obs-orchid-2": ["Patient/p-orchid"]
+      }
+    },
+    {
+      "id": "include.forward.unpaged",
+      "kind": "include-forward",
+      "corpus": "unique-id",
+      "placements": ["colocated", "cross-shard"],
+      "query": "Observation?_include=Observation:subject:Patient",
+      "coEmitted": ["Observation/obs-orchid-1", "Observation/obs-orchid-2"],
+      "witnessIncludes": ["Patient/p-orchid"],
       "expectedMatches": ["Observation/obs-cedar-1", "Observation/obs-orchid-1", "Observation/obs-orchid-2"],
       "includeRelations": {
         "Observation/obs-cedar-1": ["Patient/p-cedar"],

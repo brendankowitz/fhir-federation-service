@@ -1,4 +1,10 @@
 [
   {"resourceType": "Patient", "id": "dup", "active": true, "name": [{"family": "Orchid", "given": ["Gus"]}]},
-  {"resourceType": "Patient", "id": "west-only", "active": true, "name": [{"family": "Cedar", "given": ["Ivy"]}]}
+  {"resourceType": "Patient", "id": "west-only", "active": true, "name": [{"family": "Cedar", "given": ["Ivy"]}]},
+  {"resourceType": "Observation", "id": "obs-dup", "status": "final",
+     "code": {"coding": [{"system": "https://example.org/fhir/CodeSystem/oracle", "code": "oracle-code"}]},
+   "subject": {"reference": "Patient/dup"}},
+  {"resourceType": "Observation", "id": "obs-dup-xref", "status": "final",
+     "code": {"coding": [{"system": "https://example.org/fhir/CodeSystem/oracle", "code": "oracle-code"}]},
+   "subject": {"reference": "https://fhir-east.example.org/Patient/dup"}}
 ]
