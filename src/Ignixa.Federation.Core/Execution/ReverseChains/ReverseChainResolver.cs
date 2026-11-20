@@ -46,6 +46,8 @@ public sealed class ReverseChainResolver
     }
 
     /// <summary>Resolves reverse chains without issuing any primary search.</summary>
+    /// <exception cref="ShardFailureException">A participating shard failed, timed out, or broke its search contract.</exception>
+    /// <exception cref="TimeoutException">The sub-query deadline expired without a failure attributable to a shard.</exception>
     public async Task<ReverseChainResolution> ResolveAsync(QueryPlan plan, IReadOnlySet<ResourceType> authorizedTypes, int fetchBudget, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(plan);
@@ -105,15 +107,21 @@ public sealed class ReverseChainResolver
             ExceptionDispatchInfo.Throw(firstFailure);
         }
 
+        if (stop.IsCancellationRequested)
+        {
+            // The fan-out missed its deadline, but no slot holder reported a failure. Do not invent a shard alias.
+            throw new TimeoutException("The reverse-chain sub-query exceeded its deadline.");
+        }
+
+        await all;
         return witnesses.OrderedKeys();
 
         async Task ScanAsync(ShardDescriptor shard)
         {
-            bool acquired = false;
+            // Cancellation while waiting is not evidence that this shard timed out.
+            await gate.WaitAsync(stop.Token);
             try
             {
-                await gate.WaitAsync(stop.Token);
-                acquired = true;
                 await ReadShardAsync(shard, hop, expression, witnesses, budget, stop.Token);
                 stop.Token.ThrowIfCancellationRequested();
             }
@@ -135,10 +143,7 @@ public sealed class ReverseChainResolver
             }
             finally
             {
-                if (acquired)
-                {
-                    gate.Release();
-                }
+                gate.Release();
             }
         }
     }

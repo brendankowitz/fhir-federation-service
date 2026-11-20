@@ -11,6 +11,28 @@ namespace Ignixa.Federation.Core.UnitTests.Execution.ReverseChains;
 
 public sealed class ReverseChainFanOutTests
 {
+    [Fact]
+    public async Task SubqueryDeadlineNamesTheSlotHolderNotTheUncalledShard()
+    {
+        var fixture = new ReverseChainFixture();
+        var finishEast = new TaskCompletionSource<ShardPage>(TaskCreationOptions.RunContinuationsAsynchronously);
+        fixture.Client.OnSearch(East, (_, token) =>
+        {
+            // Hold the calling thread until the deadline, then keep East's call pending. West encounters
+            // a cancelled gate before the test lets East unwind, regardless of thread-pool scheduling.
+            token.WaitHandle.WaitOne(TimeSpan.FromSeconds(5)).ShouldBeTrue();
+            return finishEast.Task;
+        });
+        var resolving = fixture.Resolver(parallel: 1, timeout: TimeSpan.FromMilliseconds(100))
+            .ResolveAsync(fixture.Plan(), AllTypes, 2, TestContext.Current.CancellationToken);
+        finishEast.SetResult(Page(null));
+
+        var exception = await Should.ThrowAsync<ShardFailureException>(resolving);
+        fixture.Client.Calls.ShouldHaveSingleItem().Shard.ShouldBe(East);
+        exception.Reason.ShouldBe(ShardFailureReason.Timeout);
+        exception.Shard.ShouldBe(East);
+    }
+
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
