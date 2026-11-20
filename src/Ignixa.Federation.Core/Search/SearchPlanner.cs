@@ -364,6 +364,21 @@ public sealed class SearchPlanner
             return SearchFailureCode.UnsupportedAlternatives;
         }
 
+        // A caller's reference value names a resource by identity, which depends on the shard holding the reference, so no
+        // shard matches it exactly for the federation. `:missing` is the only reference filter the compiler binds that is not one.
+        SearchParameterExpressionBase? filter = trace.Ir switch
+        {
+            ChainedExpression { Expression: SearchParameterExpressionBase terminal } => terminal,
+            SearchParameterExpressionBase predicate => predicate,
+            _ => null,
+        };
+        if (filter is { Parameter.Type: SearchParamType.Reference } and not MissingSearchParameterExpression)
+        {
+            return alternatives.All(a => R4Search.IsReferenceValue(occurrence.Value.Substring(a.Start, a.Length)))
+                ? SearchFailureCode.UnsupportedReferenceFilter
+                : SearchFailureCode.InvalidValue;
+        }
+
         bool or = alternatives.Count > 1;
         return (syntax, trace.Ir) switch
         {

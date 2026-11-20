@@ -207,7 +207,7 @@ public sealed class SearchPlannerChainTests
         SearchPlanner planner = Planner(Capabilities(west: Certification(and: [SearchParamType.String, SearchParamType.Token])));
 
         ShouldFail("Observation", "subject:Patient.name=a&subject:Patient.gender=male", SearchFailureCode.UnsupportedRepetition, 1, planner);
-        ShouldFail("Observation", "subject=Patient/1&subject:Patient.name=a", SearchFailureCode.UnsupportedRepetition, 1, planner);
+        ShouldFail("Observation", "subject:missing=false&subject:Patient.name=a", SearchFailureCode.UnsupportedRepetition, 1, planner);
     }
 
     [Fact]

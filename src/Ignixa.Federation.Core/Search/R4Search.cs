@@ -196,6 +196,46 @@ internal static partial class R4Search
         return terms.Length > 0 && terms.All(t => ReferenceTerm().Match(t) is { Success: true } m && IsReferenceElement(m.Groups["path"].Value));
     }
 
+    /// <summary>
+    /// Gets a value indicating whether one alternative of a reference search value, still backslash-escaped, is spelled as
+    /// R4 allows: an id, <c>Type/id</c> (optionally <c>/_history/version</c>) for an R4 resource type, or an absolute URI
+    /// (optionally <c>|version</c>, as for a canonical). Spelling only: it says nothing about which resources match.
+    /// </summary>
+    /// <remarks>
+    /// Stricter than the compiler, which accepts <c>/</c>, <c>Organization/</c> and <c>http://</c>. An <c>http</c> or
+    /// <c>https</c> URI needs <c>//</c> and a host, because <see cref="Uri"/> would otherwise repair <c>http:x</c>.
+    /// </remarks>
+    public static bool IsReferenceValue(string alternative)
+    {
+        string value = Unescape().Replace(alternative, "$1");
+        if (value.Any(c => c == '\\' || char.IsWhiteSpace(c) || char.IsControl(c)))
+        {
+            return false;
+        }
+
+        if (ResourceId.TryParse(value, out _))
+        {
+            return true;
+        }
+
+        int bar = value.LastIndexOf('|', StringComparison.Ordinal);
+        string uri = bar < 0 ? value : value[..bar];
+        if (UriScheme().Match(uri) is { Success: true } scheme && bar != value.Length - 1)
+        {
+            bool web = scheme.Groups["scheme"].Value.ToUpperInvariant() is "HTTP" or "HTTPS";
+            return Uri.TryCreate(uri, UriKind.Absolute, out Uri? parsed)
+                && (!web || (scheme.Groups["rest"].Value.StartsWith("//", StringComparison.Ordinal) && parsed.Host.Length > 0));
+        }
+
+        return value.Split('/') switch
+        {
+            [string type, string id] => IsResourceType(type) && ResourceId.TryParse(id, out _),
+            [string type, string id, "_history", string version] =>
+                IsResourceType(type) && ResourceId.TryParse(id, out _) && ResourceId.TryParse(version, out _),
+            _ => false,
+        };
+    }
+
     private static bool Covers(SyntaxNode node, SourceOrigin origin, int start, int length) =>
         node.Span.Origin == origin && node.Span.Start == start && node.Span.Length == length;
 
@@ -238,4 +278,11 @@ internal static partial class R4Search
         @"\A(?<path>[A-Z][A-Za-z]*(?:\.[a-z][A-Za-z]*)+)(?:\.where\(resolve\(\) is [A-Z][A-Za-z]*\)| as Reference|\.as\(Reference\))?\z",
         RegexOptions.CultureInvariant)]
     private static partial Regex ReferenceTerm();
+
+    // FHIR R4 search §3.1.1.1.7: a backslash escapes the next character.
+    [GeneratedRegex(@"\\(.)", RegexOptions.CultureInvariant | RegexOptions.Singleline)]
+    private static partial Regex Unescape();
+
+    [GeneratedRegex(@"\A(?<scheme>[A-Za-z][A-Za-z0-9+.\-]*):(?<rest>.+)\z", RegexOptions.CultureInvariant | RegexOptions.Singleline)]
+    private static partial Regex UriScheme();
 }

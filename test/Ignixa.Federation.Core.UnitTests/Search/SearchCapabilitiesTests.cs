@@ -141,6 +141,18 @@ public sealed class SearchCapabilitiesTests
         published.SearchRevIncludes.ShouldBe(["Observation:subject"]);
     }
 
+    // A parameter entry cannot say "`:missing` and chains only", and reference values are refused, so references stay
+    // internal: published through the includes and revincludes they serve.
+    [Fact]
+    public void DoesNotPublishReferenceParametersButKeepsTheirIncludes()
+    {
+        ResourceSearchSupport patient = Capabilities().Resources.Single(r => r.Type.Value == "Patient");
+
+        patient.Parameters.Select(p => p.Code).ShouldBe(["_id", "_lastUpdated", "birthdate", "family", "gender", "name"]);
+        patient.SearchIncludes.ShouldBe(["Patient:general-practitioner", "Patient:organization"]);
+        patient.SearchRevIncludes.ShouldBe(["Observation:performer", "Observation:subject"]);
+    }
+
     [Fact]
     public void SupportsLastUpdatedSortOnlyWhenEveryShardHasStableTies()
     {

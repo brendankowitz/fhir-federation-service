@@ -21,7 +21,12 @@ public enum SearchFailureCode
     /// <summary>A pair has nothing before its first <c>=</c>.</summary>
     EmptyKey,
 
-    /// <summary>A value is empty or malformed for its parameter, or names something R4 does not define for it.</summary>
+    /// <summary>
+    /// A value is empty or malformed for its parameter, or names something R4 does not define for it. A reference value
+    /// is malformed unless it is an id, <c>Type/id</c> (optionally <c>/_history/version</c>) for an R4 type, or an
+    /// absolute URI (optionally <c>|version</c>), even where the compiler accepts it; contrast
+    /// <see cref="UnsupportedReferenceFilter"/>.
+    /// </summary>
     InvalidValue,
 
     /// <summary>A control that may appear once, such as <c>_count</c> or <c>_sort</c>, is repeated.</summary>
@@ -62,4 +67,13 @@ public enum SearchFailureCode
 
     /// <summary>A count was requested but not every shard certifies an exact count for the query's shape.</summary>
     ExactCountNotCertified,
+
+    /// <summary>
+    /// A well-formed reference value, as a parameter or a chain terminal, such as <c>subject=Patient/1</c> or
+    /// <c>subject:Patient.organization=Organization/1</c>. Relative, typed id, absolute and canonical values are all
+    /// refused: which resource a stored reference names depends on the shard holding it, so no shard can match one exactly
+    /// for the federation. A malformed reference value is <see cref="InvalidValue"/> instead. <c>:missing</c> on a reference
+    /// parameter is not a reference value.
+    /// </summary>
+    UnsupportedReferenceFilter,
 }

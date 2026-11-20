@@ -17,7 +17,7 @@ public sealed record SearchFailure
         IsNotSupported = code is SearchFailureCode.UnsupportedResourceType or SearchFailureCode.UnsupportedParameter
             or SearchFailureCode.UnsupportedModifier or SearchFailureCode.UnsupportedRepetition or SearchFailureCode.UnsupportedAlternatives
             or SearchFailureCode.UnsupportedChain or SearchFailureCode.UnsupportedInclude or SearchFailureCode.UnsupportedSort
-            or SearchFailureCode.UnsupportedFormat or SearchFailureCode.ExactCountNotCertified;
+            or SearchFailureCode.UnsupportedFormat or SearchFailureCode.ExactCountNotCertified or SearchFailureCode.UnsupportedReferenceFilter;
         string description = Describe(code);
         Message = ordinal == NoOrdinal
             ? $"The search is not supported: {description}"
@@ -64,6 +64,7 @@ public sealed record SearchFailure
         SearchFailureCode.UnsupportedSort => "only _lastUpdated ascending or descending is supported.",
         SearchFailureCode.UnsupportedFormat => "only JSON is supported.",
         SearchFailureCode.ExactCountNotCertified => "an exact count is not certified for this query on every shard.",
+        SearchFailureCode.UnsupportedReferenceFilter => "searching by a reference value is not supported.",
         _ => throw new ArgumentOutOfRangeException(nameof(code), code, "Undefined failure code."),
     };
 }

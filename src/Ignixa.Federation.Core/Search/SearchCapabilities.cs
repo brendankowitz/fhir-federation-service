@@ -3,6 +3,7 @@ using System.Collections.ObjectModel;
 using Ignixa.Federation.Core.Identity;
 using Ignixa.Federation.Core.Shards;
 using Ignixa.Search.Models;
+using Ignixa.Specification.ValueSets.Normative;
 
 namespace Ignixa.Federation.Core.Search;
 
@@ -54,7 +55,12 @@ public sealed class SearchCapabilities
     /// <summary>Gets the shard registry the capabilities were admitted against.</summary>
     public ShardRegistry Registry { get; }
 
-    /// <summary>Gets the resource types every shard searches, ordered by name, each with the parameters and includes every shard supports.</summary>
+    /// <summary>
+    /// Gets the resource types every shard searches, ordered by name, each with the parameters and includes every shard
+    /// supports. Reference parameters are not listed: a caller's reference value is refused
+    /// (<see cref="SearchFailureCode.UnsupportedReferenceFilter"/>), and an entry cannot say that only <c>:missing</c>,
+    /// chains and includes are planned. They still serve the chains, includes and revincludes every shard certifies.
+    /// </summary>
     public IReadOnlyList<ResourceSearchSupport> Resources { get; }
 
     /// <summary>Gets a value indicating whether every shard's profile certifies a <c>_lastUpdated</c> order with stable ties.</summary>
@@ -109,7 +115,7 @@ public sealed class SearchCapabilities
         string[] revIncludes = IntersectIncludes(perShard.Select(r => r.SearchRevIncludes));
         var support = new ResourceSearchSupport(
             type,
-            parameters.Values.Select(d => new SearchParameterSupport(d.Code, d.Type, d.Url)),
+            parameters.Values.Where(d => d.Type != SearchParamType.Reference).Select(d => new SearchParameterSupport(d.Code, d.Type, d.Url)),
             includes,
             revIncludes);
         return new Published(

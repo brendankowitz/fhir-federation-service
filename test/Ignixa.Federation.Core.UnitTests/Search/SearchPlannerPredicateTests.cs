@@ -16,8 +16,7 @@ public sealed class SearchPlannerPredicateTests
     [InlineData("_id=1")]
     [InlineData("_lastUpdated=gt2020")]
     [InlineData("name:missing=true")]
-    [InlineData("organization=Organization/1")]
-    [InlineData("organization:Organization=1")]
+    [InlineData("organization:missing=false")]
     public void KeepsACompiledAdvertisedPredicate(string query)
     {
         PlannedOccurrence occurrence = PlanOk("Patient", query).Occurrences.ShouldHaveSingleItem();
@@ -121,7 +120,7 @@ public sealed class SearchPlannerPredicateTests
 
         PlanOk("Patient", "name:contains=x", planner);
         ShouldFail("Patient", "name:exact=x", SearchFailureCode.UnsupportedModifier, planner: planner);
-        ShouldFail("Patient", "organization:Organization=1", SearchFailureCode.UnsupportedModifier, planner: planner);
+        ShouldFail("Patient", "organization:missing=true", SearchFailureCode.UnsupportedModifier, planner: planner);
     }
 
     [Fact]
