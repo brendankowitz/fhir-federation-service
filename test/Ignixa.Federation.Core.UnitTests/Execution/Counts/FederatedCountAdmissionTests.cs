@@ -178,6 +178,60 @@ public sealed class FederatedCountAdmissionTests
     }
 
     [Fact]
+    public void IgnoreCaseDialectKeysForUnregisteredShardsAreRejected()
+    {
+        var dialects = new Dictionary<ShardId, CountDialect>(new SameShardWhen((x, y) => string.Equals(x.Value, y.Value, StringComparison.OrdinalIgnoreCase)))
+        {
+            [ShardId.Parse("EAST")] = CountDialect.CountZero,
+            [ShardId.Parse("WEST")] = CountDialect.CountZero,
+        };
+
+        Should.Throw<ArgumentException>(() => new FederatedCountExecutor(_client, _capabilities, dialects, 4));
+    }
+
+    [Fact]
+    public void ComparerThatFindsAMissingShardUnderAnotherKeyIsRejected()
+    {
+        ShardId north = ShardId.Parse("north");
+        var dialects = new Dictionary<ShardId, CountDialect>(new SameShardWhen((x, y) => x == y || (x == West && y == north) || (x == north && y == West)))
+        {
+            [East] = CountDialect.CountZero,
+            [north] = CountDialect.CountZero,
+        };
+        dialects.ContainsKey(West).ShouldBeTrue();
+
+        Should.Throw<ArgumentException>(() => new FederatedCountExecutor(_client, _capabilities, dialects, 4));
+    }
+
+    [Fact]
+    public void DialectKeysDuplicatedUnderShardIdentityAreRejected()
+    {
+        var dialects = new Dictionary<ShardId, CountDialect>(ReferenceEqualityComparer.Instance)
+        {
+            [East] = CountDialect.CountZero,
+            [ShardId.Parse("east")] = CountDialect.CountZero,
+        };
+
+        Should.Throw<ArgumentException>(() => new FederatedCountExecutor(_client, _capabilities, dialects, 4));
+    }
+
+    [Fact]
+    public async Task DialectsAreHeldUnderShardIdentityNotTheCallersComparer()
+    {
+        var dialects = new Dictionary<ShardId, CountDialect>(new SameShardWhen((x, y) => string.Equals(x.Value, y.Value, StringComparison.OrdinalIgnoreCase)))
+        {
+            [East] = CountDialect.CountZeroWithSummaryCount,
+            [West] = CountDialect.CountZero,
+        };
+
+        int? total = await new FederatedCountExecutor(_client, _capabilities, dialects, 4).ExecuteAsync(CountPlan, SearchEvery(_capabilities), 2, Token);
+
+        total.ShouldBe(2);
+        _client.WireTo(East).ShouldBe("name=x&_summary=count");
+        _client.WireTo(West).ShouldBe("name=x");
+    }
+
+    [Fact]
     public void ConstructorRejectsNullsAndANonPositiveParallelism()
     {
         Dictionary<ShardId, CountDialect> dialects = Dialects(_capabilities, CountDialect.CountZero);
@@ -220,5 +274,13 @@ public sealed class FederatedCountAdmissionTests
         client.Answer(East, 1);
         client.Answer(West, 1);
         return client;
+    }
+
+    /// <summary>A caller's comparer that equates shard ids by <paramref name="same"/> and hashes every id alike.</summary>
+    private sealed class SameShardWhen(Func<ShardId, ShardId, bool> same) : IEqualityComparer<ShardId>
+    {
+        public bool Equals(ShardId? x, ShardId? y) => x is not null && y is not null && same(x, y);
+
+        public int GetHashCode(ShardId obj) => 0;
     }
 }

@@ -30,13 +30,17 @@ public sealed class FederatedCountExecutor
     /// <summary>Initializes a new instance of the <see cref="FederatedCountExecutor"/> class.</summary>
     /// <param name="client">The client that calls shards.</param>
     /// <param name="capabilities">The admitted capabilities; their registry defines the shards a count covers.</param>
-    /// <param name="dialects">Exactly one count dialect per registered shard. Copied.</param>
+    /// <param name="dialects">
+    /// Exactly one count dialect per registered shard. Copied by enumeration and compared by shard-id identity (ordinal),
+    /// never through the dictionary's own comparer.
+    /// </param>
     /// <param name="maxParallelCounts">The most shard calls one count runs at once.</param>
     /// <exception cref="ArgumentNullException">
     /// <paramref name="client"/>, <paramref name="capabilities"/> or <paramref name="dialects"/> is <see langword="null"/>.
     /// </exception>
     /// <exception cref="ArgumentException">
-    /// <paramref name="dialects"/> misses a registered shard, names an unregistered one or holds an undefined dialect.
+    /// <paramref name="dialects"/> names a shard twice or a <see langword="null"/> shard, misses a registered shard, names
+    /// an unregistered one or holds an undefined dialect, all under shard-id identity.
     /// </exception>
     /// <exception cref="ArgumentOutOfRangeException"><paramref name="maxParallelCounts"/> is less than 1.</exception>
     public FederatedCountExecutor(
@@ -49,16 +53,28 @@ public sealed class FederatedCountExecutor
         ArgumentNullException.ThrowIfNull(capabilities);
         ArgumentNullException.ThrowIfNull(dialects);
         ArgumentOutOfRangeException.ThrowIfLessThan(maxParallelCounts, 1);
+
+        // Copied by enumeration under shard-id identity, which is ordinal, before any check: the caller's comparer could
+        // find a registered shard under another key, and lookups through it would then disagree with the frozen copy.
+        var copy = new Dictionary<ShardId, CountDialect>();
+        foreach ((ShardId shard, CountDialect dialect) in dialects)
+        {
+            if (shard is null || !copy.TryAdd(shard, dialect))
+            {
+                throw new ArgumentException("Count dialects must name each shard once.", nameof(dialects));
+            }
+        }
+
         IReadOnlyList<ShardDescriptor> shards = capabilities.Registry.Shards;
-        if (dialects.Count != shards.Count
-            || shards.Any(s => !dialects.TryGetValue(s.Id, out CountDialect dialect) || !Enum.IsDefined(dialect)))
+        if (copy.Count != shards.Count
+            || shards.Any(s => !copy.TryGetValue(s.Id, out CountDialect dialect) || !Enum.IsDefined(dialect)))
         {
             throw new ArgumentException("Every registered shard, and no other, needs one defined count dialect.", nameof(dialects));
         }
 
         _client = client;
         _capabilities = capabilities;
-        _dialects = dialects.ToFrozenDictionary();
+        _dialects = copy.ToFrozenDictionary();
         _maxParallelCounts = maxParallelCounts;
     }
 
