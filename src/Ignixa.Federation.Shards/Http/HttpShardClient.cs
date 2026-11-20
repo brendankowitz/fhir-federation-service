@@ -15,7 +15,7 @@ using Ignixa.Federation.Shards.Diagnostics;
 
 namespace Ignixa.Federation.Shards.Http;
 
-/// <summary>Searches and reads one shard over HTTPS, one backend exchange per page or read (design spec §5.1 and §7).</summary>
+/// <summary>Searches, reads and fetches capabilities from one shard over HTTPS (design spec §5.1, §7 and §9).</summary>
 /// <remarks>
 /// <para><b>Wire.</b> Search parameters are sent verbatim in planner order, then one <c>_count</c>: as the query of
 /// <c>GET {base}/{type}</c>, or as the <c>application/x-www-form-urlencoded</c> body of <c>POST {base}/{type}/_search</c>.
@@ -44,7 +44,7 @@ namespace Ignixa.Federation.Shards.Http;
 /// <para><b>Read.</b> <see cref="ReadAsync"/> is the same bounded exchange for one resource, <c>GET {base}/{type}/{id}</c>,
 /// with its own <c>read</c> span. Only there are HTTP 404 and 410 classified as the resource's absence.</para>
 /// <para><b>Capabilities.</b> <see cref="GetCapabilitiesAsync"/> is the same bounded exchange for <c>GET {base}/metadata</c>,
-/// with its own <c>metadata</c> span; there 404 and 410 are unexpected statuses, because the advertisement is not a resource.</para>
+/// with its own <c>metadata</c> span; there 404 and 410 indicate a failed metadata exchange, not a missing resource read.</para>
 /// <para>Thread-safe: concurrent calls are independent.</para>
 /// </remarks>
 public sealed class HttpShardClient : IShardClient, IDisposable

@@ -239,10 +239,11 @@ public sealed class HttpShardClientMetadataTests
         using var caller = CancellationTokenSource.CreateLinkedTokenSource(Ct);
 
         Task<ShardCapabilityEvidence> call = shard.Client.GetCapabilitiesAsync(caller.Token);
-        await arrived.Task.WaitAsync(Ct);
+        await arrived.Task.WaitAsync(TimeSpan.FromSeconds(15), Ct);
         await caller.CancelAsync();
 
-        await Should.ThrowAsync<OperationCanceledException>(() => call);
+        OperationCanceledException cancelled = await Should.ThrowAsync<OperationCanceledException>(() => call);
+        cancelled.CancellationToken.ShouldBe(caller.Token);
         shard.Server.Requests.ShouldHaveSingleItem();
     }
 
