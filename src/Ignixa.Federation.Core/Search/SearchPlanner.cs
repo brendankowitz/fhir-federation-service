@@ -124,34 +124,39 @@ public sealed class SearchPlanner
     // A count-shape descriptor: the decoded key, marked when its value has OR alternatives.
     private static string Shape(string key, bool alternatives) => alternatives ? key + "=," : key;
 
-    /// <summary>Splits on unescaped commas; a backslash escapes the next character (FHIR R4 search §3.1.1.1.7).</summary>
-    private static bool TryReadAlternatives(string value, out bool alternatives)
+    /// <summary>
+    /// Splits on unescaped commas; a backslash escapes the next character (FHIR R4 search §3.1.1.1.7). Returns each
+    /// alternative's span in the decoded value, or <see langword="null"/> when one is empty or a backslash ends the value.
+    /// </summary>
+    private static List<(int Start, int Length)>? ReadAlternatives(string value)
     {
-        alternatives = false;
-        int length = 0;
+        var alternatives = new List<(int Start, int Length)>();
+        int start = 0;
         for (int i = 0; i < value.Length; i++)
         {
             if (value[i] == ',')
             {
-                if (length == 0)
+                if (i == start)
                 {
-                    return false;
+                    return null;
                 }
 
-                alternatives = true;
-                length = 0;
-                continue;
+                alternatives.Add((start, i - start));
+                start = i + 1;
             }
-
-            if (value[i] == '\\' && ++i == value.Length)
+            else if (value[i] == '\\' && ++i == value.Length)
             {
-                return false;
+                return null;
             }
-
-            length++;
         }
 
-        return length > 0;
+        if (start == value.Length)
+        {
+            return null;
+        }
+
+        alternatives.Add((start, value.Length - start));
+        return alternatives;
     }
 
     private static int CountOf(string text, string part)
@@ -328,7 +333,7 @@ public sealed class SearchPlanner
     private SearchFailureCode? PlanSearch(Draft draft, QueryOccurrence occurrence)
     {
         string key = occurrence.Key;
-        if (!TryReadAlternatives(occurrence.Value, out bool alternatives))
+        if (ReadAlternatives(occurrence.Value) is not { } alternatives)
         {
             return SearchFailureCode.InvalidValue;
         }
@@ -343,16 +348,31 @@ public sealed class SearchPlanner
         SearchFailureCode notCompiled = key.Contains('.', StringComparison.Ordinal) || key.StartsWith("_has", StringComparison.Ordinal)
             ? SearchFailureCode.UnsupportedChain
             : SearchFailureCode.UnsupportedParameter;
-        ParameterTrace? trace = R4Search.Compile(draft.Type, key, occurrence.Value, notCompiled, out SearchFailureCode failure);
-        return trace?.Ir switch
+        if (R4Search.Compile(draft.Type, key, occurrence.Value, notCompiled, out SearchFailureCode failure) is not { } trace)
         {
-            null => failure,
-            ChainedExpression { Reversed: false } chain when notCompiled == SearchFailureCode.UnsupportedChain =>
-                PlanForwardChain(draft, occurrence, chain, alternatives),
-            ChainedExpression chain when notCompiled == SearchFailureCode.UnsupportedChain =>
-                PlanReverseChain(draft, occurrence, chain, alternatives),
-            SearchParameterExpressionBase predicate when notCompiled == SearchFailureCode.UnsupportedParameter =>
-                PlanPredicate(draft, occurrence, predicate, alternatives),
+            return failure;
+        }
+
+        // Only what the compiler read exactly as the federation reads and forwards it is planned.
+        if (!R4Search.TryReadKey(trace, out string syntax, out int terminalStart))
+        {
+            return notCompiled;
+        }
+
+        if (!R4Search.ReadsAlternatives(trace, alternatives))
+        {
+            return SearchFailureCode.UnsupportedAlternatives;
+        }
+
+        bool or = alternatives.Count > 1;
+        return (syntax, trace.Ir) switch
+        {
+            (R4Search.ForwardChain, ChainedExpression { Reversed: false } chain) when notCompiled == SearchFailureCode.UnsupportedChain =>
+                PlanForwardChain(draft, occurrence, chain, terminalStart, or),
+            (R4Search.ReverseChain, ChainedExpression { Reversed: true } chain) when notCompiled == SearchFailureCode.UnsupportedChain =>
+                PlanReverseChain(draft, occurrence, chain, terminalStart, or),
+            (R4Search.ParameterKey, SearchParameterExpressionBase predicate) when notCompiled == SearchFailureCode.UnsupportedParameter =>
+                PlanPredicate(draft, occurrence, predicate, or),
             _ => notCompiled,
         };
     }
@@ -381,13 +401,20 @@ public sealed class SearchPlanner
         return null;
     }
 
-    /// <summary>Plans <c>code[:Target].terminal</c>, checking the compiler read the hop exactly as written.</summary>
-    private SearchFailureCode? PlanForwardChain(Draft draft, QueryOccurrence occurrence, ChainedExpression chain, bool alternatives)
+    /// <summary>
+    /// Plans <c>code[:Target].terminal</c>, checking the compiler read the hop exactly as written; the compiler's terminal
+    /// key starts at <c>terminalStart</c>, just after the hop's <c>.</c>.
+    /// </summary>
+    private SearchFailureCode? PlanForwardChain(Draft draft, QueryOccurrence occurrence, ChainedExpression chain, int terminalStart, bool alternatives)
     {
         string key = occurrence.Key;
-        int dot = key.IndexOf('.', StringComparison.Ordinal);
-        string hop = key[..dot];
-        string terminalKey = key[(dot + 1)..];
+        if (key[terminalStart - 1] != '.')
+        {
+            return SearchFailureCode.UnsupportedChain;
+        }
+
+        string hop = key[..(terminalStart - 1)];
+        string terminalKey = key[terminalStart..];
         string code = CodeOf(hop);
         string? typedName = ModifierOf(hop);
         ResourceType? typed = null;
@@ -419,11 +446,16 @@ public sealed class SearchPlanner
         return PlanHop(draft, occurrence, OccurrenceKind.ForwardChain, new ReferencePath(draft.Type, code, target), definition, terminalKey, alternatives);
     }
 
-    /// <summary>Plans <c>_has:Source:code:terminal</c>, checking the compiler read the hop exactly as written.</summary>
-    private SearchFailureCode? PlanReverseChain(Draft draft, QueryOccurrence occurrence, ChainedExpression chain, bool alternatives)
+    /// <summary>
+    /// Plans <c>_has:Source:code:terminal</c>, checking the compiler read the hop exactly as written; the compiler's
+    /// terminal key starts at <c>terminalStart</c>, just after the hop's last <c>:</c>.
+    /// </summary>
+    private SearchFailureCode? PlanReverseChain(Draft draft, QueryOccurrence occurrence, ChainedExpression chain, int terminalStart, bool alternatives)
     {
-        string[] parts = occurrence.Key.Split(':', 4);
-        if (parts is not ["_has", string sourceName, string code, string terminalKey]
+        string key = occurrence.Key;
+        string terminalKey = key[terminalStart..];
+        if (key[terminalStart - 1] != ':'
+            || key[..(terminalStart - 1)].Split(':') is not ["_has", string sourceName, string code]
             || !ResourceType.TryParse(sourceName, out ResourceType? source)
             || chain.ReferenceSearchParameter.Code != code
             || !chain.ResourceTypes.SequenceEqual([source.Value])

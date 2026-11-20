@@ -4,6 +4,7 @@ using Ignixa.Abstractions;
 using Ignixa.Federation.Core.Identity;
 using Ignixa.Search.Definition;
 using Ignixa.Search.Exceptions;
+using Ignixa.Search.Expressions;
 using Ignixa.Search.Expressions.Parsers;
 using Ignixa.Search.Indexing;
 using Ignixa.Search.Indexing.SearchValues;
@@ -25,6 +26,17 @@ namespace Ignixa.Federation.Core.Search;
 /// </remarks>
 internal static partial class R4Search
 {
+    /// <summary>The projected syntax kind of a plain parameter key, and of a chain's terminal.</summary>
+    public const string ParameterKey = "ParameterKey";
+
+    /// <summary>The projected syntax kind of a forward chain key.</summary>
+    public const string ForwardChain = "ForwardChain";
+
+    /// <summary>The projected syntax kind of a <c>_has</c> chain key.</summary>
+    public const string ReverseChain = "ReverseChain";
+
+    private const string Alternatives = "Alternatives";
+
     private static readonly Lazy<R4CoreSchemaProvider> Schema = new(() => new R4CoreSchemaProvider());
 
     private static readonly Lazy<SearchParameterDefinitionManager> Definitions =
@@ -104,6 +116,65 @@ internal static partial class R4Search
     }
 
     /// <summary>
+    /// Reads how the compiler parsed the trace's decoded key, from its public syntax projection.
+    /// </summary>
+    /// <param name="trace">A compiled trace whose <see cref="ParameterTrace.Key"/> is the decoded key.</param>
+    /// <param name="kind">
+    /// <see cref="ParameterKey"/>, <see cref="ForwardChain"/> or <see cref="ReverseChain"/>.
+    /// </param>
+    /// <param name="terminalStart">
+    /// Where the one parameter key starts: 0 for a plain parameter; just after the hop separator for a chain, whose terminal
+    /// then runs to the end of the key.
+    /// </param>
+    /// <returns>Whether the syntax accounts for the whole key as exactly one of those forms.</returns>
+    public static bool TryReadKey(ParameterTrace trace, out string kind, out int terminalStart)
+    {
+        kind = string.Empty;
+        terminalStart = 0;
+        int length = trace.Key.Length;
+        SyntaxNode? syntax = trace.KeySyntax;
+        if (syntax is null || !Covers(syntax, SourceOrigin.Key, 0, length))
+        {
+            return false;
+        }
+
+        switch (syntax)
+        {
+            case { Kind: ParameterKey, Children: [] }:
+                kind = ParameterKey;
+                return true;
+            case { Kind: ForwardChain or ReverseChain, Children: [{ Kind: ParameterKey, Children: [] } terminal] }
+                when terminal.Span is { Origin: SourceOrigin.Key, Start: > 0 } span && span.Length > 0 && span.Start + span.Length == length:
+                kind = syntax.Kind;
+                terminalStart = span.Start;
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    /// <summary>
+    /// Gets a value indicating whether the compiler split the trace's decoded value into exactly
+    /// <paramref name="alternatives"/>, from its public syntax projection.
+    /// </summary>
+    /// <remarks>
+    /// The compiler may read a value as one atom where FHIR reads OR alternatives, as <c>Ignixa.Search</c> 0.6.82 does for
+    /// <c>:text</c>; such a value would be forwarded with a meaning nobody compiled.
+    /// </remarks>
+    public static bool ReadsAlternatives(ParameterTrace trace, IReadOnlyList<(int Start, int Length)> alternatives)
+    {
+        SyntaxNode? syntax = trace.ValueSyntax;
+        if (syntax is null || !Covers(syntax, SourceOrigin.Value, 0, trace.Value.Length))
+        {
+            return false;
+        }
+
+        IReadOnlyList<SyntaxNode> read = syntax.Kind == Alternatives ? syntax.Children : [syntax];
+        return read.Count == alternatives.Count
+            && read.Zip(alternatives).All(p => Covers(p.First, SourceOrigin.Value, p.Second.Start, p.Second.Length));
+    }
+
+    /// <summary>
     /// Gets a value indicating whether <paramref name="definition"/> selects only <c>Reference</c> elements of
     /// <paramref name="source"/>: never a <c>canonical</c>, and never an expression this check cannot read.
     /// </summary>
@@ -124,6 +195,9 @@ internal static partial class R4Search
         ];
         return terms.Length > 0 && terms.All(t => ReferenceTerm().Match(t) is { Success: true } m && IsReferenceElement(m.Groups["path"].Value));
     }
+
+    private static bool Covers(SyntaxNode node, SourceOrigin origin, int start, int length) =>
+        node.Span.Origin == origin && node.Span.Start == start && node.Span.Length == length;
 
     private static bool IsReferenceElement(string path)
     {

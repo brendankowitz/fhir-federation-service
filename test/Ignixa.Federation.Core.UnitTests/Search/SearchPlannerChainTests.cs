@@ -192,6 +192,15 @@ public sealed class SearchPlannerChainTests
             .Occurrences[0].Action.ShouldBe(OccurrenceAction.Replace);
     }
 
+    // Runtime evidence (Ignixa.Search 0.6.82): a `:text` terminal compiles one string across an unescaped comma.
+    [Theory]
+    [InlineData("Observation", "subject:Patient.gender:text=male,female")]
+    [InlineData("Patient", "_has:Observation:subject:code:text=heart,rate")]
+    public void RejectsTerminalAlternativesTheCompilerReadAsOneValue(string type, string query)
+    {
+        ShouldFail(type, query, SearchFailureCode.UnsupportedAlternatives);
+    }
+
     [Fact]
     public void TwoDistributedChainsOnOneReferenceAreARepetitionOfThatReference()
     {

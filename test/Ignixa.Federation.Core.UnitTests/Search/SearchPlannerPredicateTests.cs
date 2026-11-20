@@ -39,6 +39,32 @@ public sealed class SearchPlannerPredicateTests
         PlanOk("Patient", query, planner).Occurrences.ShouldHaveSingleItem().Action.ShouldBe(OccurrenceAction.Keep);
     }
 
+    // Runtime evidence (Ignixa.Search 0.6.82): `:text` compiles its whole value as one string across an unescaped comma,
+    // which a backend reads as OR; forwarding it would search something other than what was compiled.
+    [Theory]
+    [InlineData("Patient", "gender:text=male,female")]
+    [InlineData("Observation", "code:text=heart,rate")]
+    public void RejectsAlternativesTheCompilerReadAsOneValue(string type, string query)
+    {
+        ShouldFail(type, query, SearchFailureCode.UnsupportedAlternatives);
+    }
+
+    [Fact]
+    public void KeepsAnEscapedCommaUnderTextAsOneValue()
+    {
+        QueryPlan plan = PlanOk("Observation", "code:text=heart%5C,rate");
+
+        plan.CountShape.ShouldBe("Observation?code:text");
+    }
+
+    [Fact]
+    public void ReadsAnEscapedBackslashBeforeACommaAsTwoAlternatives()
+    {
+        QueryPlan plan = PlanOk("Patient", "name=a%5C%5C,b");
+
+        plan.CountShape.ShouldBe("Patient?name=,");
+    }
+
     [Theory]
     [InlineData("Patient", "name", "")]
     [InlineData("Patient", "name", "a,,b")]
