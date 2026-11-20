@@ -1,8 +1,10 @@
 using Ignixa.Federation.Core.Execution.Counts;
 using Ignixa.Federation.Core.Execution.ReverseChains;
+using Ignixa.Federation.Core.Identity;
 using Ignixa.Federation.Core.Search;
 using Ignixa.Federation.Core.Shards;
 using Ignixa.Federation.Core.UnitTests.Execution.Counts;
+using Ignixa.Federation.Core.UnitTests.Shards;
 using Shouldly;
 using static Ignixa.Federation.Core.UnitTests.Execution.Includes.IncludeFixture;
 using static Ignixa.Federation.Core.UnitTests.Execution.ReverseChains.ReverseChainFixture;
@@ -13,6 +15,12 @@ namespace Ignixa.Federation.Core.UnitTests.Execution.ReverseChains;
 public sealed class ReverseChainTransportAdmissionTests
 {
     private const string TwoClauses = Has + "=1&" + Has + "=1";
+
+    /// <summary>A POST-capable backend that returns at most one row per page.</summary>
+    private static readonly BackendProfile OneRow = new("OneRow", SupportsPostSearch: true, MaxCount: 1, NextLinkRedemption.RepostToSearch, null);
+
+    /// <summary>A POST-capable backend whose largest page has one digit fewer than a requested <c>_count=10</c>.</summary>
+    private static readonly BackendProfile NineRows = new("NineRows", SupportsPostSearch: true, MaxCount: 9, NextLinkRedemption.RepostToSearch, null);
 
     private readonly List<ShardSearchRequest> _measured = [];
 
@@ -66,6 +74,48 @@ public sealed class ReverseChainTransportAdmissionTests
         exception.ShouldBeSameAs(invalid);
         _measured.Select(r => r.Shard).ShouldBe([East, West]);
         fixture.Client.Calls.Select(c => c.Search!.Type).ShouldBe([Observation, Observation]);
+    }
+
+    [Fact]
+    public async Task EachPrimaryIsMeasuredAtItsOwnersCappedPageSizeAsTheFirstPageTheExecutorSends()
+    {
+        ReverseChainFixture fixture = Scripted(westOwnsB: true, eastProfile: OneRow);
+        Dictionary<ShardId, int> maxCount = fixture.Capabilities.Registry.Shards.ToDictionary(s => s.Id, s => s.Profile.MaxCount);
+
+        var result = await Resolve(fixture, Has + "=1&_total=accurate", r => r.PageSize <= maxCount[r.Shard]
+            ? true
+            : throw new ArgumentOutOfRangeException(nameof(r), "The page size exceeds the backend's maximum."));
+
+        _measured.Select(r => (r.Shard, r.PageSize)).ShouldBe([(East, 1), (East, 0), (West, 20), (West, 0)]);
+        fixture.Client.OnSearch(East, Page(null));
+        fixture.Client.OnSearch(West, Page(null));
+        await Fixture.Executor(fixture.Client, fixture.Capabilities.Registry)
+            .ExecuteAsync([.. result.Targets.Select(t => t.Request(20))], 20, null, 10, TestContext.Current.CancellationToken);
+        fixture.Client.Calls.Where(c => c.Search!.Type != Observation).Select(c => Shape(c.Search!))
+            .ShouldBe(_measured.Where(r => r.PageSize > 0).Select(Shape));
+    }
+
+    [Theory]
+    [InlineData(0, true)]
+    [InlineData(1, false)]
+    public async Task ACappedPrimaryIsMeasuredWithoutTheExtraDigitOfTheUncappedPageSize(int over, bool fits)
+    {
+        const string query = Has + "=1&_count=10";
+        int capped = Size((await Resolve(Scripted(eastProfile: NineRows), query, _ => true)).Targets.ShouldHaveSingleItem().Request(9));
+        _measured.Clear();
+
+        var resolving = Resolve(Scripted(eastProfile: NineRows), query, r => Size(r) <= capped - over);
+
+        if (fits)
+        {
+            (await resolving).Targets.ShouldHaveSingleItem().Shard.ShouldBe(East);
+        }
+        else
+        {
+            (await Should.ThrowAsync<ReverseChainRefusedException>(resolving)).Reason.ShouldBe(ReverseChainRefusal.TooCostly);
+        }
+
+        _measured.ShouldHaveSingleItem().PageSize.ShouldBe(9);
     }
 
     [Fact]
@@ -160,12 +210,24 @@ public sealed class ReverseChainTransportAdmissionTests
 
     private static string Wire(ShardSearchRequest request) => QueryRewriter.Render(request.Parameters);
 
+    private static (ShardId, ResourceType, ShardSearchMethod, int, string) Shape(ShardSearchRequest r) =>
+        (r.Shard, r.Type, r.Method, r.PageSize, Wire(r));
+
     /// <summary>A stand-in for the host's wire size: the encoded predicates plus the page size the client appends.</summary>
     private static int Size(ShardSearchRequest request) => Wire(request).Length + $"&_count={request.PageSize}".Length;
 
-    /// <summary>Every count shape these tests plan, certified on east and west.</summary>
-    private static SearchCapabilities Certified() =>
-        CountFixture.Certified("Patient?_id=,", "Patient?_id=,&_id=,", "Patient?_has:Observation:subject:code", "Patient?name");
+    /// <summary>Every count shape these tests plan, certified on east (on <paramref name="eastProfile"/>) and west.</summary>
+    private static SearchCapabilities Certified(BackendProfile? eastProfile = null)
+    {
+        string[] shapes = ["Patient?_id=,", "Patient?_id=,&_id=,", "Patient?_has:Observation:subject:code", "Patient?name"];
+        return eastProfile is null
+            ? CountFixture.Certified(shapes)
+            : CountFixture.Certified(
+                ShardRegistry.Create(
+                    [TestShards.East().WithProfile(eastProfile.Name), TestShards.West()],
+                    [TestShards.MicrosoftFhirServer, eastProfile]),
+                shapes);
+    }
 
     private Func<ShardSearchRequest, bool> Measure(Func<ShardSearchRequest, bool> fits) => r =>
     {
@@ -174,9 +236,9 @@ public sealed class ReverseChainTransportAdmissionTests
     };
 
     /// <summary>East witnesses its own Patient/a; west witnesses Patient/b on itself only when asked.</summary>
-    private ReverseChainFixture Scripted(bool westOwnsB = false, CountDialect dialect = CountDialect.CountZero)
+    private ReverseChainFixture Scripted(bool westOwnsB = false, CountDialect dialect = CountDialect.CountZero, BackendProfile? eastProfile = null)
     {
-        SearchCapabilities capabilities = Certified();
+        SearchCapabilities capabilities = Certified(eastProfile);
         var client = new FakeShardClient();
         var fixture = new ReverseChainFixture
         {

@@ -121,6 +121,7 @@ public sealed class ReverseChainResolver
         }
 
         var targets = new List<ReverseChainTarget>(_capabilities.Registry.Shards.Count);
+        var owners = new List<ShardDescriptor>(_capabilities.Registry.Shards.Count);
         foreach (ShardDescriptor shard in _capabilities.Registry.Shards)
         {
             IReadOnlyDictionary<int, string> replacements = FrozenDictionary<int, string>.Empty;
@@ -136,11 +137,12 @@ public sealed class ReverseChainResolver
             }
 
             targets.Add(new ReverseChainTarget(plan, shard, replacements));
+            owners.Add(shard);
         }
 
         if (candidates is not null)
         {
-            AdmitTransport(plan, distributed[0].Hop!.Path, targets);
+            AdmitTransport(plan, distributed[0].Hop!.Path, owners, targets);
         }
 
         return new ReverseChainResolution(targets.AsReadOnly(), budget.Calls);
@@ -148,13 +150,16 @@ public sealed class ReverseChainResolver
 
     /// <summary>
     /// Measures every generated request the search will send: the primary page unless the plan only counts, and the
-    /// count when it is the result or a requested total. <see cref="QueryPlan.PageSize"/> bounds every page's count.
+    /// count when it is the result or a requested total. The largest primary page an owner is sent is the one its stream
+    /// builds for the whole <see cref="QueryPlan.PageSize"/>, capped by that owner's <see cref="BackendProfile.MaxCount"/>.
     /// </summary>
-    private void AdmitTransport(QueryPlan plan, ReferencePath path, List<ReverseChainTarget> targets)
+    private void AdmitTransport(QueryPlan plan, ReferencePath path, List<ShardDescriptor> owners, List<ReverseChainTarget> targets)
     {
-        foreach (ReverseChainTarget target in targets)
+        for (int i = 0; i < targets.Count; i++)
         {
-            bool fits = (plan.PageSize is not { } pageSize || _fitsRequest(target.Request(pageSize)))
+            ReverseChainTarget target = targets[i];
+            bool fits = (plan.PageSize is not { } pageSize
+                    || _fitsRequest(new ShardStream(target.Request(pageSize), owners[i]).FirstPage(pageSize)))
                 && (!(plan.CountOnly || plan.IncludeTotal)
                     || _fitsRequest(_counts.CountRequest(plan, target.Shard, target.Replacements, target.Method)));
             if (!fits)
