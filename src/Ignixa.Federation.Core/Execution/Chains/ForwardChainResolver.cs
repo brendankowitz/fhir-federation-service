@@ -310,10 +310,13 @@ public sealed class ForwardChainResolver
                         return new Drained([], (ForwardChainRefusalReason.PayloadBudgetExceeded, stream.Shard));
                     }
 
-                    keys.UnionWith(page.Entries.Select(e => e.Key));
-                    if (keys.Count > _maxChainKeys)
+                    // One key past the cap proves the refusal, so the rest of an oversize page is never held.
+                    foreach (ShardEntry entry in page.Entries)
                     {
-                        return new Drained([], (ForwardChainRefusalReason.TooManyKeys, stream.Shard));
+                        if (keys.Add(entry.Key) && keys.Count > _maxChainKeys)
+                        {
+                            return new Drained([], (ForwardChainRefusalReason.TooManyKeys, stream.Shard));
+                        }
                     }
 
                     if (page.Next is not { } next)
