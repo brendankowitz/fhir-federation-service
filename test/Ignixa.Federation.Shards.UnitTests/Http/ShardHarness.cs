@@ -26,7 +26,7 @@ internal sealed class ShardHarness : IAsyncDisposable
     private readonly TimeSpan _callTimeout;
     private readonly long _maxResponseBytes;
 
-    private ShardHarness(string id, BackendProfile profile, TimeSpan callTimeout, long maxResponseBytes, bool trustLoopback, string? basePath, TimeProvider? clock)
+    private ShardHarness(string id, BackendProfile profile, TimeSpan callTimeout, long maxResponseBytes, bool trustLoopback, string? basePath, TimeProvider? clock, TimeProvider? deadlineClock)
     {
         _callTimeout = callTimeout;
         _maxResponseBytes = maxResponseBytes;
@@ -43,7 +43,7 @@ internal sealed class ShardHarness : IAsyncDisposable
         Shard = ShardRegistry.Create([options], [Repost, Follow, GetOnly]).Shards.Single();
         Resilience = new ShardResilience(Shard, clock);
         Client = trustLoopback
-            ? new HttpShardClient(Shard, Credentials, callTimeout, maxResponseBytes, Meter, Resilience, LoopbackCertificate.Trust)
+            ? new HttpShardClient(Shard, Credentials, callTimeout, maxResponseBytes, Meter, Resilience, LoopbackCertificate.Trust, deadlineClock)
             : new HttpShardClient(Shard, Credentials, callTimeout, maxResponseBytes, Meter, Resilience);
     }
 
@@ -73,9 +73,10 @@ internal sealed class ShardHarness : IAsyncDisposable
         bool trustLoopback = true,
         string id = "east",
         string? basePath = null,
-        TimeProvider? clock = null)
+        TimeProvider? clock = null,
+        TimeProvider? deadlineClock = null)
     {
-        return new ShardHarness(id, profile ?? Repost, callTimeout ?? TimeSpan.FromSeconds(10), maxResponseBytes, trustLoopback, basePath, clock);
+        return new ShardHarness(id, profile ?? Repost, callTimeout ?? TimeSpan.FromSeconds(10), maxResponseBytes, trustLoopback, basePath, clock, deadlineClock);
     }
 
     /// <summary>Another client for the same shard that shares this harness's breaker state but reports to its own meter.</summary>

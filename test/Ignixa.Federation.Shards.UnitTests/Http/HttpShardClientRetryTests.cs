@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Text;
 using Ignixa.Federation.Core.Identity;
 using Ignixa.Federation.Core.Shards;
@@ -429,19 +428,64 @@ public sealed class HttpShardClientRetryTests
     [Fact]
     public async Task OneDeadlineCoversBothAttemptsAndTheBackoffBetweenThem()
     {
-        var timeout = TimeSpan.FromMilliseconds(1000);
-        await using var shard = ShardHarness.Start(callTimeout: timeout);
-        shard.Server.Respond(
-            ScriptedResponse.Status(503, beforeHead: _ => Task.Delay(TimeSpan.FromMilliseconds(500), Ct)),
-            ScriptedResponse.Stall());
-        var clock = Stopwatch.StartNew();
+        var timeout = TimeSpan.FromSeconds(10);
+        var deadline = new ManualTimeProvider();
+        var backoff = new BackoffClock();
+        await using var shard = ShardHarness.Start(callTimeout: timeout, clock: backoff, deadlineClock: deadline);
+        var first = new ResponseHold();
+        var retry = new ResponseHold();
+        // Released, the retry would succeed: only the original deadline can end this call.
+        shard.Server.Respond(ScriptedResponse.Status(503, SecretBody, first.BeforeHead), ScriptedResponse.Json(shard.SarahPage(), retry.BeforeHead));
+        DateTimeOffset expires = deadline.GetUtcNow() + timeout;
 
-        ShardCallException failure = await Should.ThrowAsync<ShardCallException>(() => shard.Client.SearchAsync(shard.SarahRequest(), Ct));
+        Task<ShardPage> call = shard.Client.SearchAsync(shard.SarahRequest(), Ct);
+        await first.ArrivalAsync(Ct);
+        // Most of the call's time goes on the first attempt.
+        deadline.Advance(timeout - TimeSpan.FromSeconds(1));
+        first.Release();
+        await backoff.Armed.WaitAsync(TimeSpan.FromSeconds(15), Ct);
+        // Time spent parked in the backoff also consumes the original call's budget.
+        TimeSpan elapsed = ShardResilience.RetryDelay * 2;
+        deadline.Advance(elapsed);
+        backoff.Advance(elapsed);
+        await retry.ArrivalAsync(Ct);
 
+        // The retry is on the wire, under the one deadline armed when the call began.
+        shard.Server.Requests.Count.ShouldBe(2);
+        shard.Meter.Sends.Count.ShouldBe(2);
+        call.IsCompleted.ShouldBeFalse();
+
+        deadline.Advance(expires - deadline.GetUtcNow());
+
+        // A fresh deadline for the retry would leave the call waiting on a held response, and the guard would fail it.
+        ShardCallException failure = await Should.ThrowAsync<ShardCallException>(() => Guard(call));
         failure.Failure.ShouldBe(ShardCallFailure.Timeout);
         shard.Server.Requests.Count.ShouldBe(2);
-        // A fresh deadline for the retry would take the 500 ms first attempt, the backoff and a whole second more.
-        clock.Elapsed.ShouldBeLessThan(TimeSpan.FromMilliseconds(1600));
+        shard.Credentials.Calls.ShouldBe(1);
+    }
+
+    [Fact]
+    public async Task TheDeadlinePassingDuringTheBackoff_IsATimeoutAndSendsNoSecondRequest()
+    {
+        var timeout = TimeSpan.FromSeconds(10);
+        var deadline = new ManualTimeProvider();
+        var backoff = new BackoffClock();
+        await using var shard = ShardHarness.Start(callTimeout: timeout, clock: backoff, deadlineClock: deadline);
+        var first = new ResponseHold();
+        shard.Server.Respond(ScriptedResponse.Status(503, SecretBody, first.BeforeHead), ScriptedResponse.Json(shard.SarahPage()));
+        Task<ShardPage> call = shard.Client.SearchAsync(shard.SarahRequest(), Ct);
+        await first.ArrivalAsync(Ct);
+        TimeSpan remaining = TimeSpan.FromSeconds(1);
+        deadline.Advance(timeout - remaining);
+        first.Release();
+        await backoff.Armed.WaitAsync(TimeSpan.FromSeconds(15), Ct);
+        deadline.Advance(remaining);
+
+        ShardCallException failure = await Should.ThrowAsync<ShardCallException>(() => Guard(call));
+        failure.Failure.ShouldBe(ShardCallFailure.Timeout);
+        backoff.Advance(ShardResilience.RetryDelay * 2);
+        shard.Server.Requests.ShouldHaveSingleItem();
+        shard.Meter.Sends.ShouldHaveSingleItem();
     }
 
     [Fact]

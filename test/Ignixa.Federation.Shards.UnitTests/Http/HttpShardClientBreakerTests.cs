@@ -300,6 +300,52 @@ public sealed class HttpShardClientBreakerTests
         await shard.Client.SearchAsync(shard.SarahRequest(), Ct);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task OnlyTheAdmittedProbe_DecidesRecovery_WhateverAnAttemptFromBeforeTheBreakReports(bool probeSucceeds)
+    {
+        // The early attempt ends the opposite way to the probe, so whichever of the two decided recovery is visible.
+        var clock = new ManualTimeProvider();
+        await using var shard = ShardHarness.Start(callTimeout: TimeSpan.FromMinutes(1), clock: clock);
+        var early = new ResponseHold();
+        var probe = new ResponseHold();
+        shard.Server.Respond(Held(shard, succeeds: !probeSucceeds, early));
+        Task<ShardPage> earlyCall = shard.Client.SearchAsync(shard.SarahRequest(ShardSearchMethod.PostSearch), Ct);
+        await early.ArrivalAsync(Ct);
+        await TripAsync(shard);
+        clock.Advance(PastTheBreak);
+        shard.Server.Respond(Held(shard, probeSucceeds, probe));
+        Task<ShardPage> probeCall = shard.Client.SearchAsync(shard.SarahRequest(ShardSearchMethod.PostSearch), Ct);
+        await probe.ArrivalAsync(Ct);
+
+        early.Release();
+        await SettlesAsync(earlyCall, succeeds: !probeSucceeds);
+
+        // The probe is still in flight, so the circuit still fails fast and nothing else reaches the wire.
+        shard.Server.Respond(ScriptedResponse.Json(shard.SarahPage()));
+        int sent = shard.Server.Requests.Count;
+        int acquired = shard.Credentials.Calls;
+        await AssertCircuitOpenAsync(() => shard.Client.SearchAsync(shard.SarahRequest(ShardSearchMethod.PostSearch), Ct));
+        shard.Server.Requests.Count.ShouldBe(sent);
+        shard.Meter.Sends.Count.ShouldBe(sent);
+        shard.Credentials.Calls.ShouldBe(acquired);
+
+        probe.Release();
+        await SettlesAsync(probeCall, probeSucceeds);
+
+        if (probeSucceeds)
+        {
+            await Guard(shard.Client.SearchAsync(shard.SarahRequest(ShardSearchMethod.PostSearch), Ct));
+            shard.Server.Requests.Count.ShouldBe(sent + 1);
+        }
+        else
+        {
+            await AssertCircuitOpenAsync(() => shard.Client.SearchAsync(shard.SarahRequest(ShardSearchMethod.PostSearch), Ct));
+            shard.Server.Requests.Count.ShouldBe(sent);
+        }
+    }
+
     [Fact]
     public async Task AProbeTheCallerCancels_ProvesNothing_AndLeavesTheCircuitOpen()
     {
@@ -501,6 +547,22 @@ public sealed class HttpShardClientBreakerTests
 
     // Every await on a call is bounded, so a regression fails the test rather than hanging the run.
     private static Task<T> Guard<T>(Task<T> call) => call.WaitAsync(TimeSpan.FromSeconds(15), Ct);
+
+    // A held answer for a POST Sarah search: the page, or a 503 that counts against the backend.
+    private static ScriptedResponse Held(ShardHarness shard, bool succeeds, ResponseHold hold) =>
+        succeeds ? ScriptedResponse.Json(shard.SarahPage(), hold.BeforeHead) : ScriptedResponse.Status(503, SecretBody, hold.BeforeHead);
+
+    private static async Task SettlesAsync(Task<ShardPage> call, bool succeeds)
+    {
+        if (succeeds)
+        {
+            await Guard(call);
+        }
+        else
+        {
+            (await Should.ThrowAsync<ShardCallException>(() => Guard(call))).StatusCode.ShouldBe(503);
+        }
+    }
 
     private static async Task WaitForRequestsAsync(ShardHarness shard, int count)
     {

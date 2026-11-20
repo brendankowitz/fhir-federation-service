@@ -74,7 +74,7 @@ public sealed class HttpShardClient : IShardClient, IDisposable
         Metadata,
     }
 
-    // CancellationTokenSource.CancelAfter accepts at most uint.MaxValue - 1 milliseconds.
+    // A CancellationTokenSource delay is at most uint.MaxValue - 1 milliseconds.
     private static readonly TimeSpan MaxCallTimeout = TimeSpan.FromMilliseconds(uint.MaxValue - 1);
 
     private static readonly UriCreationOptions Verbatim = new() { DangerousDisablePathAndQueryCanonicalization = true };
@@ -89,6 +89,7 @@ public sealed class HttpShardClient : IShardClient, IDisposable
     private readonly LinkResolver _links;
     private readonly HttpMessageInvoker _invoker;
     private readonly ShardResilience _resilience;
+    private readonly TimeProvider _deadlineClock;
 
     /// <summary>Creates a client for one shard, trusting the platform's certificate store.</summary>
     /// <param name="shard">The shard every call goes to.</param>
@@ -157,6 +158,10 @@ public sealed class HttpShardClient : IShardClient, IDisposable
     /// When set, the only certificate trusted for the TLS server, in place of the platform store; tests use it for a
     /// loopback server. Revocation is not checked for it.
     /// </param>
+    /// <param name="deadlineClock">
+    /// The clock that times each call's deadline, or <see langword="null"/> for the system clock; tests use it to expire a
+    /// deadline at a chosen point. It is separate from the resilience clock, which times only the break and the backoff.
+    /// </param>
     internal HttpShardClient(
         ShardDescriptor shard,
         IShardCredentialProvider credentials,
@@ -164,7 +169,8 @@ public sealed class HttpShardClient : IShardClient, IDisposable
         long maxResponseBytes,
         IShardTransferMeter? meter,
         ShardResilience? resilience,
-        X509Certificate2? trustedTestCertificate)
+        X509Certificate2? trustedTestCertificate,
+        TimeProvider? deadlineClock = null)
     {
         ArgumentNullException.ThrowIfNull(shard);
         ArgumentNullException.ThrowIfNull(credentials);
@@ -183,6 +189,7 @@ public sealed class HttpShardClient : IShardClient, IDisposable
         _maxResponseBytes = maxResponseBytes;
         _meter = meter;
         _resilience = resilience ?? new ShardResilience(shard);
+        _deadlineClock = deadlineClock ?? TimeProvider.System;
         _links = new LinkResolver(shard);
         _invoker = CreateInvoker(trustedTestCertificate);
     }
@@ -645,8 +652,8 @@ public sealed class HttpShardClient : IShardClient, IDisposable
         Func<ReadOnlyMemory<byte>, T> interpret,
         CancellationToken cancellationToken)
     {
-        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        deadline.CancelAfter(_callTimeout);
+        using var expiry = new CancellationTokenSource(_callTimeout, _deadlineClock);
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, expiry.Token);
         string? token = null;
         try
         {
