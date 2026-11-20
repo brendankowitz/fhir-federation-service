@@ -15,11 +15,12 @@ public sealed record SearchParameterSupport
     /// <param name="type">The advertised parameter type.</param>
     /// <param name="definition">
     /// The advertised definition canonical, kept exactly as given, or <see langword="null"/> when the shard lists none.
-    /// Any other value must follow the FHIR R4 <c>canonical</c> grammar (<c>\S*</c>): non-empty, with no whitespace or
-    /// control characters. It need not be an absolute URI; a canonical is an identifier, never dereferenced.
+    /// Any other value must follow the FHIR R4 <c>canonical</c> grammar (<c>\S*</c>) as a present value: non-empty, with no
+    /// whitespace and no character below U+0020. It need not be an absolute URI; a canonical is an identifier, never dereferenced.
     /// </param>
     /// <exception cref="ArgumentException">
-    /// <paramref name="code"/> is not a search code, or <paramref name="definition"/> is empty or contains whitespace or control characters.
+    /// <paramref name="code"/> is not a search code, or <paramref name="definition"/> is empty or contains whitespace or a
+    /// character below U+0020.
     /// </exception>
     public SearchParameterSupport(string code, SearchParamType type, string? definition)
     {
@@ -28,9 +29,9 @@ public sealed record SearchParameterSupport
             throw new ArgumentException("A search code is a letter or '_' followed by letters, digits, '_' or '-'.", nameof(code));
         }
 
-        if (definition is not null && (definition.Length == 0 || definition.Any(c => char.IsWhiteSpace(c) || char.IsControl(c))))
+        if (definition is not null && (definition.Length == 0 || definition.Any(c => char.IsWhiteSpace(c) || c < '\u0020')))
         {
-            throw new ArgumentException("A definition canonical is non-empty and has no whitespace or control characters.", nameof(definition));
+            throw new ArgumentException("A definition canonical is non-empty and has no whitespace or character below U+0020.", nameof(definition));
         }
 
         Code = code;

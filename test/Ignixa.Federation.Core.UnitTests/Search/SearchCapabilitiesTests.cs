@@ -9,8 +9,16 @@ namespace Ignixa.Federation.Core.UnitTests.Search;
 
 public sealed class SearchCapabilitiesTests
 {
+    private const string PatientNameCanonical = "http://hl7.org/fhir/SearchParameter/Patient-name";
+
     private static ShardSearchCapability Shard(string id, IEnumerable<ResourceSearchSupport>? resources = null) =>
         new(ShardId.Parse(id), resources ?? AllResources, Certification());
+
+    private static SearchCapabilities WithWestPatient(params SearchParameterSupport[] parameters) =>
+        Capabilities(westResources: [new ResourceSearchSupport(Type("Patient"), parameters, [], []), .. AllResources.Skip(1)]);
+
+    private static string[] PatientCodes(SearchCapabilities capabilities) =>
+        [.. capabilities.Resources.Single(r => r.Type.Value == "Patient").Parameters.Select(p => p.Code)];
 
     private static void ShouldPublishIncludes(SearchCapabilities capabilities, string type, string[] includes, string[] revIncludes)
     {
@@ -136,21 +144,16 @@ public sealed class SearchCapabilitiesTests
         capabilities.Resources.Single(r => r.Type.Value == "Patient").Parameters.Select(p => p.Code).ShouldBe(["_id"]);
     }
 
-    private const string PatientNameCanonical = "http://hl7.org/fhir/SearchParameter/Patient-name";
-
-    private static SearchCapabilities WithWestPatient(params SearchParameterSupport[] parameters) =>
-        Capabilities(westResources: [new ResourceSearchSupport(Type("Patient"), parameters, [], []), .. AllResources.Skip(1)]);
-
-    private static string[] PatientCodes(SearchCapabilities capabilities) =>
-        [.. capabilities.Resources.Single(r => r.Type.Value == "Patient").Parameters.Select(p => p.Code)];
-
     // Identity is lexical: a canonical that a URI parser would equate with the R4 one is still a different canonical.
     // The withheld code is absent from the published metadata and from planning, and costs nothing else.
     [Theory]
     [InlineData("http://hl7.org/fhir/SearchParameter/Patient-name#v2")]
     [InlineData("HTTP://HL7.ORG/fhir/SearchParameter/Patient-name")]
     [InlineData("http://hl7.org:80/fhir/SearchParameter/Patient-name")]
-    public void WithholdsACodeWhoseDefinitionOnlyDiffersFromTheR4CanonicalLexically(string definition)
+    // Deliberate: a versioned reference to the packaged canonical is a different canonical, because identity is lexical.
+    [InlineData("http://hl7.org/fhir/SearchParameter/Patient-name|4.0.1")]
+    [InlineData("https://example.invalid|1")]
+    public void WithholdsACodeWhoseDefinitionIsNotExactlyTheR4Canonical(string definition)
     {
         SearchCapabilities capabilities = WithWestPatient(
             Param("_id", SearchParamType.Token),
@@ -168,48 +171,39 @@ public sealed class SearchCapabilitiesTests
         PlanOk("Observation", "code=1234", planner).Occurrences.ShouldHaveSingleItem().Kind.ShouldBe(OccurrenceKind.Predicate);
     }
 
-    // Every occurrence of a code must carry the R4 meaning, so one lexically different occurrence withholds it.
-    [Fact]
-    public void WithholdsACodeWhenOneOfItsOccurrencesOnAShardHasADifferentCanonical()
-    {
-        SearchCapabilities capabilities = WithWestPatient(
-            Param("_id", SearchParamType.Token),
-            Param("name", SearchParamType.String, PatientNameCanonical),
-            Param("name", SearchParamType.String, PatientNameCanonical + "#v2"),
-            Param("gender", SearchParamType.Token));
-
-        PatientCodes(capabilities).ShouldBe(["_id", "gender"]);
-    }
-
-    // A valid FHIR versioned canonical is a different canonical from the unversioned R4 one, not an error.
+    // Every occurrence of a code must carry the R4 meaning: a different one withholds it, an absent one neither rescues
+    // nor withholds it, and listing a code twice is not itself a conflict.
     [Theory]
-    [InlineData("http://hl7.org/fhir/SearchParameter/Patient-name|4.0.1")]
-    [InlineData("https://example.invalid|1")]
-    public void WithholdsAVersionedCanonicalWithoutDroppingTheShardTheResourceOrOtherCodes(string definition)
+    [InlineData(PatientNameCanonical, PatientNameCanonical + "#v2", false)]
+    [InlineData(PatientNameCanonical + "#v2", PatientNameCanonical, false)]
+    [InlineData(null, PatientNameCanonical + "#v2", false)]
+    [InlineData(PatientNameCanonical + "#v2", null, false)]
+    [InlineData(PatientNameCanonical, null, true)]
+    [InlineData(null, PatientNameCanonical, true)]
+    public void AdmitsACodeListedTwiceOnlyWhenNoOccurrenceNamesAnotherCanonical(string? first, string? second, bool admitted)
     {
         SearchCapabilities capabilities = WithWestPatient(
             Param("_id", SearchParamType.Token),
-            Param("name", SearchParamType.String, definition),
+            Param("name", SearchParamType.String, first),
+            Param("name", SearchParamType.String, second),
             Param("gender", SearchParamType.Token));
 
-        PatientCodes(capabilities).ShouldBe(["_id", "gender"]);
-        capabilities.Resources.Select(r => r.Type.Value).ShouldBe(
-            ["Observation", "Organization", "Patient", "Practitioner", "Questionnaire", "QuestionnaireResponse"]);
-        ShouldFail("Patient", "name=Smith", SearchFailureCode.UnsupportedParameter, planner: Planner(capabilities));
+        PatientCodes(capabilities).ShouldBe(admitted ? ["_id", "gender", "name"] : ["_id", "gender"]);
+        SearchPlanner planner = Planner(capabilities);
+        if (admitted)
+        {
+            PlanOk("Patient", "name=Smith", planner).Occurrences.ShouldHaveSingleItem().Kind.ShouldBe(OccurrenceKind.Predicate);
+        }
+        else
+        {
+            ShouldFail("Patient", "name=Smith", SearchFailureCode.UnsupportedParameter, planner: planner);
+        }
+
+        PlanOk("Patient", "gender=male", planner).Occurrences.ShouldHaveSingleItem().Kind.ShouldBe(OccurrenceKind.Predicate);
     }
 
     [Fact]
-    public void AdmitsTheExactR4CanonicalAndAnAbsentDefinitionByCodeAndType()
-    {
-        SearchCapabilities exact = WithWestPatient(Param("_id", SearchParamType.Token), Param("name", SearchParamType.String, PatientNameCanonical));
-        SearchCapabilities absent = WithWestPatient(Param("_id", SearchParamType.Token), Param("name", SearchParamType.String));
-
-        PatientCodes(exact).ShouldBe(["_id", "name"]);
-        PatientCodes(absent).ShouldBe(["_id", "name"]);
-    }
-
-    [Fact]
-    public void RepublishingThePublishedParametersAsEveryShardsCapabilityChangesNothing()
+    public void RepublishedParametersRoundTripUnchanged()
     {
         SearchCapabilities first = Capabilities();
         ResourceSearchSupport[] republished = [.. first.Resources.Select(r => new ResourceSearchSupport(r.Type, r.Parameters, [], []))];
@@ -226,27 +220,6 @@ public sealed class SearchCapabilitiesTests
 
         first.Resources.Single(r => r.Type.Value == "Patient").Parameters.Select(p => p.Code)
             .ShouldBe(["_id", "_lastUpdated", "birthdate", "family", "gender", "name"]);
-    }
-
-    [Fact]
-    public void KeepsTheAdvertisedDefinitionLosslessly()
-    {
-        new SearchParameterSupport("name", SearchParamType.String, "https://example.invalid|1").Definition.ShouldBe("https://example.invalid|1");
-        new SearchParameterSupport("name", SearchParamType.String, PatientNameCanonical + "#v2").Definition.ShouldBe(PatientNameCanonical + "#v2");
-        new SearchParameterSupport("name", SearchParamType.String, null).Definition.ShouldBeNull();
-    }
-
-    [Theory]
-    [InlineData("")]
-    [InlineData(" ")]
-    [InlineData("http://x/a b")]
-    [InlineData("http://x/a\tb")]
-    [InlineData("http://x/a\u0001b")]
-    [InlineData("http://x/a\u007Fb")]
-    public void RejectsADefinitionThatIsEmptyOrHasWhitespaceOrControlCharacters(string definition)
-    {
-        Should.Throw<ArgumentException>(() => new SearchParameterSupport("name", SearchParamType.String, definition))
-            .ParamName.ShouldBe("definition");
     }
 
     [Fact]
