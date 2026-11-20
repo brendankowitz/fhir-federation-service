@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using Ignixa.Federation.Core.Shards;
 
 namespace Ignixa.Federation.Core.Execution;
@@ -6,10 +7,11 @@ namespace Ignixa.Federation.Core.Execution;
 /// A continuation replayed its shard input, but the result no longer contains the last emitted resource, so the page
 /// cannot resume without a skip or a duplicate (design spec §7.4).
 /// </summary>
-/// <remarks>
-/// The executor always sets <see cref="Shard"/>. Its message names only the shard; it never holds a cursor target, query
-/// text or resource id. The standard constructors exist for CA1032 and leave <see cref="Shard"/> unset.
-/// </remarks>
+/// <remarks>Its message names only the shard; it never holds a cursor target, query text or resource id.</remarks>
+[SuppressMessage(
+    "Design",
+    "CA1032:Implement standard exception constructors",
+    Justification = "A missing anchor is meaningless without the shard: a shard identity is required, so no constructor omits it.")]
 public sealed class ContinuationAnchorMissingException : Exception
 {
     /// <summary>Initializes a new instance of the <see cref="ContinuationAnchorMissingException"/> class.</summary>
@@ -21,29 +23,6 @@ public sealed class ContinuationAnchorMissingException : Exception
         Shard = shard;
     }
 
-    /// <summary>Initializes a new instance of the <see cref="ContinuationAnchorMissingException"/> class with no shard.</summary>
-    public ContinuationAnchorMissingException()
-    {
-    }
-
-    /// <summary>Initializes a new instance of the <see cref="ContinuationAnchorMissingException"/> class with no shard.</summary>
-    /// <param name="message">The message.</param>
-    public ContinuationAnchorMissingException(string message)
-        : base(message)
-    {
-    }
-
-    /// <summary>Initializes a new instance of the <see cref="ContinuationAnchorMissingException"/> class with no shard.</summary>
-    /// <param name="message">The message.</param>
-    /// <param name="innerException">The cause.</param>
-    public ContinuationAnchorMissingException(string message, Exception innerException)
-        : base(message, innerException)
-    {
-    }
-
-    /// <summary>
-    /// Gets the shard whose replayed page lacks the anchor, or <see langword="null"/> when a standard constructor created
-    /// the exception.
-    /// </summary>
-    public ShardId? Shard { get; }
+    /// <summary>Gets the shard whose replayed page lacks the anchor.</summary>
+    public ShardId Shard { get; }
 }
