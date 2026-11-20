@@ -41,6 +41,12 @@ internal sealed class LoopbackFhirServer : IAsyncDisposable
     /// <summary>Gets the requests received so far, in arrival order.</summary>
     public IReadOnlyList<RecordedRequest> Requests => [.. _requests];
 
+    /// <summary>
+    /// Gets or sets an answer chosen from the request itself, for tests where concurrent callers (a refresher and a probe)
+    /// make queue position unpredictable. A <see langword="null"/> answer falls back to the queue. Set before traffic.
+    /// </summary>
+    public Func<RecordedRequest, ScriptedResponse?>? Router { get; set; }
+
     /// <summary>Queues responses, answered in order; a request with nothing queued gets a 599.</summary>
     public void Respond(params ScriptedResponse[] responses)
     {
@@ -106,9 +112,10 @@ internal sealed class LoopbackFhirServer : IAsyncDisposable
                 while ((request = await ReadRequestAsync(tls, connection)) is not null)
                 {
                     _requests.Enqueue(request);
-                    ScriptedResponse response = _script.TryDequeue(out ScriptedResponse? scripted)
-                        ? scripted
-                        : ScriptedResponse.Status(599, "unscripted request");
+                    ScriptedResponse response = Router?.Invoke(request)
+                        ?? (_script.TryDequeue(out ScriptedResponse? scripted)
+                            ? scripted
+                            : ScriptedResponse.Status(599, "unscripted request"));
                     await WriteAsync(tls, response);
                     if (!response.KeepsAlive)
                     {
