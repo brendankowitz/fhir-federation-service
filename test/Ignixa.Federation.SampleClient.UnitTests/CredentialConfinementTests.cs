@@ -14,6 +14,9 @@ public class CredentialConfinementTests
     [InlineData("https://fed.example/fhirx/Patient?ct=SECRETCT")]
     [InlineData("https://fed.example/other/Patient?ct=SECRETCT")]
     [InlineData("https://fed.example/fhir/../other/Patient?ct=SECRETCT")]
+    [InlineData("https://fed.example/fhir/..%2Fother/Patient?ct=SECRETCT")]
+    [InlineData("https://fed.example/fhir/..%5Cother/Patient?ct=SECRETCT")]
+    [InlineData("https://fed.example/fhir/Patient/%2e%2e%2f%2e%2e%2fadmin?ct=SECRETCT")]
     [InlineData("https://user:hunter2@fed.example/fhir/Patient?ct=SECRETCT")]
     public async Task A_next_link_outside_the_federation_scope_is_rejected_before_sending(string next)
     {
@@ -91,6 +94,59 @@ public class CredentialConfinementTests
         await Should.ThrowAsync<LinkRejectedException>(() => client.ReadViaFederationAsync(entry, TestContext.Current.CancellationToken));
 
         handler.Requests.Count.ShouldBe(1);
+    }
+
+    [Theory]
+    [InlineData("https://fed.example/fhir/..%2Fother/shards/k7q2/Patient/1")]
+    [InlineData("https://fed.example/fhir/shards/..%5C..%5Cadmin/Patient/1")]
+    public async Task Read_via_alternate_rejects_an_encoded_separator_that_escapes_the_federation_path(string alternate)
+    {
+        var handler = new ScriptedHandler().Ok(Page(null, Match($"{East}Patient/1", "Patient", "1", alternate: alternate)));
+        using var client = Create(handler);
+        var entry = (await SearchAll(client)).Matches.Single();
+
+        await Should.ThrowAsync<LinkRejectedException>(() => client.ReadViaFederationAsync(entry, TestContext.Current.CancellationToken));
+
+        handler.Requests.Count.ShouldBe(1);
+    }
+
+    [Fact]
+    public async Task Direct_read_rejects_an_encoded_separator_that_escapes_the_shard_path_before_sending()
+    {
+        var federation = new ScriptedHandler()
+            .Ok(Page(null, Match($"{East}..%2Fadmin/Patient/1", "Patient", "1")));
+        var east = new ScriptedHandler();
+        var shards = new Dictionary<string, ScriptedHandler> { ["shard-east.example"] = east };
+        using var client = CreateWithShards(federation, shards, Shard(East, ShardToken));
+        var entry = (await SearchAll(client)).Matches.Single();
+
+        await Should.ThrowAsync<LinkRejectedException>(() => client.ReadDirectAsync(entry, TestContext.Current.CancellationToken));
+
+        east.Requests.ShouldBeEmpty();
+    }
+
+    [Fact]
+    public async Task A_relative_link_is_rejected_with_a_link_rejection_not_a_crash()
+    {
+        var federation = new ScriptedHandler().Ok(Page(null, Match($"{East}Patient/1", "Patient", "1")));
+        using var client = Create(federation);
+        var relative = new Uri("Patient/1?ct=SECRETCT", UriKind.Relative);
+        var entry = new FederatedEntry
+        {
+            FullUrl = relative,
+            Alternate = relative,
+            ResourceType = "Patient",
+            Id = "1",
+            Mode = EntryMode.Match,
+            Resource = default,
+        };
+
+        var direct = await Should.ThrowAsync<LinkRejectedException>(() => client.ReadDirectAsync(entry, TestContext.Current.CancellationToken));
+        var viaFederation = await Should.ThrowAsync<LinkRejectedException>(() => client.ReadViaFederationAsync(entry, TestContext.Current.CancellationToken));
+
+        direct.Message.ShouldNotContain("SECRETCT");
+        viaFederation.Message.ShouldNotContain("SECRETCT");
+        federation.Requests.ShouldBeEmpty();
     }
 
     [Fact]

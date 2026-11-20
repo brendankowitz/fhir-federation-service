@@ -36,6 +36,8 @@ internal sealed class FhirEndpoint : IDisposable
     /// <summary>
     /// True if <paramref name="target"/> is https, has no user info, and has the same host and effective port as the
     /// base and a path inside the base path (<c>/fhir/</c> contains <c>/fhir/Patient</c> but not <c>/fhirx/Patient</c>).
+    /// Encoded separators (<c>%2F</c>, <c>%5C</c>) and backslashes are refused below the base path: a front end that
+    /// decodes them before routing could otherwise turn <c>/fhir/..%2Fother</c> into a sibling path.
     /// </summary>
     public bool Contains(Uri target) =>
         target.IsAbsoluteUri
@@ -43,7 +45,13 @@ internal sealed class FhirEndpoint : IDisposable
         && target.UserInfo.Length == 0
         && string.Equals(target.Host, BaseUrl.Host, StringComparison.OrdinalIgnoreCase)
         && target.Port == BaseUrl.Port
-        && target.AbsolutePath.StartsWith(BaseUrl.AbsolutePath, StringComparison.Ordinal);
+        && target.AbsolutePath.StartsWith(BaseUrl.AbsolutePath, StringComparison.Ordinal)
+        && !HasHiddenSeparator(target.AbsolutePath[BaseUrl.AbsolutePath.Length..]);
+
+    private static bool HasHiddenSeparator(string path) =>
+        path.Contains('\\')
+        || path.Contains("%2F", StringComparison.OrdinalIgnoreCase)
+        || path.Contains("%5C", StringComparison.OrdinalIgnoreCase);
 
     public async Task<JsonDocument> GetAsync(Uri url, CancellationToken cancellationToken)
     {

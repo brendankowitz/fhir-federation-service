@@ -1,4 +1,5 @@
 using System.Net;
+using System.Text.Json.Nodes;
 using Shouldly;
 using static Ignixa.Federation.SampleClient.UnitTests.TestBundles;
 using static Ignixa.Federation.SampleClient.UnitTests.TestClients;
@@ -62,9 +63,11 @@ public class SearchTests
     [Fact]
     public async Task Next_link_is_followed_verbatim_and_paging_stops_without_next()
     {
-        const string ct = "q%2Bw%3D%3D-x%2Fy";
+        // Raw and percent-encoded reserved characters mixed, so decoding and re-encoding would change the URL.
+        const string ct = "AbC+d/e==%2Bf";
+        var next = $"{Fed}Patient?ct={ct}";
         var handler = new ScriptedHandler()
-            .Ok(Page($"{Fed}Patient?ct={ct}", Match($"{East}Patient/1", "Patient", "1")))
+            .Ok(Page(next, Match($"{East}Patient/1", "Patient", "1")))
             .Ok(Page(null, Match($"{East}Patient/2", "Patient", "2")));
         using var client = Create(handler);
 
@@ -76,7 +79,33 @@ public class SearchTests
 
         pages.Select(p => p.HasNext).ShouldBe([true, false]);
         handler.Requests.Count.ShouldBe(2);
-        handler.Requests[1].Uri.Query.ShouldBe($"?ct={ct}");
+        handler.Requests[1].Uri.AbsoluteUri.ShouldBe(next);
+    }
+
+    [Fact]
+    public async Task An_outcome_entry_that_is_not_an_operation_outcome_is_an_error()
+    {
+        var handler = new ScriptedHandler().Ok(Page(null, new JsonObject
+        {
+            ["resource"] = new JsonObject { ["resourceType"] = "Patient", ["id"] = "1" },
+            ["search"] = new JsonObject { ["mode"] = "outcome" },
+        }));
+        using var client = Create(handler);
+
+        await Should.ThrowAsync<InvalidDataException>(() => SearchAll(client));
+    }
+
+    [Fact]
+    public async Task Outcome_issues_carry_the_source_shard_alias_when_the_entry_has_one()
+    {
+        var handler = new ScriptedHandler().Ok(Page(null,
+            OutcomeEntry("warning", "incomplete", "Included resources were truncated.", shard: "k7q2"),
+            OutcomeEntry("warning", "incomplete", "Federation-wide note.")));
+        using var client = Create(handler);
+
+        var results = await SearchAll(client);
+
+        results.Outcomes.Select(o => o.SourceShard).ShouldBe(["k7q2", null]);
     }
 
     [Fact]

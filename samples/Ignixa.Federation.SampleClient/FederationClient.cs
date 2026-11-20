@@ -52,9 +52,9 @@ public sealed class FederationClient : IDisposable
     }
 
     /// <summary>
-    /// Runs <c>GET [base]/[type]?…</c> and yields one page at a time, following each <c>next</c> link exactly as the
-    /// federation gave it until there is none. Parameter and type problems throw immediately; network and server
-    /// problems throw while enumerating.
+    /// Runs <c>GET [base]/[type]?…</c> and yields one page at a time, following each <c>next</c> link as the federation
+    /// gave it (as parsed by <see cref="Uri"/>; the client never decodes or rebuilds it) until there is none. Parameter
+    /// and type problems throw immediately; network and server problems throw while enumerating.
     /// </summary>
     /// <exception cref="SearchExpiredException">A continuation was rejected with 410; start a new search.</exception>
     /// <exception cref="LinkRejectedException">A <c>next</c> link points outside the federation.</exception>

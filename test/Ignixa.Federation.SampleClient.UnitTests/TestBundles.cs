@@ -54,11 +54,21 @@ internal static class TestBundles
     public static JsonNode Include(string fullUrl, string type, string id, string? shard = null) =>
         Entry("include", fullUrl, type, id, shard);
 
-    public static JsonNode OutcomeEntry(string severity, string code, string diagnostics) => new JsonObject
+    public static JsonNode OutcomeEntry(string severity, string code, string diagnostics, string? shard = null)
     {
-        ["resource"] = JsonNode.Parse(OperationOutcome(severity, code, diagnostics)),
-        ["search"] = new JsonObject { ["mode"] = "outcome" },
-    };
+        var entry = new JsonObject
+        {
+            ["resource"] = JsonNode.Parse(OperationOutcome(severity, code, diagnostics)),
+            ["search"] = new JsonObject { ["mode"] = "outcome" },
+        };
+
+        if (shard is not null)
+        {
+            entry["extension"] = new JsonArray(new JsonObject { ["url"] = SourceShardUrl, ["valueString"] = shard });
+        }
+
+        return entry;
+    }
 
     public static string OperationOutcome(string severity, string code, string diagnostics) => new JsonObject
     {

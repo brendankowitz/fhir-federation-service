@@ -16,8 +16,8 @@ public sealed class SearchPage
     public bool HasNext => NextLink is not null;
 
     /// <summary>
-    /// The opaque next-page URL. Internal on purpose: it may carry a continuation token, so it is only ever
-    /// followed by the client, never printed or edited.
+    /// The next-page URL as parsed by <see cref="Uri"/> (RFC 3986). Internal on purpose: it may carry a continuation
+    /// token, so it is only ever followed by the client, never printed. The client does not decode, edit or rebuild it.
     /// </summary>
     internal Uri? NextLink { get; init; }
 
@@ -48,7 +48,12 @@ public sealed class SearchPage
             switch (entry.Child("search").Str("mode") ?? "match")
             {
                 case "outcome":
-                    outcomes.AddRange(OperationIssue.ReadAll(resource));
+                    if (resource.Str("resourceType") != "OperationOutcome")
+                    {
+                        throw new InvalidDataException("An outcome entry's resource is not an OperationOutcome.");
+                    }
+
+                    outcomes.AddRange(OperationIssue.ReadAll(resource, ReadSourceShard(entry)));
                     break;
                 case "match":
                     matches.Add(ReadEntry(entry, resource, EntryMode.Match, baseUrl));
@@ -78,12 +83,15 @@ public sealed class SearchPage
         ResourceType = resource.Str("resourceType") ?? throw new InvalidDataException("An entry resource has no resourceType."),
         Id = resource.Str("id") ?? throw new InvalidDataException("An entry resource has no id."),
         Mode = mode,
-        SourceShard = entry.Items("extension")
-            .FirstOrDefault(extension => extension.Str("url") == SourceShardExtensionUrl)
-            .Str("valueString"),
+        SourceShard = ReadSourceShard(entry),
         Alternate = FindLink(entry, "alternate", baseUrl),
         Resource = resource.Clone(),
     };
+
+    private static string? ReadSourceShard(JsonElement entry) =>
+        entry.Items("extension")
+            .FirstOrDefault(extension => extension.Str("url") == SourceShardExtensionUrl)
+            .Str("valueString");
 
     private static Uri? FindLink(JsonElement owner, string relation, Uri baseUrl) =>
         owner.Items("link").FirstOrDefault(link => link.Str("relation") == relation).Str("url") is { } url
