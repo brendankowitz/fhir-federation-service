@@ -51,7 +51,8 @@ internal static class ChainScenario
         return new SearchPlanner(Capabilities(registry), chains, new LimitOptions());
     }
 
-    public static SearchCapabilities Capabilities(ShardRegistry registry) => new(
+    /// <summary>Gets the scenario's capabilities; <paramref name="westOwnSide"/> replaces west's own-side forms.</summary>
+    public static SearchCapabilities Capabilities(ShardRegistry registry, ReferenceSearchForms westOwnSide = ReferenceSearchForms.CanonicalAbsolute) => new(
         registry,
         registry.Shards.Select(s => new ShardSearchCapability(
             s.Id,
@@ -59,12 +60,16 @@ internal static class ChainScenario
             TestSearch.Certification(
                 paths:
                 [
-                    Forward(TestSearch.ObservationSubjectPatient, registry, s.Id),
-                    Forward(TestSearch.ObservationPerformerPractitioner, registry, s.Id),
+                    Forward(TestSearch.ObservationSubjectPatient, registry, s.Id, westOwnSide),
+                    Forward(TestSearch.ObservationPerformerPractitioner, registry, s.Id, westOwnSide),
                 ]))));
 
     public static QueryPlan Plan(ShardRegistry registry, string encoded, params string[] passthrough) =>
         TestSearch.PlanOk("Observation", encoded, Planner(registry, passthrough));
+
+    /// <summary>Plans <paramref name="encoded"/> with west certifying <paramref name="westOwnSide"/> for its own keys.</summary>
+    public static QueryPlan Plan(ShardRegistry registry, ReferenceSearchForms westOwnSide, string encoded) =>
+        TestSearch.PlanOk("Observation", encoded, new SearchPlanner(Capabilities(registry, westOwnSide), new ChainResolutionOptions(), new LimitOptions()));
 
     public static ForwardChainResolver Resolver(
         IShardClient client,
@@ -98,7 +103,7 @@ internal static class ChainScenario
     public static Task<UnsortedPage> ExecuteAsync(this ForwardChainReady ready, IShardClient client, ShardRegistry registry, CancellationToken cancellationToken) =>
         new UnsortedPageExecutor(client, registry, 4).ExecuteAsync(ready.Streams, ready.PageSize, null, ready.RemainingFetchBudget, cancellationToken);
 
-    private static ReferencePathCertification Forward(ReferencePath path, ShardRegistry registry, ShardId queried) =>
+    private static ReferencePathCertification Forward(ReferencePath path, ShardRegistry registry, ShardId queried, ReferenceSearchForms westOwnSide) =>
         queried == East
             ? new(
                 path,
@@ -110,7 +115,7 @@ internal static class ChainScenario
             : new(
                 path,
                 ReferencePathOperations.NativeForward | ReferencePathOperations.DistributedForward | ReferencePathOperations.IncludeExtraction,
-                ReferenceSearchForms.CanonicalAbsolute,
+                westOwnSide,
                 ReferenceSearchForms.CanonicalAbsolute | ReferenceSearchForms.LinkBaseAliases,
                 registry.Version,
                 Shapes);

@@ -2,6 +2,7 @@ using Ignixa.Federation.Core.Execution;
 using Ignixa.Federation.Core.Execution.Chains;
 using Ignixa.Federation.Core.Search;
 using Ignixa.Federation.Core.Shards;
+using Ignixa.Federation.Core.UnitTests.Shards;
 using Shouldly;
 using static Ignixa.Federation.Core.UnitTests.Execution.Chains.ChainScenario;
 
@@ -82,6 +83,19 @@ public sealed class ForwardChainJoinTests
         ready.Stream(West).Parameters[0].Value.ShouldContain("fhir%5C%2Cv%5C%242");
         ready.Witnesses[0].ShouldBe([Key(East, Patient, "orchid"), Key(West, Patient, "w1")]);
         (await ready.ExecuteAsync(backend.Client, registry, Token)).Ids().ShouldBe(["west/o4"]);
+    }
+
+    [Fact]
+    public async Task OwnerCertifiedOnlyForAliases_SpellsItsOwnKeysByEveryAlias()
+    {
+        ShardRegistry registry = TestShards.Create(TestShards.East(EastAlias), TestShards.West("https://w1.example/fhir", "https://w2.example/fhir"));
+        var backend = new ChainBackend(registry).Patient(West, "w1", "Orchid");
+
+        var ready = (ForwardChainReady)await Resolver(backend.Client, registry)
+            .ResolveAsync(Plan(registry, ReferenceSearchForms.LinkBaseAliases, OrchidChain), Token);
+
+        ready.Stream(West).Decoded("subject").ShouldBe("https://w1.example/fhir/Patient/w1,https://w2.example/fhir/Patient/w1");
+        ready.Stream(East).Decoded("subject").ShouldBe("https://west.example/fhir/Patient/w1");
     }
 
     [Fact]

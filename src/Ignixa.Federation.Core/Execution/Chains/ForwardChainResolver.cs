@@ -1,6 +1,7 @@
 using System.Collections.ObjectModel;
 using System.Text;
 using Ignixa.Federation.Core.Configuration;
+using Ignixa.Federation.Core.Execution.References;
 using Ignixa.Federation.Core.Identity;
 using Ignixa.Federation.Core.Search;
 using Ignixa.Federation.Core.Shards;
@@ -11,7 +12,8 @@ namespace Ignixa.Federation.Core.Execution.Chains;
 /// Resolves a plan's distributed forward chains into unsorted primary requests for <see cref="UnsortedPageExecutor"/>
 /// (design spec §7.5). Each distributed chain searches its target on every shard for the planned terminal, keeps the
 /// distinct physical keys found, and replaces the chain with one reference list per shard, spelled in the forms that shard
-/// certified for own and foreign keys. A passthrough chain is sent unchanged.
+/// certified for own and foreign keys; a key with no certified spelling refuses the plan rather than drop out of the list.
+/// A passthrough chain is sent unchanged.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -192,9 +194,19 @@ public sealed class ForwardChainResolver
         var streams = new List<ShardSearchRequest>(_targets.Length);
         foreach (Target target in _targets)
         {
-            var replacements = chains.ToDictionary(
-                chain => chain.Occurrence.Ordinal,
-                chain => Spell(witnesses[chain.Occurrence.Ordinal], target.Shard, chain.Hop!.Certifications[target.Shard.Id]));
+            var replacements = new Dictionary<int, string>(chains.Length);
+            foreach (PlannedOccurrence chain in chains)
+            {
+                int ordinal = chain.Occurrence.Ordinal;
+                ReferencePathCertification certified = chain.Hop!.Certifications[target.Shard.Id];
+                if (!ReferenceOrList.TryRender(witnesses[ordinal], target.Shard.Id, _registry, certified.OwnSideForms, certified.ForeignForms, out string? orList))
+                {
+                    return allowance.Refuse(ForwardChainRefusalReason.UnspellableReference, ordinal, target.Shard.Id);
+                }
+
+                replacements.Add(ordinal, orList);
+            }
+
             IReadOnlyList<ParameterOccurrence> parameters = plan.BuildBackendParameters(replacements);
             if (!target.Fits(plan.Type, parameters, Math.Min(pageSize, target.Shard.Profile.MaxCount)))
             {
@@ -260,43 +272,6 @@ public sealed class ForwardChainResolver
 
     /// <summary>Gets a chain's witness parameters: exactly the planned terminal, asking only for ids.</summary>
     private static ParameterOccurrence[] Witness(PlannedOccurrence chain) => [chain.Hop!.Terminal!, IdsOnly];
-
-    /// <summary>
-    /// Spells <paramref name="keys"/> as one FHIR OR list for <paramref name="queried"/>: each own key in the shard's
-    /// certified own-side forms and each foreign key in its foreign forms, which never include a relative reference.
-    /// </summary>
-    private string Spell(IReadOnlyList<ResourceKey> keys, ShardDescriptor queried, ReferencePathCertification certification)
-    {
-        var values = new List<string>();
-        foreach (ResourceKey key in keys)
-        {
-            ReferenceSearchForms forms = key.Shard == queried.Id ? certification.OwnSideForms : certification.ForeignForms;
-            string relative = $"{key.Type.Value}/{key.Id.Value}";
-            if (forms.HasFlag(ReferenceSearchForms.Relative))
-            {
-                values.Add(Escape(relative));
-            }
-
-            if (forms.HasFlag(ReferenceSearchForms.CanonicalAbsolute))
-            {
-                values.Add(Escape(_registry.FullUrl(key)));
-            }
-
-            if (forms.HasFlag(ReferenceSearchForms.LinkBaseAliases))
-            {
-                values.AddRange(_byShard[key.Shard].Shard.CanonicalLinkBaseAliases.Select(alias => Escape($"{alias}/{relative}")));
-            }
-        }
-
-        return string.Join(',', values);
-    }
-
-    /// <summary>FHIR-escapes one OR alternative, so its own <c>, | $ \</c> are not read as search syntax.</summary>
-    private static string Escape(string value) =>
-        value.Replace("\\", "\\\\", StringComparison.Ordinal)
-            .Replace(",", "\\,", StringComparison.Ordinal)
-            .Replace("|", "\\|", StringComparison.Ordinal)
-            .Replace("$", "\\$", StringComparison.Ordinal);
 
     /// <summary>
     /// Searches one distributed chain's target on every shard and drains every page, within the chain deadline, the key cap

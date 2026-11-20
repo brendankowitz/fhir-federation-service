@@ -93,6 +93,27 @@ public sealed class ForwardChainRefusalTests
         client.Calls.ShouldBeEmpty();
     }
 
+    [Theory]
+    [InlineData(false)] // Every witness key is west's own, which west can spell only by a link base alias it does not have.
+    [InlineData(true)] // East's foreign key still spells on west; west's own key must not silently drop out of the OR list.
+    public async Task OwnKeyWithNoCertifiedSpellingOnItsOwner_IsRefusedForThatShard(bool alsoAnEastKey)
+    {
+        ShardRegistry registry = Registry();
+        registry.Shards[1].CanonicalLinkBaseAliases.ShouldBeEmpty();
+        var backend = new ChainBackend(registry).Patient(West, "w1", "Orchid");
+        if (alsoAnEastKey)
+        {
+            backend.Patient(East, "orchid", "Orchid");
+        }
+
+        ForwardChainResolution result = await Resolver(backend.Client, registry)
+            .ResolveAsync(Plan(registry, ReferenceSearchForms.LinkBaseAliases, Chain), Token);
+
+        ShouldRefuse(result, ForwardChainRefusalReason.UnspellableReference, 0, West);
+        result.RemainingFetchBudget.ShouldBe(98);
+        backend.Client.Calls.Count.ShouldBe(2);
+    }
+
     [Fact]
     public async Task PlanFromAnotherRegistryInstance_IsRejectedBeforeAnyRequest()
     {

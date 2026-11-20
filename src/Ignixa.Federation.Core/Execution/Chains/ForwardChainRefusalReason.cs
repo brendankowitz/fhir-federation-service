@@ -3,7 +3,8 @@ namespace Ignixa.Federation.Core.Execution.Chains;
 /// <summary>
 /// Why <see cref="ForwardChainResolver"/> refuses a plan instead of resolving it (design spec §7.5). The first five reasons,
 /// and <see cref="Unauthorized"/>, are decided before any request is sent; the key and payload reasons while a chain's
-/// witness searches drain; <see cref="RequestTooLarge"/> before the request it measures is sent.
+/// witness searches drain; <see cref="UnspellableReference"/> after they drain, before any primary request is exposed; and
+/// <see cref="RequestTooLarge"/> before the request it measures is sent.
 /// </summary>
 public enum ForwardChainRefusalReason
 {
@@ -36,4 +37,10 @@ public enum ForwardChainRefusalReason
 
     /// <summary>A witness or primary request is longer than its shard's trusted request bound.</summary>
     RequestTooLarge,
+
+    /// <summary>
+    /// A witness key has none of the forms the queried shard certified for it, such as a key whose owner certified only link
+    /// base aliases for its own keys but has none. The chain is refused rather than replaced without that key.
+    /// </summary>
+    UnspellableReference,
 }
