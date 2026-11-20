@@ -30,6 +30,13 @@ internal static class ChainScenario
         "Observation?@Observation.subject:Patient",
         "Observation?@Observation.subject:Patient&code=a%2Cb&@Observation.performer:Practitioner",
         "Observation?@Observation.subject:Patient&@Observation.performer:Practitioner",
+        "Observation?@Observation.subject:Patient&@Observation.subject:Patient",
+        "Observation?code=a&code=b&@Observation.subject:Patient",
+        "Observation?code=a&code=A&@Observation.subject:Patient",
+        "Observation?code=a&code=a&@Observation.subject:Patient",
+        "Observation?code=a%2Cb&code=a%2Cb&@Observation.subject:Patient",
+        "Observation?code=a%20b&code=a%20b&@Observation.subject:Patient",
+        "Observation?code=a%7Cb&@Observation.subject:Patient&@Observation.subject:Patient",
     ];
 
     public static IReadOnlySet<ResourceType> AllReadable { get; } = new HashSet<ResourceType> { Patient, Observation, Practitioner };
@@ -43,9 +50,9 @@ internal static class ChainScenario
     public static ShardRegistry GetOnlyEastRegistry() =>
         ShardRegistry.Create([TestShards.East(EastAlias).WithProfile(GetOnly.Name), TestShards.West()], [.. TestShards.Profiles, GetOnly]);
 
-    /// <summary>Gets a bound of <paramref name="maxRequestBytes"/> by the method <paramref name="shard"/>'s profile rewrites with.</summary>
+    /// <summary>Gets a bound of <paramref name="maxRequestBytes"/> for each method <paramref name="shard"/>'s profile can be sent.</summary>
     public static ShardRequestBound ProfileBound(ShardDescriptor shard, int maxRequestBytes = 1_000_000) =>
-        new(shard.Profile.SupportsPostSearch ? ShardSearchMethod.PostSearch : ShardSearchMethod.Get, maxRequestBytes);
+        new(maxRequestBytes, shard.Profile.SupportsPostSearch ? maxRequestBytes : null);
 
     /// <summary>Gets a witness page with <paramref name="ids"/> of <paramref name="type"/> on <paramref name="shard"/>.</summary>
     public static ShardPage Witness(ShardId shard, ResourceType type, ShardCursor? next, params string[] ids) =>

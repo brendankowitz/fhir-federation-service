@@ -138,7 +138,7 @@ public sealed class ForwardChainRefusalTests
         ForwardChainResolver resolver = Resolver(
             backend.Client,
             registry,
-            bound: s => new ShardRequestBound(ShardSearchMethod.PostSearch, s.Id == West ? body + slack : 1_000_000));
+            bound: s => s.Id == West ? new ShardRequestBound(1_000_000, body + slack) : ProfileBound(s));
 
         ForwardChainResolution result = await resolver.ResolveAsync(Plan(registry, Chain), Token);
 
@@ -165,7 +165,7 @@ public sealed class ForwardChainRefusalTests
         ForwardChainResolver resolver = Resolver(
             backend.Client,
             registry,
-            bound: s => s.Id == East ? new ShardRequestBound(ShardSearchMethod.Get, target + slack) : ProfileBound(s));
+            bound: s => s.Id == East ? new ShardRequestBound(target + slack) : ProfileBound(s));
 
         ForwardChainResolution result = await resolver.ResolveAsync(Plan(registry, Chain), Token);
 
@@ -180,6 +180,50 @@ public sealed class ForwardChainRefusalTests
         {
             ShouldRefuse(result, ForwardChainRefusalReason.RequestTooLarge, -1, East);
         }
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    public async Task EqualPairPrimaryRequestOverTheGetCeiling_IsRefusedEvenWhenItsPostBodyWouldFit(int slack)
+    {
+        ShardRegistry registry = Registry();
+        var backend = new ChainBackend(registry).Patient(East, "orchid", "Orchid");
+        // The raw pipe stays in the occurrence but occupies three bytes in the escaped request target.
+        int target = Encoding.UTF8.GetByteCount("/fhir/Observation?code=a%7Cb&subject=Patient%2Forchid&subject=Patient%2Forchid&_count=20");
+        ForwardChainResolver resolver = Resolver(
+            backend.Client,
+            registry,
+            bound: s => s.Id == East ? new ShardRequestBound(target + slack, 1_000_000) : ProfileBound(s));
+
+        ForwardChainResolution result = await resolver.ResolveAsync(Plan(registry, $"code=a|b&{Chain}&{Chain}"), Token);
+
+        backend.Client.Calls.Count.ShouldBe(4); // Two chains, each searched on both shards.
+        if (slack == 0)
+        {
+            // East's target fits exactly; west's longer foreign spelling fits its large ceiling.
+            ShardSearchRequest east = result.ShouldBeOfType<ForwardChainReady>().Stream(East);
+            (east.Method, east.PageSize).ShouldBe((ShardSearchMethod.Get, 20));
+        }
+        else
+        {
+            ShouldRefuse(result, ForwardChainRefusalReason.RequestTooLarge, -1, East);
+        }
+    }
+
+    [Fact]
+    public async Task EachShardIsMeasuredAgainstTheCeilingOfItsOwnMethod()
+    {
+        ShardRegistry registry = GetOnlyEastRegistry();
+        var backend = new ChainBackend(registry).Patient(East, "orchid", "Orchid");
+        Func<ShardDescriptor, ShardRequestBound> tinyGetOnWest = s => s.Id == West ? new ShardRequestBound(1, 1_000_000) : ProfileBound(s);
+
+        // West goes by POST for distinct pairs, so its tiny GET ceiling is irrelevant; equal pairs send it by GET and exceed it.
+        ForwardChainResolution distinct = await Resolver(backend.Client, registry, bound: tinyGetOnWest).ResolveAsync(Plan(registry, Chain), Token);
+        ForwardChainResolution equal = await Resolver(backend.Client, registry, bound: tinyGetOnWest).ResolveAsync(Plan(registry, $"{Chain}&{Chain}"), Token);
+
+        distinct.ShouldBeOfType<ForwardChainReady>().Stream(West).Method.ShouldBe(ShardSearchMethod.PostSearch);
+        ShouldRefuse(equal, ForwardChainRefusalReason.RequestTooLarge, -1, West);
     }
 
     [Fact]
@@ -197,7 +241,7 @@ public sealed class ForwardChainRefusalTests
     public void BoundsMustCoverExactlyTheRegistryShards()
     {
         ShardRegistry registry = Registry();
-        var bound = new ShardRequestBound(ShardSearchMethod.PostSearch, 100);
+        var bound = new ShardRequestBound(100, 100);
         var missing = new Dictionary<ShardId, ShardRequestBound> { [East] = bound };
         var extra = new Dictionary<ShardId, ShardRequestBound> { [East] = bound, [West] = bound, [ShardId.Parse("north")] = bound };
 
@@ -206,14 +250,14 @@ public sealed class ForwardChainRefusalTests
     }
 
     [Theory]
-    [InlineData(true, ShardSearchMethod.PostSearch, true)]
-    [InlineData(true, ShardSearchMethod.Get, false)] // GET on a POST-capable shard is not the method its rewrite uses.
-    [InlineData(false, ShardSearchMethod.Get, true)]
-    [InlineData(false, ShardSearchMethod.PostSearch, false)]
-    public void BoundMethod_MustBeTheMethodTheShardsProfileRewritesWith(bool postCapable, ShardSearchMethod method, bool accepted)
+    [InlineData(true, true, true)]
+    [InlineData(true, false, false)] // A POST-capable shard needs a POST ceiling: equal pairs go by GET, the rest by POST.
+    [InlineData(false, false, true)]
+    [InlineData(false, true, false)] // A GET-only shard is never sent POST, so a POST ceiling is a configuration mistake.
+    public void PostCeiling_IsRequiredExactlyWhenTheShardsProfileSupportsPostSearch(bool postCapable, bool givenPostCeiling, bool accepted)
     {
         ShardRegistry registry = postCapable ? Registry() : GetOnlyEastRegistry();
-        Func<ShardDescriptor, ShardRequestBound> bound = s => s.Id == East ? new ShardRequestBound(method, 100) : ProfileBound(s);
+        Func<ShardDescriptor, ShardRequestBound> bound = s => s.Id == East ? new ShardRequestBound(100, givenPostCeiling ? 100 : null) : ProfileBound(s);
 
         if (accepted)
         {
@@ -246,11 +290,13 @@ public sealed class ForwardChainRefusalTests
     }
 
     [Fact]
-    public void ShardRequestBound_RequiresADefinedMethodAndAPositiveSize()
+    public void ShardRequestBound_RequiresPositiveCeilings_AndTheOptionalPostCeilingIsOptional()
     {
-        Should.Throw<ArgumentOutOfRangeException>(() => new ShardRequestBound((ShardSearchMethod)99, 100));
-        Should.Throw<ArgumentOutOfRangeException>(() => new ShardRequestBound(ShardSearchMethod.Get, 0));
-        new ShardRequestBound(ShardSearchMethod.Get, 1).MaxRequestBytes.ShouldBe(1);
+        Should.Throw<ArgumentOutOfRangeException>(() => new ShardRequestBound(0)).ParamName.ShouldBe("maxGetTargetBytes");
+        Should.Throw<ArgumentOutOfRangeException>(() => new ShardRequestBound(1, 0)).ParamName.ShouldBe("maxPostBodyBytes");
+        Should.Throw<ArgumentOutOfRangeException>(() => new ShardRequestBound(1, -1));
+        new ShardRequestBound(1).MaxPostBodyBytes.ShouldBeNull();
+        new ShardRequestBound(1, 2).MaxPostBodyBytes.ShouldBe(2);
     }
 
     private static HashSet<ResourceType> Readable(params string[] types) => [.. types.Select(TestSearch.Type)];

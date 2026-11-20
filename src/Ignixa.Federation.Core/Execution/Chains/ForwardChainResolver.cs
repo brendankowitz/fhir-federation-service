@@ -53,9 +53,8 @@ public sealed class ForwardChainResolver
     /// </param>
     /// <exception cref="ArgumentNullException">A required argument is <see langword="null"/>.</exception>
     /// <exception cref="ArgumentException">
-    /// <paramref name="requestBounds"/> misses a registry shard, names another shard, or is for a method other than the one
-    /// the shard's profile rewrites with: <see cref="ShardSearchMethod.PostSearch"/> when it supports POST search, otherwise
-    /// <see cref="ShardSearchMethod.Get"/>.
+    /// <paramref name="requestBounds"/> misses a registry shard, names another shard, omits <see cref="ShardRequestBound.MaxPostBodyBytes"/>
+    /// for a shard whose profile supports POST search, or carries it for one that does not.
     /// </exception>
     /// <exception cref="ArgumentOutOfRangeException">A limit or timeout is not positive.</exception>
     public ForwardChainResolver(
@@ -92,13 +91,12 @@ public sealed class ForwardChainResolver
                 throw new ArgumentException("Every registry shard, and no other, needs a request bound.", nameof(requestBounds));
             }
 
-            // A rewritten search goes by POST when the profile supports it, else by GET, per the design spec. The bound must
-            // describe that very method, so the resolver never measures one method and sends another.
-            ShardSearchMethod rewrite = shard.Profile.SupportsPostSearch ? ShardSearchMethod.PostSearch : ShardSearchMethod.Get;
-            if (bound.Method != rewrite)
+            // A POST-capable shard can be sent either method (see Target.PrimaryMethod), so it needs both ceilings; a GET-only
+            // shard is only ever sent GET, and a POST ceiling for it would describe a request that is never made.
+            if (shard.Profile.SupportsPostSearch != bound.MaxPostBodyBytes.HasValue)
             {
                 throw new ArgumentException(
-                    $"Shard '{shard.Id}' rewrites searches by {rewrite}, but its request bound is for {bound.Method}.",
+                    $"Shard '{shard.Id}': a request bound carries a POST body ceiling exactly when the profile supports POST search.",
                     nameof(requestBounds));
             }
 
@@ -172,7 +170,7 @@ public sealed class ForwardChainResolver
         {
             foreach (Target target in _targets)
             {
-                if (!target.Fits(chain.Hop!.Path.Target, Witness(chain), target.Shard.Profile.MaxCount))
+                if (!target.Fits(chain.Hop!.Path.Target, Witness(chain), target.Shard.Profile.MaxCount, target.WitnessMethod))
                 {
                     return allowance.Refuse(ForwardChainRefusalReason.RequestTooLarge, chain.Occurrence.Ordinal, target.Shard.Id);
                 }
@@ -214,12 +212,13 @@ public sealed class ForwardChainResolver
             }
 
             IReadOnlyList<ParameterOccurrence> parameters = plan.BuildBackendParameters(replacements);
-            if (!target.Fits(plan.Type, parameters, Math.Min(pageSize, target.Shard.Profile.MaxCount)))
+            ShardSearchMethod method = target.PrimaryMethod(parameters);
+            if (!target.Fits(plan.Type, parameters, Math.Min(pageSize, target.Shard.Profile.MaxCount), method))
             {
                 return allowance.Refuse(ForwardChainRefusalReason.RequestTooLarge, -1, target.Shard.Id);
             }
 
-            streams.Add(new ShardSearchRequest(target.Shard.Id, plan.Type, parameters, pageSize, target.Bound.Method));
+            streams.Add(new ShardSearchRequest(target.Shard.Id, plan.Type, parameters, pageSize, method));
         }
 
         return new ForwardChainReady(
@@ -290,7 +289,7 @@ public sealed class ForwardChainResolver
         ShardStream[] streams =
         [
             .. _targets.Select(t => new ShardStream(
-                new ShardSearchRequest(t.Shard.Id, type, witness, t.Shard.Profile.MaxCount, t.Bound.Method),
+                new ShardSearchRequest(t.Shard.Id, type, witness, t.Shard.Profile.MaxCount, t.WitnessMethod),
                 t.Shard)),
         ];
 
@@ -355,37 +354,57 @@ public sealed class ForwardChainResolver
         }
     }
 
-    /// <summary>A shard and its trusted request bound, with the request-target path a GET search is sent to.</summary>
+    /// <summary>A shard and its trusted request bounds.</summary>
     private sealed class Target
     {
-        private readonly string _path;
-
         public Target(ShardDescriptor shard, ShardRequestBound bound)
         {
             Shard = shard;
             Bound = bound;
-
-            // The path of the canonical base, without its trailing slash: "https://host/fhir" sends GET /fhir/Type?query.
-            string url = shard.CanonicalBaseUrl;
-            int authority = url.IndexOf("://", StringComparison.Ordinal) + 3;
-            int path = url.AsSpan(authority).IndexOf('/');
-            _path = path < 0 ? string.Empty : url[(authority + path)..].TrimEnd('/');
+            WitnessMethod = shard.Profile.SupportsPostSearch ? ShardSearchMethod.PostSearch : ShardSearchMethod.Get;
         }
 
         public ShardDescriptor Shard { get; }
 
         public ShardRequestBound Bound { get; }
 
+        /// <summary>Gets how witness searches are sent: by POST when the profile supports it, else by GET (design spec §7.5).</summary>
+        public ShardSearchMethod WitnessMethod { get; }
+
+        /// <summary>
+        /// Chooses how the primary search for <paramref name="parameters"/> is sent. A GET-only shard is sent GET. A POST-capable
+        /// shard is sent POST unless two pairs are equal after one form decode (key and value, case-sensitive): a POST backend may
+        /// collapse them, so the search goes by GET, which keeps every pair. The raw parameters are never altered.
+        /// </summary>
+        public ShardSearchMethod PrimaryMethod(IReadOnlyList<ParameterOccurrence> parameters)
+        {
+            if (!Shard.Profile.SupportsPostSearch)
+            {
+                return ShardSearchMethod.Get;
+            }
+
+            SearchQuery form = SearchQuery.ParseForm(QueryRewriter.Render(parameters)).Query
+                ?? throw new InvalidOperationException("The completed primary parameters are not valid form pairs.");
+            var decoded = new HashSet<(string Key, string Value)>();
+            return form.Occurrences.All(o => decoded.Add((o.Key, o.Value))) ? ShardSearchMethod.PostSearch : ShardSearchMethod.Get;
+        }
+
         /// <summary>
         /// Gets whether the complete initial request for <paramref name="parameters"/> with <c>_count</c> =
-        /// <paramref name="count"/> fits the bound: the form body for POST, or the request-target path and query for GET.
+        /// <paramref name="count"/> fits the ceiling for <paramref name="method"/>: the form body for POST, or the escaped
+        /// request-target path and query for GET.
         /// </summary>
-        public bool Fits(ResourceType type, IReadOnlyList<ParameterOccurrence> parameters, int count)
+        public bool Fits(ResourceType type, IReadOnlyList<ParameterOccurrence> parameters, int count, ShardSearchMethod method)
         {
             string query = QueryRewriter.Render(parameters);
             query = query.Length == 0 ? $"_count={count}" : $"{query}&_count={count}";
-            string sent = Bound.Method == ShardSearchMethod.Get ? $"{_path}/{type.Value}?{query}" : query;
-            return Encoding.UTF8.GetByteCount(sent) <= Bound.MaxRequestBytes;
+            if (method == ShardSearchMethod.PostSearch)
+            {
+                return Encoding.UTF8.GetByteCount(query) <= Bound.MaxPostBodyBytes!.Value; // Only POST-capable shards are sent POST.
+            }
+
+            string target = new Uri($"{Shard.CanonicalBaseUrl}/{type.Value}?{query}", UriKind.Absolute).PathAndQuery;
+            return Encoding.UTF8.GetByteCount(target) <= Bound.MaxGetTargetBytes;
         }
     }
 

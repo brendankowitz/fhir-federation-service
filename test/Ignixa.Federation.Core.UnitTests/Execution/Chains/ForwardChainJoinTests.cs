@@ -142,6 +142,46 @@ public sealed class ForwardChainJoinTests
     }
 
     [Fact]
+    public async Task EqualRewrittenPairs_AreExecutedByGet_AndBothReachTheBackend()
+    {
+        ShardRegistry registry = Registry();
+        var backend = new ChainBackend(registry)
+            .Patient(East, "orchid", "Orchid")
+            .Observation(East, "o1", "Patient/orchid");
+        // Two independent clauses with the same witness: each is replaced by the same decoded subject pair.
+        QueryPlan plan = Plan(registry, "subject:Patient.name=Orchid&subject:Patient.name:exact=Orchid");
+
+        var ready = (ForwardChainReady)await Resolver(backend.Client, registry).ResolveAsync(plan, Token);
+        (await ready.ExecuteAsync(backend.Client, registry, Token)).Ids().ShouldBe(["east/o1"]);
+
+        ShardSearchRequest[] searches = [.. backend.Client.Calls.Select(c => c.Search).OfType<ShardSearchRequest>()];
+        searches.Where(s => s.Type == Patient).ShouldAllBe(s => s.Method == ShardSearchMethod.PostSearch);
+        ShardSearchRequest[] primaries = [.. searches.Where(s => s.Type == Observation)];
+        primaries.Length.ShouldBe(2);
+        primaries.ShouldAllBe(s => s.Method == ShardSearchMethod.Get);
+        primaries.Single(s => s.Shard == East).Parameters.ShouldBe(
+            [new("subject", "Patient%2Forchid"), new("subject", "Patient%2Forchid")]);
+    }
+
+    [Theory]
+    [InlineData("a", "b", ShardSearchMethod.PostSearch)]
+    [InlineData("a", "A", ShardSearchMethod.PostSearch)] // Decoded pairs are compared case-sensitively.
+    [InlineData("a", "a", ShardSearchMethod.Get)]
+    [InlineData("a%2cb", "a%2Cb", ShardSearchMethod.Get)] // Different raw spellings of one decoded value.
+    [InlineData("a+b", "a%20b", ShardSearchMethod.Get)]
+    public async Task EqualFormDecodedPairs_ForceGet_AndEveryRawPairIsKeptInOrder(string first, string second, ShardSearchMethod expected)
+    {
+        ShardRegistry registry = Registry();
+        var backend = new ChainBackend(registry).Patient(East, "orchid", "Orchid");
+
+        var ready = (ForwardChainReady)await Resolver(backend.Client, registry)
+            .ResolveAsync(Plan(registry, $"code={first}&code={second}&{OrchidChain}"), Token);
+
+        ready.Streams.Select(s => s.Method).ShouldBe([expected, expected]);
+        ready.Streams.ShouldAllBe(s => s.Parameters.Take(2).SequenceEqual(new[] { new ParameterOccurrence("code", first), new ParameterOccurrence("code", second) }));
+    }
+
+    [Fact]
     public async Task PassthroughChain_IsSentRawWithoutWitnessSearches()
     {
         ShardRegistry registry = Registry();

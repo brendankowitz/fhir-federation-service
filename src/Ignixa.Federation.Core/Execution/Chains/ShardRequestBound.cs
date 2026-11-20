@@ -1,43 +1,52 @@
-using Ignixa.Federation.Core.Shards;
-
 namespace Ignixa.Federation.Core.Execution.Chains;
 
 /// <summary>
-/// An operator-trusted transport ceiling for one shard: the largest initial request the shard is known to accept by the
-/// method its chain witness and rewritten primary searches use, which is POST search when its profile supports it and GET
-/// otherwise. <see cref="ForwardChainResolver"/> rejects a bound for any other method rather than guess its size.
+/// The operator-trusted transport ceilings for one shard (design spec §7.5): the largest GET request-target the shard is
+/// known to accept, and, only for a shard whose profile supports POST search, the largest POST form body.
+/// <see cref="ForwardChainResolver"/> rejects a bound set that does not match the profile rather than assume a default.
 /// </summary>
 /// <remarks>
-/// <see cref="ForwardChainResolver"/> measures each complete initial request in UTF-8 bytes before sending or exposing it:
-/// the form-encoded body for <see cref="ShardSearchMethod.PostSearch"/>, or the request-target path of the shard's
-/// canonical base plus <c>/Type?</c> and the encoded query for <see cref="ShardSearchMethod.Get"/>. Both include every
-/// separator and the largest <c>_count</c> the consuming executor can send. Headers, the scheme and the host are not
-/// counted, so the bound must leave room for them. A request over the bound is refused rather than split. The bound is a
-/// configured fact, never inferred from a backend profile, and it is not enforcement on the wire.
+/// <para>
+/// A shard that supports POST search needs both ceilings: its witness searches and ordinary primary searches go by POST
+/// and are measured against <see cref="MaxPostBodyBytes"/>, but a primary search that repeats an equal decoded pair goes by
+/// GET, because a POST backend may collapse equal pairs, and is measured against <see cref="MaxGetTargetBytes"/>. A GET-only
+/// shard has only the GET ceiling.
+/// </para>
+/// <para>
+/// <see cref="ForwardChainResolver"/> measures each complete initial request in UTF-8 bytes before sending or exposing it.
+/// A POST is the form-encoded body. A GET is the escaped request-target (<c>System.Uri</c> path and query) of the shard's
+/// canonical base path plus <c>/Type?</c> and every pair. Both include every separator and the largest <c>_count</c> the
+/// consuming executor can send. Headers, the scheme and the host are not counted, so a bound must leave room for them. A
+/// request over its bound is refused rather than split. A bound is a configured fact, never inferred from a backend
+/// profile, and it is not enforcement on the wire.
+/// </para>
 /// </remarks>
 public sealed class ShardRequestBound
 {
     /// <summary>Initializes a new instance of the <see cref="ShardRequestBound"/> class.</summary>
-    /// <param name="method">The method this bound measures; it must be the method the shard's profile rewrites with.</param>
-    /// <param name="maxRequestBytes">The largest measured initial request, in bytes; positive.</param>
+    /// <param name="maxGetTargetBytes">The largest measured GET request-target, in bytes; positive.</param>
+    /// <param name="maxPostBodyBytes">
+    /// The largest measured POST form body, in bytes; positive when given. Give it exactly for a shard whose profile
+    /// supports POST search; <see cref="ForwardChainResolver"/> rejects a bound for any other shard.
+    /// </param>
     /// <exception cref="ArgumentOutOfRangeException">
-    /// <paramref name="method"/> is undefined, or <paramref name="maxRequestBytes"/> is not positive.
+    /// <paramref name="maxGetTargetBytes"/> is not positive, or <paramref name="maxPostBodyBytes"/> is given and not positive.
     /// </exception>
-    public ShardRequestBound(ShardSearchMethod method, int maxRequestBytes)
+    public ShardRequestBound(int maxGetTargetBytes, int? maxPostBodyBytes = null)
     {
-        if (!Enum.IsDefined(method))
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxGetTargetBytes);
+        if (maxPostBodyBytes is { } body)
         {
-            throw new ArgumentOutOfRangeException(nameof(method), method, "Undefined search method.");
+            ArgumentOutOfRangeException.ThrowIfNegativeOrZero(body, nameof(maxPostBodyBytes));
         }
 
-        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxRequestBytes);
-        Method = method;
-        MaxRequestBytes = maxRequestBytes;
+        MaxGetTargetBytes = maxGetTargetBytes;
+        MaxPostBodyBytes = maxPostBodyBytes;
     }
 
-    /// <summary>Gets the method this bound measures, which the shard's witness and primary searches use.</summary>
-    public ShardSearchMethod Method { get; }
+    /// <summary>Gets the largest measured GET request-target, in bytes.</summary>
+    public int MaxGetTargetBytes { get; }
 
-    /// <summary>Gets the largest measured initial request, in bytes.</summary>
-    public int MaxRequestBytes { get; }
+    /// <summary>Gets the largest measured POST form body, in bytes, or <see langword="null"/> for a GET-only shard.</summary>
+    public int? MaxPostBodyBytes { get; }
 }
