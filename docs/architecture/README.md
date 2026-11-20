@@ -32,7 +32,7 @@ flowchart LR
   ShardClient --> ShardB[(Shard B)]
 ```
 
-Stages 1 to 4 run in `Core`, driven by the `Api` host. Every call to a shard goes through the shard client in `Shards`.
+`Core` holds the logic these stages use: classification, rewriting, reference classification, merge and budget ([§12.1](../superpowers/specs/2026-11-19-fhir-federation-service-design.md#121-projects)). The `Api` host runs the stages and does authentication and role authorisation. Every call to a shard goes through the shard client in `Shards`.
 
 ## Where the spec defines each part
 

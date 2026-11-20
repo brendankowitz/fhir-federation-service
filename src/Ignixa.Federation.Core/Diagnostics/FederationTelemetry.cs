@@ -17,18 +17,18 @@ public static class FederationTelemetry
     /// </summary>
     public const string Name = "Ignixa.Federation";
 
-    private static readonly string? _version = typeof(FederationTelemetry).Assembly
+    private static readonly string? InformationalVersion = typeof(FederationTelemetry).Assembly
         .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion;
 
     /// <summary>
     /// Gets the <see cref="System.Diagnostics.ActivitySource"/> for federation traces (design spec §14).
     /// Its version is the assembly informational version, when one is available.
     /// </summary>
-    public static ActivitySource ActivitySource { get; } = new(Name, _version);
+    public static ActivitySource ActivitySource { get; } = new(Name, InformationalVersion);
 
     /// <summary>
     /// Gets the <see cref="System.Diagnostics.Metrics.Meter"/> for federation metrics (design spec §14).
     /// Its version is the assembly informational version, when one is available.
     /// </summary>
-    public static Meter Meter { get; } = new(Name, _version);
+    public static Meter Meter { get; } = new(Name, InformationalVersion);
 }
