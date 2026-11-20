@@ -419,6 +419,130 @@ public sealed class OraclePageComparatorTests
         Should.NotThrow(() => OracleFixtures.Bind("collision.tagged-union", "per-shard", noOracle));
     }
 
+    [Fact]
+    public void Bind_RejectsSpellingEquivalentBases()
+    {
+        var eastTwice = new Dictionary<string, string> { ["east"] = "https://east.example/fhir/", ["west"] = "https://EAST.example:443/fhir/" };
+        var oracleIsEast = new Dictionary<string, string> { ["east"] = East, ["west"] = West };
+
+        Should.Throw<ArgumentException>(() => OracleFixtures.Bind("collision.tagged-union", "per-shard", new OracleBases(eastTwice, OracleUrl)))
+            .Message.ShouldContain("https://east.example/fhir/ (east, west)");
+        Should.Throw<ArgumentException>(() => OracleFixtures.Bind("include.forward", "colocated", new OracleBases(oracleIsEast, "HTTP://127.0.0.1:5101/fhir")))
+            .Message.ShouldContain("http://127.0.0.1:5101/fhir/ (east, oracle)");
+    }
+
+    [Fact]
+    public void Bind_KeepsBasesDistinctByPortPathAndPathCase_AndStoresCanonicalSpelling()
+    {
+        var byPathCase = new OracleBases(
+            new Dictionary<string, string> { ["east"] = "https://east.example/fhir/", ["west"] = "https://EAST.example:443/FHIR" },
+            "https://east.example:8443/fhir");
+
+        Should.NotThrow(() => OracleFixtures.Bind("include.forward", "colocated", byPathCase));
+        byPathCase.Shards["west"].ShouldBe("https://east.example/FHIR/");
+        byPathCase.Oracle.ShouldBe("https://east.example:8443/fhir/");
+    }
+
+    [Theory]
+    [InlineData("east", "fhir/east")]
+    [InlineData("east", "ftp://east.example/fhir/")]
+    [InlineData("west", "https://user@east.example/fhir/")]
+    [InlineData("west", "https://east.example/fhir/?tenant=1")]
+    [InlineData("west", "https://east.example/fhir/#top")]
+    [InlineData("oracle", "urn:uuid:3f2a1c9e-0000-4000-8000-000000000001")]
+    public void Bind_RejectsBaseThatIsNotAnAbsoluteHttpUrl(string registration, string badBase)
+    {
+        var shards = new Dictionary<string, string> { ["east"] = East, ["west"] = West };
+        string? oracle = OracleUrl;
+        if (registration == "oracle")
+        {
+            oracle = badBase;
+        }
+        else
+        {
+            shards[registration] = badBase;
+        }
+
+        var message = Should.Throw<ArgumentException>(() => OracleFixtures.Bind("include.forward", "colocated", new OracleBases(shards, oracle))).Message;
+
+        message.ShouldContain(registration);
+        message.ShouldContain(badBase);
+    }
+
+    [Fact]
+    public void CollisionTaggedUnion_FullUrlSpelledWithUpperCaseHostAndDefaultPort_IsTheRegisteredIdentity()
+    {
+        const string EastHttps = "https://east.example/fhir/";
+        const string EastShouted = "https://EAST.example:443/fhir/";
+        var c = OracleFixtures.Bind(
+            "collision.tagged-union",
+            "per-shard",
+            new OracleBases(new Dictionary<string, string> { ["east"] = EastHttps, ["west"] = West }, oracle: null));
+        JsonNode[] ownedUnderOtherSpelling =
+        [
+            Page(next: true, Match(EastShouted, "Patient", "dup", "Eli")),
+            Page(next: false, Match(West, "Patient", "dup", "Gus")),
+        ];
+        JsonNode[] sameResourceTwice =
+        [
+            Page(next: true, Match(EastHttps, "Patient", "dup", "Eli")),
+            Page(next: false, Match(EastShouted, "Patient", "dup", "Gus")),
+        ];
+
+        OraclePageComparator.Compare(c, ownedUnderOtherSpelling, oraclePages: null).ShouldBeEmpty();
+        OraclePageComparator.Compare(c, sameResourceTwice, oraclePages: null).ShouldBe(
+            [
+                "[collision.tagged-union] federation: match https://east.example/fhir/Patient/dup repeated on page 1 and page 2",
+                "[collision.tagged-union] federation: unexpected match https://east.example/fhir/Patient/dup (returned 2, expected 1)",
+                "[collision.tagged-union] federation: missing match http://127.0.0.1:5102/Patient/dup (returned 0, expected 1)",
+                "[collision.tagged-union] federation page 2: https://east.example/fhir/Patient/dup: name[0].given is [Gus], expected [Eli]",
+            ],
+            ignoreOrder: true);
+    }
+
+    [Theory]
+    [InlineData("urn:uuid:3f2a1c9e-0000-4000-8000-000000000002")]
+    [InlineData("Patient/dup")]
+    [InlineData("ftp://127.0.0.1:5102/Patient/dup")]
+    [InlineData("http://user@127.0.0.1:5102/Patient/dup")]
+    public void FullUrlNotAnAbsoluteHttpUrl_FailsOwnership(string fullUrl)
+    {
+        var c = OracleFixtures.Bind("collision.tagged-union", "per-shard", Bases);
+        JsonNode[] federation =
+        [
+            Page(next: true, Match(East, "Patient", "dup", "Eli")),
+            Page(next: false, Entry("match", fullUrl, "Patient", "dup", "Gus")),
+        ];
+
+        var failures = OraclePageComparator.Compare(c, federation, oraclePages: null);
+
+        failures.ShouldContain($"[collision.tagged-union] federation page 2: fullUrl {fullUrl} is not an absolute http(s) URL without userinfo");
+    }
+
+    [Theory]
+    [InlineData(1, """[{"relation":"next"}]""", new[] { "link 1 (next) url is not a nonblank string", "no next link, but further pages were supplied (page list over-followed)" })]
+    [InlineData(1, """[{"relation":"next","url":"  "}]""", new[] { "link 1 (next) url is not a nonblank string", "no next link, but further pages were supplied (page list over-followed)" })]
+    [InlineData(1, """[{"relation":"self","url":"http://harness.invalid/self"},{"relation":"next","url":7}]""", new[] { "link 2 (next) url is not a nonblank string", "no next link, but further pages were supplied (page list over-followed)" })]
+    [InlineData(2, """[{"relation":"next"}]""", new[] { "link 1 (next) url is not a nonblank string" })]
+    [InlineData(2, """{"relation":"next","url":"http://harness.invalid/next"}""", new[] { "link is not an array" })]
+    [InlineData(1, """{"relation":"next","url":"http://harness.invalid/next"}""", new[] { "link is not an array", "no next link, but further pages were supplied (page list over-followed)" })]
+    [InlineData(2, """[{"relation":"next","url":"a"},{"relation":"next","url":"b"}]""", new[] { "2 next links, expected at most one", "last supplied page has a next link (page list truncated)" })]
+    [InlineData(2, """[{"url":"http://harness.invalid/self"},"next"]""", new[] { "link 1 is not an object with a string relation", "link 2 is not an object with a string relation" })]
+    public void PagingEvidenceMalformed_FailsNamingThePage(int malformedPage, string link, string[] problems)
+    {
+        var c = OracleFixtures.Bind("collision.tagged-union", "per-shard", Bases);
+        JsonNode[] federation =
+        [
+            Page(next: true, Match(East, "Patient", "dup", "Eli")),
+            Page(next: false, Match(West, "Patient", "dup", "Gus")),
+        ];
+        federation[malformedPage - 1]["link"] = JsonNode.Parse(link);
+
+        var failures = OraclePageComparator.Compare(c, federation, oraclePages: null);
+
+        failures.ShouldBe([.. problems.Select(problem => $"[collision.tagged-union] federation page {malformedPage}: {problem}")]);
+    }
+
     private static JsonNode[] CrossShardIncludeForwardFederation() =>
     [
         Page(next: true, Match(West, "Observation", "obs-cedar-1"), Include(West, "Patient", "p-cedar")),

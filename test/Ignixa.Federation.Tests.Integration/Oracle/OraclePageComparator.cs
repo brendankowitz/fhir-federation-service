@@ -33,7 +33,8 @@ internal static class OraclePageComparator
         return failures;
     }
 
-    /// <param name="Identity"><c>Type/id</c> from the body for unique-id cases; the returned fullUrl for collision cases.</param>
+    /// <param name="Identity"><c>Type/id</c> from the body for unique-id cases; <paramref name="FullUrl"/> for collision cases.</param>
+    /// <param name="FullUrl">The returned fullUrl in <see cref="OracleUrl"/> canonical form, or as returned when it has none.</param>
     private sealed record Entry(string Identity, string FullUrl, string TypeId, JsonObject Resource);
 
     private sealed record Page(int Number, IReadOnlyList<Entry> Matches, IReadOnlyList<Entry> Includes);
@@ -84,7 +85,7 @@ internal static class OraclePageComparator
                 Fail(number, $"type is '{type}', expected 'searchset'");
             }
 
-            var hasNext = bundle["link"] is JsonArray links && links.Any(link => Text(link, "relation") == "next");
+            var hasNext = HasUsableNextLink(bundle, number);
             if (isLast && hasNext)
             {
                 Fail(number, "last supplied page has a next link (page list truncated)");
@@ -116,6 +117,53 @@ internal static class OraclePageComparator
             return new Page(number, matches, includes);
         }
 
+        /// <summary>
+        /// Contract item 5 paging evidence: <c>link</c>, when present, is an array of objects with a string relation,
+        /// holding at most one <c>next</c> whose url is a nonblank string. The url is opaque and never followed here.
+        /// Every defect is reported; a <c>next</c> without a usable url does not count as one.
+        /// </summary>
+        private bool HasUsableNextLink(JsonObject bundle, int page)
+        {
+            switch (bundle["link"])
+            {
+                case null:
+                    return false;
+                case JsonArray links:
+                    var nextLinks = 0;
+                    var usable = false;
+                    for (var index = 0; index < links.Count; index++)
+                    {
+                        var relation = Text(links[index], "relation");
+                        if (relation is null)
+                        {
+                            Fail(page, $"link {index + 1} is not an object with a string relation");
+                        }
+                        else if (relation == "next")
+                        {
+                            nextLinks++;
+                            if (Text(links[index], "url") is { } url && !string.IsNullOrWhiteSpace(url))
+                            {
+                                usable = true;
+                            }
+                            else
+                            {
+                                Fail(page, $"link {index + 1} (next) url is not a nonblank string");
+                            }
+                        }
+                    }
+
+                    if (nextLinks > 1)
+                    {
+                        Fail(page, $"{nextLinks} next links, expected at most one");
+                    }
+
+                    return usable;
+                default:
+                    Fail(page, "link is not an array");
+                    return false;
+            }
+        }
+
         private (Entry Entry, bool IsMatch)? ReadEntry(JsonNode? node, int page, int index)
         {
             var fullUrl = Text(node, "fullUrl");
@@ -143,17 +191,30 @@ internal static class OraclePageComparator
             }
 
             var typeId = $"{resourceType}/{id}";
-            CheckOwnership(page, fullUrl, typeId);
-            var identity = c.Corpus == OracleCorpus.UniqueId ? typeId : fullUrl;
-            return (new Entry(identity, fullUrl, typeId, resource), mode == "match");
+            var canonicalUrl = OracleUrl.Canonicalize(fullUrl);
+            CheckOwnership(page, fullUrl, canonicalUrl, typeId);
+
+            // Spellings of one physical URL are one collision identity; an unparseable fullUrl keeps its raw text
+            // so it still surfaces as an unexpected match rather than vanishing.
+            var urlIdentity = canonicalUrl ?? fullUrl;
+            var identity = c.Corpus == OracleCorpus.UniqueId ? typeId : urlIdentity;
+            return (new Entry(identity, urlIdentity, typeId, resource), mode == "match");
         }
 
         /// <summary>Contract item 3: validate the returned fullUrl against the owning base before projecting.</summary>
-        private void CheckOwnership(int page, string fullUrl, string typeId)
+        /// <param name="fullUrl">As returned, for diagnostics.</param>
+        /// <param name="canonicalUrl">The <see cref="OracleUrl"/> spelling, comparable with the canonical bases; null if unusable.</param>
+        private void CheckOwnership(int page, string fullUrl, string? canonicalUrl, string typeId)
         {
+            if (canonicalUrl is null)
+            {
+                Fail(page, $"fullUrl {fullUrl} is not an absolute http(s) URL without userinfo");
+                return;
+            }
+
             var owner = bases
-                .Where(candidate => fullUrl.StartsWith(candidate.BaseUrl, StringComparison.Ordinal)
-                    && IsTypeIdPath(fullUrl[candidate.BaseUrl.Length..]))
+                .Where(candidate => canonicalUrl.StartsWith(candidate.BaseUrl, StringComparison.Ordinal)
+                    && IsTypeIdPath(canonicalUrl[candidate.BaseUrl.Length..]))
                 .MaxBy(candidate => candidate.BaseUrl.Length);
             if (owner is null)
             {
@@ -161,7 +222,7 @@ internal static class OraclePageComparator
                 return;
             }
 
-            if (fullUrl[owner.BaseUrl.Length..] != typeId)
+            if (canonicalUrl[owner.BaseUrl.Length..] != typeId)
             {
                 Fail(page, $"fullUrl {fullUrl} does not match body {typeId}");
                 return;

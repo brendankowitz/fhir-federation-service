@@ -9,22 +9,70 @@ internal enum OracleCorpus
 }
 
 /// <summary>
+/// The one spelling rule shared by registered bases and observed fullUrls, so that two spellings of one physical
+/// URL are one identity: lower-case scheme and host, the port only when it is not the scheme default, and everything
+/// after the authority kept exactly as written (case-sensitive, never unescaped). DNS aliases are out of scope.
+/// </summary>
+internal static class OracleUrl
+{
+    /// <returns>
+    /// The canonical spelling, or null unless <paramref name="url"/> is an absolute http(s) URL with a host and no
+    /// userinfo. Query and fragment are kept as written; callers that forbid them check for them.
+    /// </returns>
+    public static string? Canonicalize(string url)
+    {
+        // Whitespace and backslashes are rejected because System.Uri silently trims or rewrites them, which would
+        // let the raw text after the authority disagree with what Uri parsed as the authority.
+        if (url.Any(ch => char.IsWhiteSpace(ch) || char.IsControl(ch) || ch == '\\')
+            || !Uri.TryCreate(url, UriKind.Absolute, out var uri)
+            || uri.Scheme is not ("http" or "https")
+            || !url.StartsWith(uri.Scheme + "://", StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        var authorityStart = uri.Scheme.Length + "://".Length;
+        var authorityEnd = url.IndexOfAny(['/', '?', '#'], authorityStart);
+        var authority = authorityEnd < 0 ? url[authorityStart..] : url[authorityStart..authorityEnd];
+        if (authority.Length == 0 || authority.Contains('@') || uri.Host.Length == 0)
+        {
+            return null;
+        }
+
+        var rest = authorityEnd < 0 ? string.Empty : url[authorityEnd..];
+        return uri.GetComponents(UriComponents.SchemeAndServer, UriFormat.UriEscaped) + (rest.StartsWith('/') ? rest : "/" + rest);
+    }
+}
+
+/// <summary>
 /// The bases a harness run actually registered: shard id to base URL, plus the unique-id oracle server's base.
-/// Every base is normalized to end with exactly one '/'.
+/// Every base is stored in <see cref="OracleUrl"/> canonical form, ending with exactly one '/'.
 /// </summary>
 internal sealed record OracleBases
 {
+    /// <exception cref="ArgumentException">A base is not an absolute http(s) URL with a host and no userinfo, query or fragment.</exception>
     public OracleBases(IReadOnlyDictionary<string, string> shards, string? oracle)
     {
-        Shards = shards.ToDictionary(shard => shard.Key, shard => Normalize(shard.Value), StringComparer.Ordinal);
-        Oracle = oracle is null ? null : Normalize(oracle);
+        Shards = shards.ToDictionary(shard => shard.Key, shard => Canonical($"shard '{shard.Key}'", shard.Value, nameof(shards)), StringComparer.Ordinal);
+        Oracle = oracle is null ? null : Canonical("oracle", oracle, nameof(oracle));
     }
 
     public IReadOnlyDictionary<string, string> Shards { get; }
 
     public string? Oracle { get; }
 
-    private static string Normalize(string baseUrl) => baseUrl.TrimEnd('/') + "/";
+    private static string Canonical(string registration, string baseUrl, string paramName)
+    {
+        var canonical = OracleUrl.Canonicalize(baseUrl);
+        if (canonical is null || canonical.IndexOfAny(['?', '#']) >= 0)
+        {
+            throw new ArgumentException(
+                $"The {registration} base '{baseUrl}' must be an absolute http(s) URL with a host and no userinfo, query or fragment.",
+                paramName);
+        }
+
+        return canonical.TrimEnd('/') + "/";
+    }
 }
 
 /// <summary>A registered base and the <c>Type/id</c>s the chosen placement seeded behind it.</summary>
@@ -155,10 +203,17 @@ internal static class OracleFixtures
             throw new ArgumentException($"Registered shard(s) {string.Join(", ", unknown)} are not in the manifest.", nameof(bases));
         }
 
-        var duplicates = bases.Shards.Values.Append(bases.Oracle).OfType<string>()
-            .GroupBy(baseUrl => baseUrl, StringComparer.Ordinal)
+        // Bases are canonical (OracleBases), so ordinal equality here is spelling-insensitive physical equality.
+        var registrations = bases.Shards.Select(shard => (Owner: shard.Key, BaseUrl: shard.Value));
+        if (bases.Oracle is not null)
+        {
+            registrations = registrations.Append((OracleOwner, bases.Oracle));
+        }
+
+        var duplicates = registrations
+            .GroupBy(registration => registration.BaseUrl, StringComparer.Ordinal)
             .Where(group => group.Count() > 1)
-            .Select(group => group.Key)
+            .Select(group => $"{group.Key} ({string.Join(", ", group.Select(registration => registration.Owner))})")
             .ToList();
         if (duplicates.Count > 0)
         {
