@@ -188,7 +188,7 @@ public static class CapabilityStatementReader
 
             string code = RequiredString(element, "name", path);
             SearchParameterType type = ParseType(RequiredString(element, "type", path), path);
-            var parameter = new SearchParameterEvidence(code, type, OptionalString(element, "definition", path));
+            var parameter = new SearchParameterEvidence(code, type, ReadDefinition(element, path));
 
             // Two entries of one code are one fact only when they agree; otherwise neither can be trusted over the other.
             if (!byCode.TryGetValue(code, out SearchParameterEvidence? existing))
@@ -203,6 +203,47 @@ public static class CapabilityStatementReader
         }
 
         return parameters.ToImmutable();
+    }
+
+    // An R4 canonical is a URI reference, absolute or relative, with an optional "|version" and then an optional "#fragment".
+    // Only that lexical shape is checked: the value is neither dereferenced nor matched, and its spelling is kept as sent.
+    private static string? ReadDefinition(JsonElement parameter, string path)
+    {
+        string? definition = OptionalString(parameter, "definition", path);
+        return definition is null || IsCanonical(definition)
+            ? definition
+            : throw Malformed(path, "definition is not a canonical.");
+    }
+
+    private static bool IsCanonical(string value)
+    {
+        for (int i = 0; i < value.Length; i++)
+        {
+            char c = value[i];
+            bool badEscape = c == '%' && (i + 2 >= value.Length || !char.IsAsciiHexDigit(value[i + 1]) || !char.IsAsciiHexDigit(value[i + 2]));
+            if (char.IsWhiteSpace(c) || char.IsControl(c) || "<>\"\\^`{}".Contains(c, StringComparison.Ordinal) || badEscape)
+            {
+                return false;
+            }
+        }
+
+        int hash = value.IndexOf('#', StringComparison.Ordinal);
+        string beforeFragment = hash < 0 ? value : value[..hash];
+        string? fragment = hash < 0 ? null : value[(hash + 1)..];
+        if (fragment is not null && (fragment.Length == 0 || fragment.AsSpan().ContainsAny('#', '|')))
+        {
+            return false;
+        }
+
+        int bar = beforeFragment.IndexOf('|', StringComparison.Ordinal);
+        string url = bar < 0 ? beforeFragment : beforeFragment[..bar];
+        if (bar < 0)
+        {
+            return url.Length > 0;
+        }
+
+        string version = beforeFragment[(bar + 1)..];
+        return url.Length > 0 && version.Length > 0 && !version.Contains('|', StringComparison.Ordinal);
     }
 
     private static SearchParameterType ParseType(string code, string path) => code switch

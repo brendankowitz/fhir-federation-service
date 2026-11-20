@@ -58,6 +58,34 @@ public sealed class CapabilitySearchParameterTests
         ]);
     }
 
+    [Theory]
+    [InlineData("http://hl7.org/fhir/SearchParameter/Patient-name")]
+    [InlineData("http://hl7.org/fhir/SearchParameter/Patient-name|4.0.1")]
+    [InlineData("http://example.org/sp#fragment")]
+    [InlineData("http://example.org/sp|1.2#fragment")]
+    [InlineData("SearchParameter/Patient-name")]
+    [InlineData("urn:oid:1.2.840.10008")]
+    public void UsableAbsoluteAndRelativeCanonicals_AreKeptExactly(string canonical)
+    {
+        ReadPatient(Params(Param("name", "string", canonical))).SearchParameters.Single().Definition.ShouldBe(canonical);
+    }
+
+    [Theory]
+    [InlineData("not a canonical")]
+    [InlineData("http://example.org/sp |1")]
+    [InlineData("http://example.org/sp|")]
+    [InlineData("http://example.org/sp|1|2")]
+    [InlineData("http://example.org/sp#")]
+    [InlineData("http://example.org/sp#a#b")]
+    [InlineData("http://example.org/sp#fragment|1")]
+    [InlineData("|1")]
+    [InlineData("http://example.org/sp%zz")]
+    public void ASuppliedDefinitionThatIsNotACanonical_IsRefusedNotTreatedAsOne(string definition)
+    {
+        Should.Throw<FormatException>(() => ReadPatient(Params(Param("name", "string", definition))));
+        Should.Throw<FormatException>(() => Read(ServerStatement(searchParam: Arr(Param("name", "string", definition)))));
+    }
+
     [Fact]
     public void AMissingDefinition_IsNullButAMalformedOneIsRefused()
     {
