@@ -13,8 +13,7 @@ internal enum ContinuationIssuanceOutcome
     TooLarge,
 
     /// <summary>
-    /// The chain cannot continue (410): its window has closed, or the predecessor's cached entry no longer exists, so
-    /// its successor must not be published.
+    /// No successor can be returned (410): a validity window has closed, or the predecessor's cached entry no longer exists.
     /// </summary>
     Gone,
 

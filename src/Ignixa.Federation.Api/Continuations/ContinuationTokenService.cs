@@ -157,7 +157,7 @@ internal sealed class ContinuationTokenService
         ContinuationIssue inline = _inline.Issue(caller, dependencies, snapshot.Span);
         if (!inline.NeedsCachedReference)
         {
-            return ContinuationIssuance.Issued(inline.InlineToken);
+            return ContinuationIssuance.Issued(inline.InlineToken, inline.DeadlineTicks);
         }
 
         long now = _time.GetUtcNow().UtcTicks;
@@ -175,9 +175,9 @@ internal sealed class ContinuationTokenService
     /// <param name="cancellationToken">Cancels until the successor is durable; cancellation propagates.</param>
     /// <returns>
     /// The successor; <see cref="ContinuationIssuanceOutcome.TooLarge"/> over the cached limit;
-    /// <see cref="ContinuationIssuanceOutcome.Gone"/> when the predecessor's window closed or its entry is no longer
-    /// live; or <see cref="ContinuationIssuanceOutcome.StoreUnavailable"/> when a write or shortening failed or its
-    /// outcome is unknown. A successor entry that is never handed out expires at its own deadline.
+    /// <see cref="ContinuationIssuanceOutcome.Gone"/> when the predecessor is no longer live or the successor expires
+    /// during the store operations; or <see cref="ContinuationIssuanceOutcome.StoreUnavailable"/> when a write or
+    /// shortening failed or its outcome is unknown. An unpublished successor entry expires at its own deadline.
     /// </returns>
     public async Task<ContinuationIssuance> IssueSuccessorAsync(
         RedeemedContinuation predecessor,
@@ -206,7 +206,7 @@ internal sealed class ContinuationTokenService
         }
         else
         {
-            successor = ContinuationIssuance.Issued(inline.InlineToken);
+            successor = ContinuationIssuance.Issued(inline.InlineToken, inline.DeadlineTicks);
         }
 
         if (predecessor.CacheKey is null)
@@ -224,8 +224,13 @@ internal sealed class ContinuationTokenService
         // leave a durable successor beside a predecessor that keeps its full lifetime.
         (bool available, bool live) = await CallStoreAsync(
             token => _cache.TryShortenExpiryAsync(predecessor.CacheKey, PredecessorGrace, token), CancellationToken.None).ConfigureAwait(false);
-        return !available ? ContinuationIssuance.StoreUnavailable
-            : live ? successor
+        if (!available)
+        {
+            return ContinuationIssuance.StoreUnavailable;
+        }
+
+        // A confirmed clamp stays applied, but its acknowledgement may arrive after the successor expired.
+        return live && _time.GetUtcNow().UtcTicks < successor.DeadlineTicks ? successor
             : ContinuationIssuance.Gone;
     }
 
@@ -330,7 +335,7 @@ internal sealed class ContinuationTokenService
         // A write refused as expired, or confirmed only after the token's own deadline, is never handed out; a
         // confirmed entry expires on its own.
         return stored && _time.GetUtcNow().UtcTicks < entry.Expiry.UtcTicks
-            ? ContinuationIssuance.Issued(entry.Reference)
+            ? ContinuationIssuance.Issued(entry.Reference, entry.Expiry.UtcTicks)
             : ContinuationIssuance.Gone;
     }
 

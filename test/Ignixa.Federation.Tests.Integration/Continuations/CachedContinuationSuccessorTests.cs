@@ -270,6 +270,80 @@ public sealed class CachedContinuationSuccessorTests : IDisposable
         (await _rig.RedeemAsync(_rig.Service(), retried)).ShouldBeRedeemed().Snapshot.ShouldBe(Snapshot(CachedSnapshotLength, 2));
     }
 
+    [Theory]
+    [InlineData(true, 64, 1999, false)]
+    [InlineData(true, CachedSnapshotLength, 1999, false)]
+    [InlineData(true, 64, 2000, false)]
+    [InlineData(true, CachedSnapshotLength, 2000, false)]
+    [InlineData(false, 64, 1999, false)]
+    [InlineData(false, CachedSnapshotLength, 1999, false)]
+    [InlineData(false, 64, 2000, false)]
+    [InlineData(false, CachedSnapshotLength, 2000, false)]
+    [InlineData(false, 64, 2000, true)]
+    [InlineData(false, CachedSnapshotLength, 2000, true)]
+    public async Task FinalTrimAcknowledgement_OnlyPublishesALiveSuccessor(
+        bool absoluteDeadline, int snapshotLength, int acknowledgementDelayMs, bool unknownOutcome)
+    {
+        ContinuationTokenService service = _rig.Service();
+        (string predecessor, string key) = await _rig.IssueCachedAsync(service);
+        TimeSpan issuedAt = TimeSpan.FromMinutes(1);
+        if (absoluteDeadline)
+        {
+            for (int minute = 10; minute <= 50; minute += 10)
+            {
+                _rig.At(TimeSpan.FromMinutes(minute));
+                RedeemedContinuation link = (await _rig.RedeemAsync(service, predecessor)).ShouldBeRedeemed();
+                predecessor = (await service.IssueSuccessorAsync(link, Snapshot(CachedSnapshotLength), Ct)).ShouldBeIssued();
+                key = _rig.Store.Written[^1];
+            }
+
+            issuedAt = TimeSpan.FromMinutes(60) - TimeSpan.FromSeconds(2);
+        }
+
+        _rig.At(issuedAt);
+        RedeemedContinuation redeemed = (await _rig.RedeemAsync(service, predecessor)).ShouldBeRedeemed();
+        if (!absoluteDeadline)
+        {
+            service = _rig.Service(new TokenOptions { SlidingLifetime = TimeSpan.FromSeconds(2) });
+        }
+
+        _rig.Store.AfterApply = operation =>
+        {
+            if (operation == Operation.Shorten)
+            {
+                _rig.At(issuedAt + TimeSpan.FromMilliseconds(acknowledgementDelayMs));
+                if (unknownOutcome)
+                {
+                    throw new ContinuationCacheUnavailableException();
+                }
+            }
+
+            return Task.CompletedTask;
+        };
+
+        byte[] snapshot = Snapshot(snapshotLength, 2);
+        ContinuationIssuance result = await service.IssueSuccessorAsync(redeemed, snapshot, Ct);
+
+        if (unknownOutcome)
+        {
+            result.ShouldBeRefused(ContinuationIssuanceOutcome.StoreUnavailable);
+        }
+        else if (acknowledgementDelayMs == 2000)
+        {
+            result.ShouldBeRefused(ContinuationIssuanceOutcome.Gone);
+        }
+        else
+        {
+            string successor = result.ShouldBeIssued();
+            IsReference(successor).ShouldBe(snapshotLength == CachedSnapshotLength);
+            (await _rig.RedeemAsync(service, successor)).ShouldBeRedeemed().Snapshot.ShouldBe(snapshot);
+        }
+
+        // The applied clamp is not undone even if the successor expires or the acknowledgement is lost.
+        TimeSpan predecessorExpiry = absoluteDeadline ? TimeSpan.FromMinutes(60) : issuedAt + Grace;
+        _rig.Store.ExpiryOf(key).ShouldBe(Start + predecessorExpiry);
+    }
+
     [Fact]
     public async Task EvictedPredecessor_IsGone_IsNotResurrected_AndTheUnreferencedSuccessorExpiresOnItsOwn()
     {

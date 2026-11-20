@@ -11,12 +11,19 @@ namespace Ignixa.Federation.Api.Continuations;
 internal sealed class ContinuationIssue
 {
     /// <summary>The outcome for a snapshot over the inline limit.</summary>
-    internal static readonly ContinuationIssue NeedsCache = new(null);
+    internal static readonly ContinuationIssue NeedsCache = new(null, 0);
 
-    private ContinuationIssue(string? inlineToken) => InlineToken = inlineToken;
+    private ContinuationIssue(string? inlineToken, long deadlineTicks)
+    {
+        InlineToken = inlineToken;
+        DeadlineTicks = deadlineTicks;
+    }
 
     /// <summary>Gets the inline token, Base64Url without padding, or <see langword="null"/> when a cached reference is needed.</summary>
     public string? InlineToken { get; }
+
+    /// <summary>Gets the exclusive UTC deadline encoded in the token, or zero when no token was issued.</summary>
+    internal long DeadlineTicks { get; }
 
     /// <summary>Gets whether the snapshot is too large to travel inline and needs a cached reference instead.</summary>
     [MemberNotNullWhen(false, nameof(InlineToken))]
@@ -24,6 +31,7 @@ internal sealed class ContinuationIssue
 
     /// <summary>Wraps an inline token.</summary>
     /// <param name="token">The token.</param>
+    /// <param name="deadlineTicks">The exclusive UTC deadline encoded in the token.</param>
     /// <returns>An inline result.</returns>
-    internal static ContinuationIssue Inline(string token) => new(token);
+    internal static ContinuationIssue Inline(string token, long deadlineTicks) => new(token, deadlineTicks);
 }

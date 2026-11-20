@@ -204,15 +204,16 @@ internal sealed class ContinuationProtector
         }
 
         byte[] plaintext = new byte[length];
+        long slidingDeadlineTicks = SaturatingAdd(issuedTicks, _slidingTicks);
         ContinuationEnvelope.Write(plaintext, chainIssuedTicks, issuedTicks, chainDeadlineTicks,
-            SaturatingAdd(issuedTicks, _slidingTicks), bindingHash, dependencies, snapshot);
+            slidingDeadlineTicks, bindingHash, dependencies, snapshot);
         byte[] protectedBytes = _protector.Protect(plaintext);
         if (protectedBytes.Length > _maxProtectedBytes)
         {
             throw new InvalidOperationException("The configured data protection overhead exceeds the continuation token allowance.");
         }
 
-        return ContinuationIssue.Inline(Base64Url.EncodeToString(protectedBytes));
+        return ContinuationIssue.Inline(Base64Url.EncodeToString(protectedBytes), Math.Min(chainDeadlineTicks, slidingDeadlineTicks));
     }
 
     /// <summary>

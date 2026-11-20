@@ -283,7 +283,7 @@ public sealed class CachedContinuationIssuanceTests : IDisposable
     public void Outcomes_RenderNoTokenOrSnapshot()
     {
         ContinuationIssuance.TooLarge.ToString().ShouldBe(typeof(ContinuationIssuance).FullName);
-        ContinuationIssuance.Issued("r1.secret").ToString().ShouldBe(typeof(ContinuationIssuance).FullName);
+        ContinuationIssuance.Issued("r1.secret", Start.UtcTicks).ToString().ShouldBe(typeof(ContinuationIssuance).FullName);
         new ContinuationCacheUnavailableException().InnerException.ShouldBeNull();
     }
 
