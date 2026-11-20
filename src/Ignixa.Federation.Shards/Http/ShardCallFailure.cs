@@ -1,6 +1,6 @@
 namespace Ignixa.Federation.Shards.Http;
 
-/// <summary>Why a shard search call failed (design spec §8). Carried by <see cref="ShardCallException"/>.</summary>
+/// <summary>Why a shard call failed (design spec §8). Carried by <see cref="ShardCallException"/>.</summary>
 public enum ShardCallFailure
 {
     /// <summary>Not classified: set only by the standard exception constructors. <see cref="HttpShardClient"/> never throws it.</summary>
@@ -9,7 +9,7 @@ public enum ShardCallFailure
     /// <summary>The backend refused the credential: HTTP 401 or 403.</summary>
     Authentication,
 
-    /// <summary>The backend answered with a status other than 200 that is not a redirect or an authentication refusal.</summary>
+    /// <summary>The backend answered with an HTTP status that has no specific meaning for this call.</summary>
     UnexpectedStatus,
 
     /// <summary>The backend answered with a 3xx redirect. Redirects are never followed, so a credential cannot leave the shard.</summary>
@@ -25,8 +25,7 @@ public enum ShardCallFailure
     ResponseTooLarge,
 
     /// <summary>
-    /// The body is not a well-formed searchset of the requested type: not JSON, a duplicate property, a wrong envelope, an
-    /// entry that is not a <c>match</c>, an unparsable identity, total or instant, or a count-only page with entries.
+    /// The body is not a well-formed searchset of the requested type or a JSON resource with the requested read identity.
     /// </summary>
     MalformedResponse,
 

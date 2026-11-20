@@ -2,7 +2,7 @@ using Ignixa.Federation.Core.Shards;
 
 namespace Ignixa.Federation.Shards.Http;
 
-/// <summary>A shard search call failed in a way the backend or the wire caused (design spec §8).</summary>
+/// <summary>A shard call failed in a way the backend or the wire caused (design spec §8).</summary>
 /// <remarks>
 /// <para>The message is fixed text naming the shard alias, the failure and, for a status failure, the status code. It never
 /// holds a URL, query, token, response body, or the message of an exception from the wire, and there is no inner exception,
@@ -53,6 +53,6 @@ public sealed class ShardCallException : Exception
     private static string Describe(ShardDescriptor shard, ShardCallFailure failure, string reason, int? statusCode)
     {
         string status = statusCode is { } code ? $" (HTTP {code})" : string.Empty;
-        return $"Shard '{shard.Alias}' search failed: {failure}{status}: {reason}";
+        return $"Shard '{shard.Alias}' call failed: {failure}{status}: {reason}";
     }
 }

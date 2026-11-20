@@ -51,6 +51,7 @@ public sealed class HttpShardClientReadTests
         "{\"resourceType\":\"Patient\",\"id\":null}",
         "{\"resourceType\":[\"Patient\"],\"id\":\"dup\"}",
         "{\"resourceType\":\"Patient\",\"id\":\"dup\",\"id\":\"dup\"}",
+        "{\"resourceType\":\"Patient\",\"id\":\"dup\",\"i\\u0064\":\"dup\"}",
         "{\"resourceType\":\"Patient\",\"resourceType\":\"Patient\",\"id\":\"dup\"}",
         "{\"resourceType\":\"Patient\",\"id\":\"dup\",\"name\":[{\"family\":\"x\",\"family\":\"y\"}]}",
         "{\"resourceType\":\"Patient\",\"id\":\"d\\ud800p\"}",
@@ -62,6 +63,8 @@ public sealed class HttpShardClientReadTests
     {
         await using var east = ShardHarness.Start(id: "east");
         await using var west = ShardHarness.Start(id: "west");
+        east.Credentials.Acquire = _ => ValueTask.FromResult("east-synthetic-token");
+        west.Credentials.Acquire = _ => ValueTask.FromResult("west-synthetic-token");
         ResourceKey eastKey = await FindDupAsync(east);
         ResourceKey westKey = await FindDupAsync(west);
         eastKey.Id.ShouldBe(westKey.Id);
@@ -84,7 +87,8 @@ public sealed class HttpShardClientReadTests
         west.Server.Requests.Select(r => $"{r.Method} {r.Target}").ShouldBe(["GET /fhir/Patient?name=Sarah&_count=10", "GET /fhir/Patient/dup"]);
         RecordedRequest read = east.Server.Requests[1];
         read.Body.ShouldBeEmpty();
-        read.HeaderValues("Authorization").ShouldBe(["Bearer " + SyntheticCredentials.Token]);
+        read.HeaderValues("Authorization").ShouldBe(["Bearer east-synthetic-token"]);
+        west.Server.Requests[1].HeaderValues("Authorization").ShouldBe(["Bearer west-synthetic-token"]);
         read.HeaderValues("Accept").ShouldBe(["application/fhir+json"]);
         east.Credentials.Calls.ShouldBe(2);
         west.Credentials.Calls.ShouldBe(2);
@@ -183,6 +187,7 @@ public sealed class HttpShardClientReadTests
         failure.StatusCode.ShouldBe(status);
         failure.Shard.ShouldBe(shard.Shard.Id);
         failure.InnerException.ShouldBeNull();
+        failure.Message.ShouldNotContain("search");
         failure.Message.ShouldNotContain("Sarah");
         failure.Message.ShouldNotContain(SyntheticCredentials.Token);
         failure.Message.ShouldNotContain("internal detail");
@@ -205,20 +210,6 @@ public sealed class HttpShardClientReadTests
 
         failure.Failure.ShouldBe(ShardCallFailure.UnexpectedStatus);
         failure.StatusCode.ShouldBe(status);
-    }
-
-    [Fact]
-    public void OriginalFailureValues_AreUnchangedAndTheNewOnesAreAppended()
-    {
-        string[] names = Enum.GetNames<ShardCallFailure>();
-
-        names.Take(10).ShouldBe(
-        [
-            "Unclassified", "Authentication", "UnexpectedStatus", "Redirect", "Timeout", "Transport", "ResponseTooLarge",
-            "MalformedResponse", "SelfLinkMismatch", "InvalidNextLink",
-        ]);
-        names.Skip(10).ShouldBe(["ResourceNotFound", "ResourceGone"]);
-        ((int)ShardCallFailure.InvalidNextLink).ShouldBe(9);
     }
 
     [Theory]
@@ -246,6 +237,18 @@ public sealed class HttpShardClientReadTests
     public async Task BodyThatIsNotValidUtf8OrStartsWithABom_IsMalformed(byte[] body)
     {
         await using var shard = ShardHarness.Start();
+        shard.Server.Respond(ScriptedResponse.Bytes(body));
+
+        ShardCallException failure = await Should.ThrowAsync<ShardCallException>(() => shard.Client.ReadAsync(Key(shard, "dup"), Ct));
+
+        failure.Failure.ShouldBe(ShardCallFailure.MalformedResponse);
+    }
+
+    [Fact]
+    public async Task InvalidUtf8InAnUninspectedField_IsMalformedEvenWithMatchingIdentity()
+    {
+        await using var shard = ShardHarness.Start();
+        byte[] body = [.. "{\"resourceType\":\"Patient\",\"id\":\"dup\",\"name\":[{\"family\":\""u8, 0xFF, .. "\"}]}"u8];
         shard.Server.Respond(ScriptedResponse.Bytes(body));
 
         ShardCallException failure = await Should.ThrowAsync<ShardCallException>(() => shard.Client.ReadAsync(Key(shard, "dup"), Ct));

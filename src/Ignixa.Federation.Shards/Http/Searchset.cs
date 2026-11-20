@@ -230,7 +230,7 @@ internal sealed partial class Searchset
         }
     }
 
-    internal static ShardCallException Malformed(ShardDescriptor shard, string reason) =>
+    private static ShardCallException Malformed(ShardDescriptor shard, string reason) =>
         new(shard, ShardCallFailure.MalformedResponse, reason);
 
     [GeneratedRegex(@"\A[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]{1,7})?(Z|[+-][0-9]{2}:[0-9]{2})\z", RegexOptions.CultureInvariant)]

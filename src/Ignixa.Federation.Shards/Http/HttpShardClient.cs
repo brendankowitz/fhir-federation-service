@@ -14,7 +14,7 @@ using Ignixa.Federation.Shards.Diagnostics;
 
 namespace Ignixa.Federation.Shards.Http;
 
-/// <summary>Searches one shard over HTTPS, one backend exchange per page (design spec §7).</summary>
+/// <summary>Searches and reads one shard over HTTPS, one backend exchange per page or read (design spec §5.1 and §7).</summary>
 /// <remarks>
 /// <para><b>Wire.</b> Search parameters are sent verbatim in planner order, then one <c>_count</c>: as the query of
 /// <c>GET {base}/{type}</c>, or as the <c>application/x-www-form-urlencoded</c> body of <c>POST {base}/{type}/_search</c>.
@@ -268,7 +268,7 @@ public sealed class HttpShardClient : IShardClient, IDisposable
             throw Failure(ShardCallFailure.MalformedResponse, "The body is not valid JSON.");
         }
 
-        return new ShardReadResult(location, body.Span);
+        return new ShardReadResult(location, body);
     }
 
     // Redirects, cookies, decompression and ambient credentials are off: the client sends exactly what it builds and
