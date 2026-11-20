@@ -238,11 +238,12 @@ public static class CliApp
 
     /// <summary>
     /// Remembers the query of each continuation link the federation issued and blanks it out of server text.
-    /// A server could echo the opaque <c>ct</c> in a diagnostic; the CLI promises never to print it.
+    /// A server could echo the opaque <c>ct</c> in a diagnostic; the CLI promises never to print it, whole or cut short.
     /// </summary>
     private sealed class Redactor
     {
         private const string Mask = "[hidden]";
+        private const int MinPrefixLength = 8;
 
         private readonly List<string> _secrets = [];
 
@@ -268,8 +269,25 @@ public static class CliApp
             _secrets.Sort((a, b) => b.Length.CompareTo(a.Length));
         }
 
-        public string Hide(string text) =>
-            _secrets.Aggregate(text, (current, secret) => current.Replace(secret, Mask, StringComparison.Ordinal));
+        public string Hide(string text)
+        {
+            var hidden = _secrets.Aggregate(text, (current, secret) => current.Replace(secret, Mask, StringComparison.Ordinal));
+
+            // The library cuts diagnostics to a fixed length, so an echoed ct (a long encrypted payload) usually arrives
+            // as a prefix only. Blank a trailing run that is the start of a remembered secret.
+            foreach (var secret in _secrets)
+            {
+                for (var length = Math.Min(secret.Length - 1, hidden.Length); length >= MinPrefixLength; length--)
+                {
+                    if (hidden.EndsWith(secret.AsSpan(0, length), StringComparison.Ordinal))
+                    {
+                        return hidden[..^length] + Mask;
+                    }
+                }
+            }
+
+            return hidden;
+        }
     }
 
     /// <summary>Server-supplied text is shown on one line; control characters could otherwise forge output lines.</summary>

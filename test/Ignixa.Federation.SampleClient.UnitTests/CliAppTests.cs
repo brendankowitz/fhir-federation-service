@@ -12,7 +12,12 @@ namespace Ignixa.Federation.SampleClient.UnitTests;
 public class CliAppTests
 {
     private const string Ct = "SECRETCT%2Bab%3D";
-    private static readonly string[] SecretsThatMustNeverBePrinted = [FederationToken, ShardToken, "SECRETCT", "ct="];
+    // Spec-sized: a real ct is an encrypted payload of well over 120 characters, so it is always long enough to be truncated.
+    private static readonly string LongCt = string.Concat(Enumerable.Repeat("Zm9vYmFyQkFTRTY0VVJMLV9zYWZl", 11));
+
+    // A leaked prefix of 16 characters counts as a leak, not only the whole continuation value.
+    private static readonly string[] SecretsThatMustNeverBePrinted =
+        [FederationToken, ShardToken, "SECRETCT", "ct=", LongCt[..16]];
 
     private static readonly Dictionary<string, string?> BothTokens = new()
     {
@@ -429,6 +434,39 @@ public class CliAppTests
 
         run.ExitCode.ShouldBe(0);
         run.Stdout.ShouldContain("outcome warning/incomplete: truncated after");
+    }
+
+    [Fact]
+    public Task A_spec_sized_ct_echoed_late_in_a_long_diagnostic_is_hidden_even_after_the_library_truncates_it() =>
+        AssertTruncatedEchoIsHiddenAsync(LongCt, filler: 176, echo: $"ct={LongCt} and more");
+
+    [Fact]
+    public Task A_decoded_ct_cut_off_mid_value_by_truncation_is_hidden() =>
+        AssertTruncatedEchoIsHiddenAsync(Ct, filler: 190, echo: "SECRETCT+ab= and more");
+
+    /// <summary>
+    /// The library cuts each diagnostic to 200 characters, so an echo near the end arrives as a prefix only. The
+    /// leak check in <see cref="RunAsync"/> fails if any 16-character prefix of the ct (or the value itself) is printed.
+    /// </summary>
+    private static async Task AssertTruncatedEchoIsHiddenAsync(string ct, int filler, string echo)
+    {
+        var diagnostics = new string('x', filler) + " " + echo;
+        diagnostics.Length.ShouldBeGreaterThan(200);
+        var firstPage = Page($"{Fed}Patient?ct={ct}", Match($"{East}Patient/1", "Patient", "1"));
+
+        var failed = await RunAsync(["--base", Fed, "--type", "Patient"], new ScriptedHandler()
+            .Ok(firstPage)
+            .Respond(HttpStatusCode.BadRequest, OperationOutcome("error", "invalid", diagnostics)));
+        var warned = await RunAsync(["--base", Fed, "--type", "Patient"], new ScriptedHandler()
+            .Ok(firstPage)
+            .Ok(Page(null, OutcomeEntry("warning", "incomplete", diagnostics))));
+
+        failed.ExitCode.ShouldBe(4);
+        failed.Stderr.ShouldContain("error/invalid: xxx");
+        failed.Stderr.ShouldContain("[hidden]");
+        warned.ExitCode.ShouldBe(0);
+        warned.Stdout.ShouldContain("outcome warning/incomplete: xxx");
+        warned.Stdout.ShouldContain("[hidden]");
     }
 
     [Fact]

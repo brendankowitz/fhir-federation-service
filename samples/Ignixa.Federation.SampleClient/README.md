@@ -41,7 +41,7 @@ dotnet run --project samples/Ignixa.Federation.SampleClient -- --help
 Search a federation (the host below is an example):
 
 ```powershell
-$env:FEDERATION_ACCESS_TOKEN = Read-Host -MaskInput 'Federation token'   # optional; omit for anonymous
+$env:FEDERATION_ACCESS_TOKEN = [Net.NetworkCredential]::new('', (Read-Host -AsSecureString 'Federation token')).Password   # optional; omit for anonymous
 dotnet run --project samples/Ignixa.Federation.SampleClient -- `
     --base https://fed.example/fhir/ --type Patient --param name=smith --max-pages 3
 ```
@@ -52,7 +52,7 @@ Read the first match through the federation, or directly from its shard:
 dotnet run --project samples/Ignixa.Federation.SampleClient -- `
     --base https://fed.example/fhir/ --type Patient --param name=smith --read alternate
 
-$env:SHARD_ACCESS_TOKEN = Read-Host -MaskInput 'Shard token'              # optional; used only for --direct-shard shards
+$env:SHARD_ACCESS_TOKEN = [Net.NetworkCredential]::new('', (Read-Host -AsSecureString 'Shard token')).Password   # optional; used only for --direct-shard shards
 dotnet run --project samples/Ignixa.Federation.SampleClient -- `
     --base https://fed.example/fhir/ --type Patient --param name=smith `
     --read direct --direct-shard https://shard-east.example/fhir/
@@ -79,10 +79,12 @@ dotnet run --project samples/Ignixa.Federation.SampleClient -- `
 | `SHARD_ACCESS_TOKEN` | Optional bearer token, sent only to `--direct-shard` shards. |
 
 Credentials are never accepted as arguments (an option such as `--token` is a usage error), so they stay out of
-process listings and command lines. `Read-Host -MaskInput` above also keeps them off the screen and out of the typed
+process listings and command lines. The `Read-Host -AsSecureString` form above (it works in Windows PowerShell 5.1 and
+PowerShell 7) also keeps them off the screen and out of the typed
 command line; a token is trimmed, and one containing a line break is refused (exit code 2). The CLI never prints
 tokens, `ct` values, `next` links or query strings, or resource bodies, and it blanks out any echo of a followed
-`ct` in server diagnostics.
+`ct` in server diagnostics, including one the library cut short (diagnostics are limited to 200 characters, so a
+long `ct` is usually echoed as a prefix).
 
 ### Output
 
