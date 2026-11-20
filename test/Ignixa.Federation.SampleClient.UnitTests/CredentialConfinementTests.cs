@@ -17,6 +17,11 @@ public class CredentialConfinementTests
     [InlineData("https://fed.example/fhir/..%2Fother/Patient?ct=SECRETCT")]
     [InlineData("https://fed.example/fhir/..%5Cother/Patient?ct=SECRETCT")]
     [InlineData("https://fed.example/fhir/Patient/%2e%2e%2f%2e%2e%2fadmin?ct=SECRETCT")]
+    [InlineData("https://fed.example/fhir/..%252Fother/Patient?ct=SECRETCT")]
+    [InlineData("https://fed.example/fhir/%252e%252e/other?ct=SECRETCT")]
+    [InlineData("https://fed.example/fhir/..;/other/Patient?ct=SECRETCT")]
+    [InlineData("https://fed.example/fhir/%2e%2e%252fother?ct=SECRETCT")]
+    [InlineData("https://fed.example/fhir/%2E%2E;/other?ct=SECRETCT")]
     [InlineData("https://user:hunter2@fed.example/fhir/Patient?ct=SECRETCT")]
     public async Task A_next_link_outside_the_federation_scope_is_rejected_before_sending(string next)
     {
@@ -99,6 +104,8 @@ public class CredentialConfinementTests
     [Theory]
     [InlineData("https://fed.example/fhir/..%2Fother/shards/k7q2/Patient/1")]
     [InlineData("https://fed.example/fhir/shards/..%5C..%5Cadmin/Patient/1")]
+    [InlineData("https://fed.example/fhir/..%252Fother/shards/k7q2/Patient/1")]
+    [InlineData("https://fed.example/fhir/shards/..;/admin/Patient/1")]
     public async Task Read_via_alternate_rejects_an_encoded_separator_that_escapes_the_federation_path(string alternate)
     {
         var handler = new ScriptedHandler().Ok(Page(null, Match($"{East}Patient/1", "Patient", "1", alternate: alternate)));
@@ -108,6 +115,63 @@ public class CredentialConfinementTests
         await Should.ThrowAsync<LinkRejectedException>(() => client.ReadViaFederationAsync(entry, TestContext.Current.CancellationToken));
 
         handler.Requests.Count.ShouldBe(1);
+    }
+
+    [Fact]
+    public async Task A_next_link_whose_query_holds_encoded_separators_is_still_followed()
+    {
+        var next = $"{Fed}Patient?ct=a%2Fb%5C..";
+        var handler = new ScriptedHandler().Ok(Page(next)).Ok(Page());
+        using var client = Create(handler);
+
+        await SearchAll(client);
+
+        handler.Requests[1].Uri.AbsoluteUri.ShouldBe(next);
+    }
+
+    [Fact]
+    public async Task An_alternate_with_an_encoded_space_in_a_path_segment_is_still_allowed()
+    {
+        var alternate = $"{Fed}shards/k7q2/Patient/a%20b";
+        var handler = new ScriptedHandler()
+            .Ok(Page(null, Match($"{East}Patient/a%20b", "Patient", "a b", alternate: alternate)))
+            .Ok("""{"resourceType":"Patient","id":"a b"}""");
+        using var client = Create(handler);
+        var entry = (await SearchAll(client)).Matches.Single();
+
+        using var doc = await client.ReadViaFederationAsync(entry, TestContext.Current.CancellationToken);
+
+        handler.Requests[1].Uri.AbsoluteUri.ShouldBe(alternate);
+    }
+
+    [Fact]
+    public async Task A_direct_read_with_an_encoded_space_in_a_path_segment_is_still_allowed()
+    {
+        var federation = new ScriptedHandler().Ok(Page(null, Match($"{East}Patient/a%20b", "Patient", "a b")));
+        var east = new ScriptedHandler().Ok("""{"resourceType":"Patient","id":"a b"}""");
+        var shards = new Dictionary<string, ScriptedHandler> { ["shard-east.example"] = east };
+        using var client = CreateWithShards(federation, shards, Shard(East, ShardToken));
+        var entry = (await SearchAll(client)).Matches.Single();
+
+        using var doc = await client.ReadDirectAsync(entry, TestContext.Current.CancellationToken);
+
+        east.Requests.ShouldHaveSingleItem().Uri.AbsoluteUri.ShouldBe($"{East}Patient/a%20b");
+    }
+
+    [Theory]
+    [InlineData("..%252Fadmin/Patient/1")]
+    [InlineData("..;/admin/Patient/1")]
+    public async Task Direct_read_rejects_double_encoded_and_path_parameter_traversal_before_sending(string escape)
+    {
+        var federation = new ScriptedHandler().Ok(Page(null, Match($"{East}{escape}", "Patient", "1")));
+        var east = new ScriptedHandler();
+        var shards = new Dictionary<string, ScriptedHandler> { ["shard-east.example"] = east };
+        using var client = CreateWithShards(federation, shards, Shard(East, ShardToken));
+        var entry = (await SearchAll(client)).Matches.Single();
+
+        await Should.ThrowAsync<LinkRejectedException>(() => client.ReadDirectAsync(entry, TestContext.Current.CancellationToken));
+
+        east.Requests.ShouldBeEmpty();
     }
 
     [Fact]
