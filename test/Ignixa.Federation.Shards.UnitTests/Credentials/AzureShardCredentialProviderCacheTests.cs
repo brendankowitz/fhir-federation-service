@@ -296,6 +296,36 @@ public sealed class AzureShardCredentialProviderCacheTests
     }
 
     [Fact]
+    public async Task CancellationDuringReplacementConstructionDoesNotPublishOrUseThatCredential()
+    {
+        var secrets = new ScriptedSecretResolver("secret-v1");
+        var sdk = new RecordingCredentialFactory();
+        using var caller = new CancellationTokenSource();
+        var provider = new AzureShardCredentialProvider(secrets, sdk.CreateManaged, (tenant, client, secret) =>
+        {
+            var credential = sdk.CreateClient(tenant, client, secret);
+            if (sdk.CreatedCount == 2)
+            {
+                caller.Cancel();
+            }
+
+            return credential;
+        });
+        ClientCredentialsAuth auth = SyntheticAuths.Client("api://synthetic-shard");
+        await provider.GetAccessTokenAsync(auth, Ct);
+        secrets.Value = "secret-v2";
+
+        OperationCanceledException canceled = await Should.ThrowAsync<OperationCanceledException>(
+            () => provider.GetAccessTokenAsync(auth, caller.Token).AsTask());
+        string nextToken = await provider.GetAccessTokenAsync(auth, Ct);
+
+        canceled.CancellationToken.ShouldBe(caller.Token);
+        sdk.Clients.Select(c => c.Secret).ShouldBe(["secret-v1", "secret-v2", "secret-v2"]);
+        sdk.Clients[1].Credential.ScopeRequests.ShouldBeEmpty();
+        nextToken.ShouldBe(sdk.Clients[2].Credential.Token);
+    }
+
+    [Fact]
     public async Task ARejectedReplacementLeavesTheCurrentCredentialInPlace()
     {
         var secrets = new ScriptedSecretResolver("secret-v1");

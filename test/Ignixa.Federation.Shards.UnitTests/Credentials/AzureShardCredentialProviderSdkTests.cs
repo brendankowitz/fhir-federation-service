@@ -81,12 +81,12 @@ public sealed class AzureShardCredentialProviderSdkTests : IDisposable
         _endpoint.Unexpected.ShouldBeEmpty();
     }
 
-    [Fact]
-    public async Task ATokenInsideTheSdkRefreshWindowIsRefreshedByTheNextAcquisitionAndTheRefreshedOneIsReused()
+    [Theory]
+    [InlineData(60)]
+    [InlineData(-60)]
+    public async Task AnExpiringOrExpiredTokenIsRefreshedByTheNextAcquisitionAndTheRefreshedOneIsReused(int lifetimeSeconds)
     {
-        // The SDK treats a token within five minutes of expiry as due for refresh, so a one-minute token is refreshed
-        // by the very next acquisition without any waiting.
-        _endpoint.ExpiresInSeconds = 60;
+        _endpoint.ExpiresInSeconds = lifetimeSeconds;
         AzureShardCredentialProvider provider = Provider(new ScriptedSecretResolver("synthetic-sdk-secret-v1"));
         ClientCredentialsAuth auth = SyntheticAuths.Client("api://synthetic-shard", Tenant, Client, "kv-sdk-secret");
 

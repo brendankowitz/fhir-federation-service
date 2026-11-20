@@ -56,6 +56,7 @@ internal sealed class ClientSecretCredentialCache(Func<string, string, string, T
             }
 
             TokenCredential credential = create(auth.TenantId, auth.ClientId, secret);
+            cancellationToken.ThrowIfCancellationRequested();
             slot.Fingerprint = fingerprint.ToArray();
             slot.Credential = credential;
             slot.Latest = lookup;
