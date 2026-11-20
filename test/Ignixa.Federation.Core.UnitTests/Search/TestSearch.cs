@@ -34,7 +34,7 @@ internal static class TestSearch
     public static ReferencePath Path(string source, string code, string target) => new(Type(source), code, Type(target));
 
     public static SearchParameterSupport Param(string code, SearchParamType type, string? definition = null) =>
-        new(code, type, definition is null ? null : new Uri(definition));
+        new(code, type, definition);
 
     public static IReadOnlyList<ResourceSearchSupport> AllResources { get; } =
     [
