@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using Ignixa.Federation.Core.Execution;
 using Ignixa.Federation.Core.Shards;
@@ -8,8 +9,14 @@ namespace Ignixa.Federation.Core.UnitTests.Execution;
 /// <summary>Selective speculative fanout, ordered emission over it, and joining it on every exit (design spec §7.1).</summary>
 public sealed class UnsortedPageExecutorSpeculationTests
 {
+    private static readonly string[] Exits = ["filled", "failed", "contract", "budget"];
+
     /// <summary>Runs each timing-sensitive test 20 times.</summary>
     public static TheoryData<int> Iterations => [.. Enumerable.Range(1, 20)];
+
+    /// <summary>Each way a page ends while a speculative call runs, other than caller cancellation, 20 times.</summary>
+    public static TheoryData<string, int> ExitsWhileSpeculating =>
+        [.. from exit in Exits from iteration in Enumerable.Range(1, 20) select (exit, iteration)];
 
     private static CancellationToken Token => TestContext.Current.CancellationToken;
 
@@ -183,6 +190,84 @@ public sealed class UnsortedPageExecutorSpeculationTests
         thrown.CancellationToken.ShouldBe(caller.Token);
         client.InFlight.ShouldBe(0);
         client.Calls.ShouldAllBe(call => call.Finished.IsCompleted);
+    }
+
+    /// <summary>
+    /// Proves the join on exits other than caller cancellation: s1's speculative call keeps running after its token is
+    /// cancelled, until the test releases it. While it is parked, the page must not have ended; once it ends, every call
+    /// must have finished.
+    /// </summary>
+    [Theory]
+    [MemberData(nameof(ExitsWhileSpeculating))]
+    public async Task SpeculativeCallThatOutlivesItsCancellation_IsJoinedBeforeThePageEnds(string exit, int iteration)
+    {
+        _ = iteration;
+        var client = new FakeShardClient();
+        var frontier = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var cancelled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        ShardCursor cursor = Fixture.Cursor(0, "1");
+        client.OnSearch(0, Fixture.Page(cursor, Fixture.Entries(0, "a")));
+        client.OnContinue(cursor, async cancellationToken =>
+        {
+            await frontier.Task.WaitAsync(cancellationToken);
+            return exit switch
+            {
+                "filled" => Fixture.Page(null, Fixture.Entries(0, "b", "c")),
+                "failed" => throw new InvalidOperationException("backend said 500"),
+                "contract" => Fixture.Page(null, Fixture.Entries(0, "b", "b")),
+                _ => Fixture.Page(Fixture.Cursor(0, "2"), Fixture.Entries(0, "b")),
+            };
+        });
+        client.OnSearch(Fixture.Shard(1), async (_, cancellationToken) =>
+        {
+            try
+            {
+                await Task.Delay(Timeout.Infinite, cancellationToken);
+            }
+            catch (OperationCanceledException)
+            {
+                cancelled.SetResult();
+                await release.Task;
+                throw;
+            }
+
+            throw new UnreachableException();
+        });
+
+        // Budget 3: s0's first page, s1's speculation and s0's continuation. The "budget" exit then needs a fourth call.
+        Task<UnsortedPage> execution = Fixture.Executor(client, Fixture.Registry(2), 2).ExecuteAsync(Fixture.Streams(2), 3, null, 3, Token);
+        await client.WhenStarted(3);
+        frontier.SetResult();
+        await cancelled.Task.WaitAsync(Token);
+
+        // s1's call is parked on release, so a joined page cannot have ended. Yielding gives an unjoined one time to end.
+        for (int yields = 0; yields < 10; yields++)
+        {
+            execution.IsCompleted.ShouldBeFalse();
+            await Task.Yield();
+        }
+
+        execution.IsCompleted.ShouldBeFalse();
+        release.SetResult();
+        switch (exit)
+        {
+            case "filled":
+                (await execution).Ids().ShouldBe(Fixture.Ids(0, "a", "b", "c"));
+                break;
+            case "budget":
+                await Should.ThrowAsync<FetchBudgetExhaustedException>(execution);
+                break;
+            default:
+                ShardFailureException thrown = await Should.ThrowAsync<ShardFailureException>(execution);
+                thrown.Shard.ShouldBe(Fixture.Shard(0));
+                thrown.Reason.ShouldBe(exit == "failed" ? ShardFailureReason.Failed : ShardFailureReason.ContractViolation);
+                break;
+        }
+
+        client.Calls.Count.ShouldBe(3);
+        client.Calls.ShouldAllBe(call => call.Finished.IsCompleted);
+        client.InFlight.ShouldBe(0);
     }
 
     [Theory]
