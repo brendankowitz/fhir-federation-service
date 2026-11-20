@@ -67,6 +67,7 @@ public static class CapabilityStatementReader
             throw Malformed(Root, "kind is not instance or capability.");
         }
 
+        RejectModifierExtension(statement, Root);
         SoftwareEvidence? software = ReadSoftware(statement);
         (JsonElement Block, string Path)? server = FindServerBlock(statement);
         if (server is not var (block, serverPath))
@@ -74,6 +75,7 @@ public static class CapabilityStatementReader
             return new ShardCapabilityEvidence(ImmutableDictionary<ResourceType, ResourceSearchEvidence>.Empty, [], software);
         }
 
+        RejectModifierExtension(block, serverPath);
         return new ShardCapabilityEvidence(
             ReadResources(block, serverPath),
             ReadSearchParameters(block, serverPath),
@@ -92,6 +94,8 @@ public static class CapabilityStatementReader
         {
             throw Malformed(Path, "software is not an object.");
         }
+
+        RejectModifierExtension(software, Path);
 
         string? name = OptionalString(software, "name", Path);
         string? version = OptionalString(software, "version", Path);
@@ -148,6 +152,7 @@ public static class CapabilityStatementReader
 
             if (AdvertisesSearchType(resource, path))
             {
+                RejectModifierExtension(resource, path);
                 searchable.Add(type, new ResourceSearchEvidence(
                     type,
                     ReadSearchParameters(resource, path),
@@ -169,10 +174,25 @@ public static class CapabilityStatementReader
                 throw Malformed(interactionPath, "An interaction entry is not an object.");
             }
 
-            advertises |= RequiredString(interaction, "code", interactionPath) == "search-type";
+            if (RequiredString(interaction, "code", interactionPath) == "search-type")
+            {
+                RejectModifierExtension(interaction, interactionPath);
+                advertises = true;
+            }
         }
 
         return advertises;
+    }
+
+    // Unlike an extension, a modifierExtension may change what its element means, so evidence cannot be taken from an
+    // element that carries one. Callers check only the structures they consume; an empty array modifies nothing.
+    private static void RejectModifierExtension(JsonElement element, string path)
+    {
+        if (element.TryGetProperty("modifierExtension", out JsonElement modifier)
+            && !(modifier.ValueKind == JsonValueKind.Array && modifier.GetArrayLength() == 0))
+        {
+            throw Malformed(path, "modifierExtension is not supported.");
+        }
     }
 
     private static ImmutableArray<SearchParameterEvidence> ReadSearchParameters(JsonElement owner, string ownerPath)
@@ -191,7 +211,8 @@ public static class CapabilityStatementReader
             {
                 throw Malformed(path, "A searchParam name is not a URL search parameter token.");
             }
-            SearchParameterType type = ParseType(RequiredString(element, "type", path), path);
+
+            RejectModifierExtension(element, path);            SearchParameterType type = ParseType(RequiredString(element, "type", path), path);
             var parameter = new SearchParameterEvidence(code, type, ReadDefinition(element, path));
 
             // Two entries of one code are one fact only when they agree; otherwise neither can be trusted over the other.
