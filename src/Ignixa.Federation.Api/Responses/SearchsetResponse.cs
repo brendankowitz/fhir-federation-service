@@ -29,7 +29,8 @@ public static class SearchsetResponse
     /// <param name="includes">The page's included resources, in order; each is written with <c>search.mode=include</c>.</param>
     /// <param name="outcomes">
     /// Prebuilt federation <c>OperationOutcome</c> JSON objects, in order; each is written with
-    /// <c>search.mode=outcome</c> and, having no shard, without a <c>fullUrl</c>, alternate link or source-shard extension.
+    /// <c>search.mode=outcome</c> and a bundle-local <c>urn:uuid:</c> full URL, without an alternate link or
+    /// source-shard extension.
     /// </param>
     /// <param name="next">
     /// The trusted absolute opaque federation <c>next</c> link, or <see langword="null"/> on a terminal or count-only page.
@@ -100,6 +101,7 @@ public static class SearchsetResponse
                 for (int i = 0; i < outcomes.Count; i++)
                 {
                     writer.WriteStartObject();
+                    writer.WriteString("fullUrl", $"urn:uuid:{Guid.NewGuid():D}");
                     WriteResource(writer, outcomes[i].Span, nameof(outcomes), i);
                     WriteSearchMode(writer, "outcome");
                     writer.WriteEndObject();

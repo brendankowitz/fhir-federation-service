@@ -94,18 +94,34 @@ public sealed class SearchsetResponseTests
         include.GetProperty("resource").GetProperty("subject").GetProperty("reference").GetString().ShouldBe("Patient/dup");
 
         JsonElement outcome = entries[3];
-        outcome.EnumerateObject().Select(p => p.Name).Order().ShouldBe(["resource", "search"]);
         outcome.GetProperty("resource").GetProperty("resourceType").GetString().ShouldBe("OperationOutcome");
     }
 
     [Fact]
-    public async Task OutcomeBytes_AreWrittenUnchanged()
+    public async Task IdenticalOutcomes_KeepTheirBytesAndGetDistinctBundleLocalUrlsWithoutShardProvenance()
     {
         Collision collision = LoadCollision();
 
-        byte[] body = await BodyAsync(Create(collision.Registry, [], outcomes: [OutcomeBytes]));
+        byte[] body = await BodyAsync(Create(collision.Registry, [], outcomes: [OutcomeBytes, OutcomeBytes]));
 
-        CountOccurrences(body, OutcomeBytes).ShouldBe(1);
+        CountOccurrences(body, OutcomeBytes).ShouldBe(2);
+        using JsonDocument document = JsonDocument.Parse(body);
+        JsonElement entries = document.RootElement.GetProperty("entry");
+        entries.GetArrayLength().ShouldBe(2);
+
+        const string prefix = "urn:uuid:";
+        var ids = new HashSet<Guid>();
+        foreach (JsonElement entry in entries.EnumerateArray())
+        {
+            entry.TryGetProperty("fullUrl", out JsonElement url).ShouldBeTrue();
+            string fullUrl = url.GetString()!;
+            fullUrl.ShouldStartWith(prefix);
+            Guid.TryParseExact(fullUrl.AsSpan(prefix.Length), "D", out Guid id).ShouldBeTrue();
+            id.ShouldNotBe(Guid.Empty);
+            ids.Add(id).ShouldBeTrue();
+            entry.TryGetProperty("extension", out _).ShouldBeFalse();
+            entry.TryGetProperty("link", out _).ShouldBeFalse();
+        }
     }
 
     [Fact]
