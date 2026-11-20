@@ -1,0 +1,9 @@
+[
+  {"resourceType": "Patient", "id": "p-orchid", "active": true, "name": [{"family": "Orchid", "given": ["Ada"]}]},
+  {"resourceType": "Observation", "id": "obs-orchid-1", "status": "final",
+     "code": {"coding": [{"system": "https://example.org/fhir/CodeSystem/oracle", "code": "oracle-code"}]},
+   "subject": {"reference": "Patient/p-orchid"}},
+  {"resourceType": "Observation", "id": "obs-orchid-2", "status": "final",
+     "code": {"coding": [{"system": "https://example.org/fhir/CodeSystem/oracle", "code": "oracle-code"}]},
+   "subject": {"reference": "Patient/p-orchid"}}
+]
