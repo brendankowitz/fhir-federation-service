@@ -86,6 +86,35 @@ public sealed class CapabilitySearchParameterTests
         Should.Throw<FormatException>(() => Read(ServerStatement(searchParam: Arr(Param("name", "string", definition)))));
     }
 
+    [Theory]
+    [InlineData("name")]
+    [InlineData("general-practitioner")]
+    [InlineData("_lastUpdated")]
+    [InlineData("Name")]
+    [InlineData("code_2")]
+    public void OrdinaryHyphenUnderscoreAndCaseNames_AreAccepted(string name)
+    {
+        ReadPatient(Params(Param(name, "string"))).SearchParameters.Single().Code.ShouldBe(name);
+        Read(ServerStatement(searchParam: Arr(Param(name, "string")))).CommonSearchParameters.Single().Code.ShouldBe(name);
+    }
+
+    [Theory]
+    [InlineData("na me")]
+    [InlineData("na\\tme")]
+    [InlineData("na\\u0001me")]
+    [InlineData("name=x")]
+    [InlineData("na&me")]
+    [InlineData("na?me")]
+    [InlineData("na#me")]
+    [InlineData("a:b")]
+    [InlineData("a.b")]
+    [InlineData("a*")]
+    public void ANameThatIsNotAUrlSearchParameterToken_IsRefusedNotKeptAsAFact(string name)
+    {
+        Should.Throw<FormatException>(() => ReadPatient(Params(Param(name, "string"))));
+        Should.Throw<FormatException>(() => Read(ServerStatement(searchParam: Arr(Param(name, "string")))));
+    }
+
     [Fact]
     public void AMissingDefinition_IsNullButAMalformedOneIsRefused()
     {

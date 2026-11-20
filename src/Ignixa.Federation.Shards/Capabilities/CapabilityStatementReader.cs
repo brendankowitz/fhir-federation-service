@@ -187,6 +187,10 @@ public static class CapabilityStatementReader
             }
 
             string code = RequiredString(element, "name", path);
+            if (!IsTokenName(code))
+            {
+                throw Malformed(path, "A searchParam name is not a URL search parameter token.");
+            }
             SearchParameterType type = ParseType(RequiredString(element, "type", path), path);
             var parameter = new SearchParameterEvidence(code, type, ReadDefinition(element, path));
 
@@ -287,7 +291,7 @@ public static class CapabilityStatementReader
 
         if (parts.Length is not (2 or 3)
             || !ResourceType.TryParse(parts[0], out ResourceType? source)
-            || !IsParameterCode(parts[1]))
+            || !IsTokenName(parts[1]))
         {
             throw Malformed(path, "An include value is not Type:parameter or Type:parameter:Target.");
         }
@@ -301,8 +305,10 @@ public static class CapabilityStatementReader
         return new SearchInclusion(value, source, parts[1], target);
     }
 
-    private static bool IsParameterCode(string code) =>
-        code.Length > 0 && !code.Any(c => char.IsWhiteSpace(c) || c == '*');
+    // A search parameter name as it appears in a URL: letters, digits, hyphen and underscore. A dot (chain) and a colon
+    // (modifier) are query syntax rather than part of a name, so they are excluded along with whitespace and delimiters.
+    private static bool IsTokenName(string name) =>
+        name.Length > 0 && name.All(c => char.IsAsciiLetterOrDigit(c) || c is '-' or '_');
 
     // Elements of an optional array member, with a location for diagnostics made only of member names and indexes.
     private static IEnumerable<(JsonElement Element, string Path)> Elements(JsonElement owner, string member, string ownerPath)

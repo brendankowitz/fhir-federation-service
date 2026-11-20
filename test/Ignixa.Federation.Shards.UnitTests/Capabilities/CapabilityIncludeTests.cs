@@ -92,6 +92,10 @@ public sealed class CapabilityIncludeTests
     [InlineData("Observation:sub ject")]
     [InlineData("Observation:sub*ject")]
     [InlineData("Observation:subject ")]
+    [InlineData("Observation:sub\\tject")]
+    [InlineData("Observation:sub=ject")]
+    [InlineData("Observation:sub&ject")]
+    [InlineData("Observation:sub.ject:Patient")]
     public void AnUnusableValue_IsRefusedAndAddsNoEvidence(string value)
     {
         Should.Throw<FormatException>(() => ReadPatient(Includes(value)));
