@@ -75,7 +75,8 @@ public sealed class FederatedCountExecutor
     /// registered shard; or a target's replacements do not match the occurrences the plan replaces.
     /// </exception>
     /// <exception cref="ExactCountNotCertifiedException">
-    /// Not every shard searches the plan's type or certifies its count shape exact.
+    /// Not every shard searches the plan's type or certifies its count shape exact; or a chain's hop was not certified
+    /// for exactly the registered shards or, for a reference rewrite, for the current registry version.
     /// </exception>
     /// <exception cref="FetchBudgetExhaustedException">The count needs more calls than <paramref name="callBudget"/>.</exception>
     /// <exception cref="ShardFailureException">
@@ -112,7 +113,9 @@ public sealed class FederatedCountExecutor
     /// <summary>Builds every shard's count request, in registry order, or refuses before any call.</summary>
     private ShardSearchRequest[] Admit(QueryPlan plan, IReadOnlyList<ShardCountTarget> targets)
     {
-        if (!_capabilities.Searches(plan.Type) || !_capabilities.EveryShard(c => c.ExactCountShapes.Contains(plan.CountShape)))
+        if (!_capabilities.Searches(plan.Type)
+            || !_capabilities.EveryShard(c => c.ExactCountShapes.Contains(plan.CountShape))
+            || !plan.Occurrences.All(HopCertifiedOnTheRegistry))
         {
             throw new ExactCountNotCertifiedException();
         }
@@ -159,6 +162,26 @@ public sealed class FederatedCountExecutor
         }
 
         return [.. requests];
+    }
+
+    /// <summary>
+    /// Whether a chain the shards receive is certified on exactly this registry's shards, as the planner proved against
+    /// its own registry (design spec §7.5). A shard added since then never had its hop proven, and a reference rewrite
+    /// is proven only for the registry version its emitted forms were attested against, as
+    /// <see cref="SearchCapabilities.CertifiedPath"/> requires. Removed occurrences, such as includes, reach no shard.
+    /// </summary>
+    private bool HopCertifiedOnTheRegistry(PlannedOccurrence occurrence)
+    {
+        if (occurrence is not { Kind: OccurrenceKind.ForwardChain or OccurrenceKind.ReverseChain, Action: not OccurrenceAction.Remove, Hop: { } hop })
+        {
+            return true;
+        }
+
+        ShardRegistry registry = _capabilities.Registry;
+        bool rewritesReferences = occurrence is { Kind: OccurrenceKind.ForwardChain, Action: OccurrenceAction.Replace };
+        return hop.Certifications.Count == registry.Shards.Count
+            && registry.Shards.All(shard => hop.Certifications.TryGetValue(shard.Id, out ReferencePathCertification? certification)
+                && (!rewritesReferences || string.Equals(certification.CoveredRegistryVersion, registry.Version, StringComparison.Ordinal)));
     }
 
     /// <summary>Runs every request, at most <see cref="_maxParallelCounts"/> at once, and sums the totals once all have ended.</summary>
