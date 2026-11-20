@@ -17,18 +17,6 @@ internal static class SeedData
     public const string OtherForeignAbsoluteObservationId = "obs-foreign-b-absolute-dup";
     public const string ControlObservationId = "obs-control-other";
 
-    /// <summary>
-    /// A syntactically absolute http(s) base that no query or seed step ever contacts. FHIR search
-    /// compares reference text only, and the backend never resolves it.
-    /// </summary>
-    public const string ForeignBaseUrl = "https://foreign-shard.invalid/";
-
-    /// <summary>
-    /// A second foreign base that differs from <see cref="ForeignBaseUrl"/> only in its host, so a
-    /// query that ignores the host cannot tell the two foreign references apart.
-    /// </summary>
-    public const string OtherForeignBaseUrl = "https://foreign-shard-b.invalid/";
-
     private static readonly string[] ObservationIds =
     [
         RelativeObservationId,
@@ -43,6 +31,9 @@ internal static class SeedData
 
     public static bool IsReservedObservationId(string id) => Array.IndexOf(ObservationIds, id) >= 0;
 
+    /// <summary>Foreign A's subject reference. The seed and search use identical reference text, never an endpoint.</summary>
+    public static string ForeignAReference(string localBaseUrl) => ForeignReference(localBaseUrl, "foreign-shard.invalid");
+
     /// <summary>
     /// The resources to write, in write order. <paramref name="localBaseUrl"/> is the base the test
     /// client uses against the backend, with a trailing slash.
@@ -53,10 +44,16 @@ internal static class SeedData
         Patient(OtherPatientId),
         Observation(RelativeObservationId, $"Patient/{DuplicatePatientId}"),
         Observation(OwnAbsoluteObservationId, $"{localBaseUrl}Patient/{DuplicatePatientId}"),
-        Observation(ForeignAbsoluteObservationId, $"{ForeignBaseUrl}Patient/{DuplicatePatientId}"),
-        Observation(OtherForeignAbsoluteObservationId, $"{OtherForeignBaseUrl}Patient/{DuplicatePatientId}"),
+        Observation(ForeignAbsoluteObservationId, ForeignAReference(localBaseUrl)),
+        Observation(OtherForeignAbsoluteObservationId, ForeignReference(localBaseUrl, "foreign-shard-b.invalid")),
         Observation(ControlObservationId, $"Patient/{OtherPatientId}"),
     ];
+
+    private static string ForeignReference(string localBaseUrl, string foreignHost)
+    {
+        var foreignBase = new UriBuilder(localBaseUrl) { Host = foreignHost };
+        return new Uri(foreignBase.Uri, $"Patient/{DuplicatePatientId}").AbsoluteUri;
+    }
 
     private static SeedResource Patient(string id) =>
         new("Patient", id, new JsonObject { ["resourceType"] = "Patient", ["id"] = id }.ToJsonString());

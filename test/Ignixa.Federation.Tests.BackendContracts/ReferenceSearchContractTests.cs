@@ -19,9 +19,8 @@ namespace Ignixa.Federation.Tests.BackendContracts;
 /// <list type="bullet">
 /// <item><c>obs-relative-dup</c>: subject <c>Patient/dup</c></item>
 /// <item><c>obs-own-absolute-dup</c>: subject <c>{local request base}/Patient/dup</c></item>
-/// <item><c>obs-foreign-absolute-dup</c> (foreign A): subject <c>https://foreign-shard.invalid/Patient/dup</c></item>
-/// <item><c>obs-foreign-b-absolute-dup</c> (foreign B): subject <c>https://foreign-shard-b.invalid/Patient/dup</c>,
-/// the same as foreign A except for its host</item>
+/// <item><c>obs-foreign-absolute-dup</c> (foreign A): local base with host replaced by <c>foreign-shard.invalid</c>, followed by <c>Patient/dup</c></item>
+/// <item><c>obs-foreign-b-absolute-dup</c> (foreign B): local base with host replaced by <c>foreign-shard-b.invalid</c>, followed by <c>Patient/dup</c></item>
 /// <item><c>obs-control-other</c>: subject <c>Patient/other</c></item>
 /// </list>
 /// </summary>
@@ -29,16 +28,10 @@ public sealed class ReferenceSearchContractTests(ReferenceBackendFixture backend
 {
     private const int CaseTimeoutMilliseconds = 120_000;
 
-    /// <summary>
-    /// The query for foreign A. The live case and the offline control in
-    /// <see cref="BackendEvidenceTests"/> both judge their results with
-    /// <see cref="CompareForeignAQuery"/>, so the expected set cannot be relaxed in one place only.
-    /// </summary>
-    private const string ForeignAQuery = "https://foreign-shard.invalid/Patient/dup";
-
     /// <summary>Only foreign A. Foreign B has the same type and id and a different host, so it must not match.</summary>
     private static readonly string[] ForeignAQueryExpected = ["obs-foreign-absolute-dup"];
 
+    /// <summary>The live case and offline wrong-matcher control must both reject foreign B.</summary>
     internal static MatchComparison CompareForeignAQuery(SearchsetEvidence actual) =>
         MatchComparison.Compare(EvidenceLabel.Contract, "subject=<foreign A base>/Patient/dup", ForeignAQueryExpected, actual);
 
@@ -68,7 +61,8 @@ public sealed class ReferenceSearchContractTests(ReferenceBackendFixture backend
     [Fact(Timeout = CaseTimeoutMilliseconds)]
     public async Task Contract_foreign_absolute_query_matches_only_the_foreign_reference()
     {
-        SearchsetEvidence actual = await SearchAsync(ForeignAQuery, TestContext.Current.CancellationToken);
+        SearchsetEvidence actual = await SearchAsync(
+            SeedData.ForeignAReference(backend.LocalBaseUrl), TestContext.Current.CancellationToken);
 
         AssertMatches(CompareForeignAQuery(actual));
     }

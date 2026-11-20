@@ -88,8 +88,8 @@ public sealed class BackendEvidenceTests
         Assert.Equal(5, subjects.Count);
         Assert.Equal("Patient/dup", subjects["obs-relative-dup"]);
         Assert.Equal("http://127.0.0.1:45123/custom/r4/Patient/dup", subjects["obs-own-absolute-dup"]);
-        Assert.Equal("https://foreign-shard.invalid/Patient/dup", subjects["obs-foreign-absolute-dup"]);
-        Assert.Equal("https://foreign-shard-b.invalid/Patient/dup", subjects["obs-foreign-b-absolute-dup"]);
+        Assert.Equal("http://foreign-shard.invalid:45123/custom/r4/Patient/dup", subjects["obs-foreign-absolute-dup"]);
+        Assert.Equal("http://foreign-shard-b.invalid:45123/custom/r4/Patient/dup", subjects["obs-foreign-b-absolute-dup"]);
         Assert.Equal("Patient/other", subjects["obs-control-other"]);
     }
 

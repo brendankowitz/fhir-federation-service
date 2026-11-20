@@ -11,21 +11,22 @@ This is not a profile certification and not a federation end-to-end test. No fed
 
 One backend is started and seeded once. The three cases share it and report separately.
 
-Seed (all ids are reserved synthetic ids). Foreign A and foreign B have the same scheme, port, path, type
-and id and differ only in host. Both are reference text only, and neither is ever contacted.
+Seed (all ids are reserved synthetic ids). Foreign A and foreign B each replace only the hostname of
+the actual local base, keeping its scheme, port, and path. This tests that the backend distinguishes
+the hosts, not just the schemes or ports. Both values are reference text only; neither host is contacted.
 
 | Observation | `subject.reference` |
 | --- | --- |
 | `obs-relative-dup` | `Patient/dup` |
 | `obs-own-absolute-dup` | `<local base>/Patient/dup`, where the local base is the URL this test client uses |
-| `obs-foreign-absolute-dup` (foreign A) | `https://foreign-shard.invalid/Patient/dup` |
-| `obs-foreign-b-absolute-dup` (foreign B) | `https://foreign-shard-b.invalid/Patient/dup` |
+| `obs-foreign-absolute-dup` (foreign A) | `<local base with host foreign-shard.invalid>/Patient/dup` |
+| `obs-foreign-b-absolute-dup` (foreign B) | `<local base with host foreign-shard-b.invalid>/Patient/dup` |
 | `obs-control-other` | `Patient/other` |
 
 | Case | Label | Query | Expected matches |
 | --- | --- | --- | --- |
 | 1 | contract | `subject=<local base>/Patient/dup` | `obs-own-absolute-dup`, `obs-relative-dup` |
-| 2 | contract | `subject=https://foreign-shard.invalid/Patient/dup` | `obs-foreign-absolute-dup` only |
+| 2 | contract | `subject=<foreign A base>/Patient/dup` | `obs-foreign-absolute-dup` only |
 | 3 | characterization | `subject=Patient/dup` | all four `dup` observations |
 
 A **contract** case states what the federation relies on. A **characterization** case records what the
