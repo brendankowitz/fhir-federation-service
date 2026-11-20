@@ -124,44 +124,46 @@ internal static class OraclePageComparator
         /// </summary>
         private bool HasUsableNextLink(JsonObject bundle, int page)
         {
-            switch (bundle["link"])
+            if (!bundle.TryGetPropertyValue("link", out var link))
             {
-                case null:
-                    return false;
-                case JsonArray links:
-                    var nextLinks = 0;
-                    var usable = false;
-                    for (var index = 0; index < links.Count; index++)
-                    {
-                        var relation = Text(links[index], "relation");
-                        if (relation is null)
-                        {
-                            Fail(page, $"link {index + 1} is not an object with a string relation");
-                        }
-                        else if (relation == "next")
-                        {
-                            nextLinks++;
-                            if (Text(links[index], "url") is { } url && !string.IsNullOrWhiteSpace(url))
-                            {
-                                usable = true;
-                            }
-                            else
-                            {
-                                Fail(page, $"link {index + 1} (next) url is not a nonblank string");
-                            }
-                        }
-                    }
-
-                    if (nextLinks > 1)
-                    {
-                        Fail(page, $"{nextLinks} next links, expected at most one");
-                    }
-
-                    return usable;
-                default:
-                    Fail(page, "link is not an array");
-                    return false;
+                return false;
             }
+
+            if (link is not JsonArray links)
+            {
+                Fail(page, "link is not an array");
+                return false;
+            }
+
+            var nextLinks = 0;
+            var usable = false;
+            for (var index = 0; index < links.Count; index++)
+            {
+                var relation = Text(links[index], "relation");
+                if (relation is null)
+                {
+                    Fail(page, $"link {index + 1} is not an object with a string relation");
+                }
+                else if (relation == "next")
+                {
+                    nextLinks++;
+                    if (Text(links[index], "url") is { } url && !string.IsNullOrWhiteSpace(url))
+                    {
+                        usable = true;
+                    }
+                    else
+                    {
+                        Fail(page, $"link {index + 1} (next) url is not a nonblank string");
+                    }
+                }
+            }
+
+            if (nextLinks > 1)
+            {
+                Fail(page, $"{nextLinks} next links, expected at most one");
+            }
+
+            return usable;
         }
 
         private (Entry Entry, bool IsMatch)? ReadEntry(JsonNode? node, int page, int index)

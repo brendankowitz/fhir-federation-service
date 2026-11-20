@@ -524,6 +524,8 @@ public sealed class OraclePageComparatorTests
     [InlineData(1, """[{"relation":"next","url":"  "}]""", new[] { "link 1 (next) url is not a nonblank string", "no next link, but further pages were supplied (page list over-followed)" })]
     [InlineData(1, """[{"relation":"self","url":"http://harness.invalid/self"},{"relation":"next","url":7}]""", new[] { "link 2 (next) url is not a nonblank string", "no next link, but further pages were supplied (page list over-followed)" })]
     [InlineData(2, """[{"relation":"next"}]""", new[] { "link 1 (next) url is not a nonblank string" })]
+    [InlineData(2, "null", new[] { "link is not an array" })]
+    [InlineData(1, "null", new[] { "link is not an array", "no next link, but further pages were supplied (page list over-followed)" })]
     [InlineData(2, """{"relation":"next","url":"http://harness.invalid/next"}""", new[] { "link is not an array" })]
     [InlineData(1, """{"relation":"next","url":"http://harness.invalid/next"}""", new[] { "link is not an array", "no next link, but further pages were supplied (page list over-followed)" })]
     [InlineData(2, """[{"relation":"next","url":"a"},{"relation":"next","url":"b"}]""", new[] { "2 next links, expected at most one", "last supplied page has a next link (page list truncated)" })]
@@ -536,7 +538,13 @@ public sealed class OraclePageComparatorTests
             Page(next: true, Match(East, "Patient", "dup", "Eli")),
             Page(next: false, Match(West, "Patient", "dup", "Gus")),
         ];
-        federation[malformedPage - 1]["link"] = JsonNode.Parse(link);
+        var bundle = (JsonObject)federation[malformedPage - 1];
+        bundle["link"] = JsonNode.Parse(link);
+        if (link == "null")
+        {
+            bundle.TryGetPropertyValue("link", out var parsedLink).ShouldBeTrue();
+            parsedLink.ShouldBeNull();
+        }
 
         var failures = OraclePageComparator.Compare(c, federation, oraclePages: null);
 
