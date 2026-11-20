@@ -173,10 +173,10 @@ internal sealed class PrimarySearch
                 budget.Checkpoint();
                 return result;
             }
-            catch (Exception ex) when (ex is OperationCanceledException or ShardFailureException or ContinuationAnchorMissingException)
+            catch (Exception ex) when (ex is OperationCanceledException or ShardFailureException
+                or ContinuationAnchorMissingException or FetchBudgetExhaustedException)
             {
-                // Possibly the symptom of the request's own deadline or cost: report the cause. Caller cancellation
-                // propagates as OperationCanceledException. A missing anchor is 410 only when the request is still live.
+                // Prefer the live request budget to a shard failure, missing anchor, or logical fetch limit.
                 budget.Checkpoint();
                 throw;
             }

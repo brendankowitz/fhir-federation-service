@@ -1,8 +1,11 @@
 using System.Net;
 using System.Net.Http.Headers;
 using System.Text;
+using Ignixa.Federation.Api.Budgets;
 using Ignixa.Federation.Tests.Integration.Budgets;
+using Microsoft.AspNetCore.Http;
 using Shouldly;
+using HeaderNames = Microsoft.Net.Http.Headers.HeaderNames;
 
 namespace Ignixa.Federation.Tests.Integration.Search;
 
@@ -307,6 +310,76 @@ public sealed class PrimarySearchFailureTests
 
         result.StatusCode.ShouldBe(HttpStatusCode.BadRequest);
         result.IssueCode.ShouldBe("too-costly");
+    }
+
+    [Theory]
+    [InlineData(false, false, HttpStatusCode.BadRequest, "too-costly")]
+    [InlineData(true, false, HttpStatusCode.GatewayTimeout, "timeout")]
+    [InlineData(true, true, HttpStatusCode.BadRequest, "too-costly")]
+    public async Task LogicalFetchExhaustion_UsesTheLiveRequestBudget(
+        bool deadlineExpired, bool physicalBreach, HttpStatusCode status, string issue)
+    {
+        var time = new ManualTimeProvider();
+        using var host = StartLogicalFetchBoundary(time, budget =>
+        {
+            if (physicalBreach)
+            {
+                // Latch the refusal without sending, then finish the in-flight answer so Core also hits its logical cap.
+                Should.Throw<RequestTooCostlyException>(budget.BeforeBackendCall);
+            }
+
+            if (deadlineExpired)
+            {
+                time.Advance(TimeSpan.FromMinutes(1));
+            }
+        });
+
+        SearchResult result = await host.GetAsync("/Patient?name=Orchid&_count=3");
+
+        result.StatusCode.ShouldBe(status);
+        result.IssueCode.ShouldBe(issue);
+        result.Body.ShouldNotContain("Bundle");
+        host.Shards.Calls.Count.ShouldBe(2);
+    }
+
+    [Fact]
+    public async Task LogicalFetchExhaustion_PropagatesCallerCancellation()
+    {
+        using var caller = new CancellationTokenSource();
+        using var host = StartLogicalFetchBoundary(new ManualTimeProvider(), _ => caller.Cancel());
+        string token = host.Token();
+
+        // Set RequestAborted independently of the test client's wait so client cancellation cannot hide a server response.
+        HttpContext response = await host.Server.SendAsync(http =>
+        {
+            http.Request.Method = HttpMethods.Get;
+            http.Request.Path = "/Patient";
+            http.Request.QueryString = new QueryString("?name=Orchid&_count=3");
+            http.Request.Headers[HeaderNames.Authorization] = "Bearer " + token;
+            http.RequestAborted = caller.Token;
+        }, TestContext.Current.CancellationToken);
+
+        response.Response.StatusCode.ShouldBe(StatusCodes.Status499ClientClosedRequest);
+        host.Shards.Calls.Count.ShouldBe(2);
+    }
+
+    private static SearchHost StartLogicalFetchBoundary(ManualTimeProvider time, Action<RequestBudget> beforeLastReturn)
+    {
+        int answered = 0;
+        return SearchHost.Start(setup =>
+        {
+            setup.Time = time;
+            setup.Settings["Federation:Limits:BackendCallsPerShard"] = "1";
+            setup.Settings["Federation:Limits:MaxParallelBackendCalls"] = "1";
+            setup.Shards.PageSizeLimit = 1;
+            setup.Shards.Answered = budget =>
+            {
+                if (++answered == 2)
+                {
+                    beforeLastReturn(budget);
+                }
+            };
+        });
     }
 
     [Fact]

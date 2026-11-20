@@ -26,6 +26,9 @@ internal sealed class ScriptedShards : IShardClientFactory
     /// <summary>Gets or sets how many physical sends each call makes (more than one models a retry).</summary>
     public int SendsPerCall { get; set; } = 1;
 
+    /// <summary>Gets or sets the maximum entries the scripted backend serves per page.</summary>
+    public int PageSizeLimit { get; set; } = int.MaxValue;
+
     /// <summary>Gets or sets the shard whose calls fail with a transport error.</summary>
     public string? FailingShard { get; set; }
 
@@ -51,7 +54,7 @@ internal sealed class ScriptedShards : IShardClientFactory
     public Action? DuringCall { get; set; }
 
     /// <summary>Gets or sets an action run once a page has been answered, as it is returned (for example, letting a deadline pass after the response).</summary>
-    public Action? Answered { get; set; }
+    public Action<RequestBudget>? Answered { get; set; }
 
     public IShardClient CreateClient(SearchCapabilities view, RequestBudget budget)
     {
@@ -71,7 +74,8 @@ internal sealed class ScriptedShards : IShardClientFactory
                 Target: null));
             await SendAsync(request.Shard, cancellationToken);
             ShardDescriptor shard = Shard(request.Shard);
-            return Answered(Answer(shard, request.Type, 0, request.PageSize, target => ShardCursor.Next(request, shard.Profile, target)));
+            return Answered(Answer(shard, request.Type, 0, Math.Min(request.PageSize, script.PageSizeLimit),
+                target => ShardCursor.Next(request, shard.Profile, target)));
         }
 
         public async Task<ShardPage> ContinueAsync(ShardCursor cursor, CancellationToken cancellationToken)
@@ -88,7 +92,7 @@ internal sealed class ScriptedShards : IShardClientFactory
 
         private ShardPage Answered(ShardPage page)
         {
-            script.Answered?.Invoke();
+            script.Answered?.Invoke(budget);
             return page;
         }
 

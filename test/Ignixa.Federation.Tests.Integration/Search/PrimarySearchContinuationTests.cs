@@ -331,7 +331,7 @@ public sealed class PrimarySearchContinuationTests
         int calls = host.Shards.Calls.Count;
         if (deadlinePasses)
         {
-            host.Shards.Answered = () => time.Advance(TimeSpan.FromMinutes(1));
+            host.Shards.Answered = _ => time.Advance(TimeSpan.FromMinutes(1));
         }
 
         SearchResult result = await host.GetAsync("/Patient?ct=" + successor.InlineToken.ShouldNotBeNull());

@@ -104,6 +104,8 @@ internal sealed class SearchHost : IDisposable
 
     public HttpClient Client { get; }
 
+    public TestServer Server => _factory.Server;
+
     public IServiceProvider Services => _factory.Services;
 
     public async Task WaitForReadinessAsync()
