@@ -341,14 +341,6 @@ public sealed class HttpShardClient : IShardClient, IDisposable
             activity?.SetStatus(ActivityStatusCode.Error, e.Failure.ToString());
             throw;
         }
-        catch (ShardCredentialException)
-        {
-            // Classify only metadata failures so refresh can retain evidence without exposing credential details.
-            cancellationToken.ThrowIfCancellationRequested();
-            activity?.SetStatus(ActivityStatusCode.Error, nameof(ShardCallFailure.CredentialUnavailable));
-            throw Failure(
-                ShardCallFailure.CredentialUnavailable, "The shard credential could not be acquired.", fault: ShardFault.None);
-        }
     }
 
     private ShardCapabilityEvidence ReadCapabilities(ReadOnlyMemory<byte> body)
@@ -733,7 +725,7 @@ public sealed class HttpShardClient : IShardClient, IDisposable
                 // a slow provider is the breaker's attempt to wait for, not a way past it. A timeout or failure here is the
                 // credential's, not the backend's, so it carries no fault tag; WaitAsync bounds a provider that ignores its
                 // token, and the abandoned acquisition is left to finish on its own.
-                token ??= await AcquireAsync(deadline.Token).ConfigureAwait(false);
+                token ??= await AcquireAsync(operation, deadline.Token, cancellationToken).ConfigureAwait(false);
                 using HttpRequestMessage message = CreateMessage(method, uri, formBody);
                 if (context.CallerId is { } callerId)
                 {
@@ -772,7 +764,7 @@ public sealed class HttpShardClient : IShardClient, IDisposable
         }
     }
 
-    private async Task<string> AcquireAsync(CancellationToken deadline)
+    private async Task<string> AcquireAsync(Operation operation, CancellationToken deadline, CancellationToken cancellationToken)
     {
         string token;
         try
@@ -783,6 +775,12 @@ public sealed class HttpShardClient : IShardClient, IDisposable
         catch (ShardCallException e) when (e.Fault != ShardFault.None)
         {
             throw new ExternalShardFailure(e);
+        }
+        catch (ShardCredentialException) when (operation == Operation.Metadata)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            throw Failure(
+                ShardCallFailure.CredentialUnavailable, "The shard credential could not be acquired.", fault: ShardFault.None);
         }
 
         if (!IsBearerToken(token))

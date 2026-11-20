@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Text;
 using Ignixa.Federation.Core.Identity;
 using Ignixa.Federation.Shards.Capabilities;
+using Ignixa.Federation.Shards.Credentials;
 using Ignixa.Federation.Shards.Diagnostics;
 using Ignixa.Federation.Shards.Http;
 using Shouldly;
@@ -74,6 +75,22 @@ public sealed class HttpShardClientMetadataTests
         shard.Credentials.Calls.ShouldBe(1);
         shard.Meter.Sends.ShouldBe([shard.Shard.Id]);
         shard.Meter.Bytes.ShouldBe(Encoding.UTF8.GetByteCount(Statement));
+    }
+
+    [Fact]
+    public async Task GetCapabilities_PropagatesTheMetersOwnCredentialExceptionAfterTheSend()
+    {
+        await using var shard = ShardHarness.Start();
+        shard.Server.Respond(ScriptedResponse.Json(Statement));
+        var refusal = new ShardCredentialException(ShardCredentialFailure.TokenUnavailable);
+        shard.Meter.OnBytes = _ => throw refusal;
+
+        ShardCredentialException failure =
+            await Should.ThrowAsync<ShardCredentialException>(() => shard.Client.GetCapabilitiesAsync(Ct));
+
+        failure.ShouldBeSameAs(refusal);
+        shard.Server.Requests.ShouldHaveSingleItem().Target.ShouldBe("/fhir/metadata");
+        shard.Meter.Bytes.ShouldBeGreaterThan(0);
     }
 
     [Fact]
