@@ -6,7 +6,10 @@ public enum ShardCredentialFailure
     /// <summary>The shard's authentication settings cannot produce a token request, for example a malformed audience.</summary>
     InvalidConfiguration,
 
-    /// <summary>The client secret could not be resolved, was missing, or was empty.</summary>
+    /// <summary>
+    /// The client secret could not be resolved, was missing or empty, or was stale: a newer value had already been accepted
+    /// for the same secret name while this lookup was under way.
+    /// </summary>
     SecretUnavailable,
 
     /// <summary>The identity platform refused or could not issue a token.</summary>

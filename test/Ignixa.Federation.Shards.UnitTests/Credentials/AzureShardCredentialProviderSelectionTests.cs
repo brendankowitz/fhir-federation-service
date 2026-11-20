@@ -157,11 +157,15 @@ public sealed class AzureShardCredentialProviderSelectionTests
         older.IsCompleted.ShouldBeFalse();
         releaseFirst.SetResult();
         string olderToken = await older;
+        string afterOlderFinished = await provider.GetAccessTokenAsync(auth, Ct);
 
         sdk.Clients.Select(c => c.Secret).ShouldBe(["secret-v1", "secret-v2"]);
         newer.ShouldBe(sdk.Clients[1].Credential.Token);
         olderToken.ShouldBe(sdk.Clients[0].Credential.Token);
-        secrets.Requested.ShouldBe(["secret-1", "secret-1"]);
+        afterOlderFinished.ShouldBe(sdk.Clients[1].Credential.Token);
+        sdk.Clients[0].Credential.ScopeRequests.Count.ShouldBe(1);
+        sdk.Clients[1].Credential.ScopeRequests.Count.ShouldBe(2);
+        secrets.Requested.ShouldBe(["secret-1", "secret-1", "secret-1"]);
     }
 
     [Fact]

@@ -18,17 +18,24 @@ namespace Ignixa.Federation.Shards.Credentials;
 /// Container Apps, AKS, a VM) supplies through its own managed identity endpoint, and nothing here selects a cloud or
 /// authority. <see cref="ClientCredentialsAuth"/> uses a <see cref="ClientSecretCredential"/> for exactly its tenant and
 /// client, with the secret from the <see cref="IShardSecretResolver"/>, bound to the Azure public cloud authority. Both
-/// have SDK logging and tracing off.</para>
+/// have SDK logging and tracing off. Only the Azure public cloud is supported for client secrets: there is no sovereign,
+/// government or custom authority.</para>
 /// <para><b>Scope.</b> The configured resource is an audience; the one requested scope is that text followed by
 /// <c>/.default</c>, spelled exactly as configured. A trailing slash is kept: it can be part of the audience, and the
 /// double slash that results is what Azure documents for such an audience. The only validation is that the resource holds
 /// no whitespace or control character and does not already end in <c>/.default</c>. It is not required to be a URI,
 /// because an Entra audience may be an application id GUID or an <c>api://</c> identifier, and no other URI rule has been
 /// shown to be needed.</para>
-/// <para><b>Caching.</b> A client-secret credential is built for every acquisition from a freshly resolved secret, so a
-/// rotated secret takes effect on the next call and no secret or client token is kept here; the cost is one token request
-/// per call. A managed identity credential holds no secret, so one is kept per identity (a bounded set: the identities in
-/// the registry) and the SDK caches its tokens per scope.</para>
+/// <para><b>Caching and refresh.</b> This type caches no token. It keeps SDK credentials, and each SDK credential caches
+/// its tokens per scope and refreshes one that is expired or near expiry. A managed identity credential is kept per
+/// identity. A client-secret credential is kept per tenant, client and secret name; both sets are bounded by the
+/// registry.</para>
+/// <para><b>Rotation and freshness.</b> Every client-secret acquisition resolves the named secret afresh. An unchanged
+/// value, recognised by a non-logged SHA-256 fingerprint, reuses the kept credential and its token cache; a changed value
+/// replaces it, so the next acquisition after a rotation exchanges the new secret. Acquisitions already under way finish
+/// with the credential they selected. A lookup that fails, is blank or is canceled never uses or replaces the kept
+/// credential. A lookup that returns a different value after a later-started lookup was accepted is stale and fails as
+/// <see cref="ShardCredentialFailure.SecretUnavailable"/> rather than rolling the rotation back.</para>
 /// <para><b>Failures.</b> Every failure is fail-closed: no request is sent. See <see cref="ShardCredentialException"/>.
 /// Caller cancellation surfaces as an <see cref="OperationCanceledException"/> for the given token. Thread-safe.</para>
 /// </remarks>
@@ -41,7 +48,7 @@ public sealed class AzureShardCredentialProvider : IShardCredentialProvider
 
     private readonly IShardSecretResolver _secrets;
     private readonly Func<string?, TokenCredential> _managedIdentity;
-    private readonly Func<string, string, string, TokenCredential> _clientSecret;
+    private readonly ClientSecretCredentialCache _clientCredentials;
     private readonly ConcurrentDictionary<string, TokenCredential> _managedCredentials = new(StringComparer.Ordinal);
 
     /// <summary>Creates the provider with the production Azure credentials.</summary>
@@ -61,7 +68,7 @@ public sealed class AzureShardCredentialProvider : IShardCredentialProvider
         ArgumentNullException.ThrowIfNull(secrets);
         _secrets = secrets;
         _managedIdentity = managedIdentity;
-        _clientSecret = clientSecret;
+        _clientCredentials = new ClientSecretCredentialCache(clientSecret);
     }
 
     /// <inheritdoc />
@@ -117,8 +124,9 @@ public sealed class AzureShardCredentialProvider : IShardCredentialProvider
                 break;
             case ClientCredentialsAuth client:
                 scope = ScopeFor(client.Resource);
+                long lookup = _clientCredentials.BeginLookup();
                 string secret = await ResolveSecretAsync(client.SecretName, cancellationToken).ConfigureAwait(false);
-                credential = ClientCredential(client, secret);
+                credential = ClientCredential(client, lookup, secret, cancellationToken);
                 break;
             default:
                 throw new ArgumentException("Unsupported shard authentication.", nameof(auth));
@@ -157,11 +165,11 @@ public sealed class AzureShardCredentialProvider : IShardCredentialProvider
         }
     }
 
-    private TokenCredential ClientCredential(ClientCredentialsAuth auth, string secret)
+    private TokenCredential ClientCredential(ClientCredentialsAuth auth, long lookup, string secret, CancellationToken cancellationToken)
     {
         try
         {
-            return _clientSecret(auth.TenantId, auth.ClientId, secret);
+            return _clientCredentials.Select(auth, lookup, secret, cancellationToken);
         }
         catch (ArgumentException)
         {

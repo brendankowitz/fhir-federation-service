@@ -5,8 +5,12 @@ namespace Ignixa.Federation.Shards.Credentials;
 /// deployer's secret store.
 /// </summary>
 /// <remarks>
-/// <para><b>Freshness.</b> <see cref="AzureShardCredentialProvider"/> calls this once for every token acquisition and keeps
-/// nothing, so the implementation owns any caching and must return a rotated secret as soon as its store does.</para>
+/// <para><b>Freshness.</b> <see cref="AzureShardCredentialProvider"/> calls this once for every client-secret token
+/// acquisition, so the implementation owns any caching and must return a rotated secret as soon as its store does. The
+/// provider keeps no copy of the value outside the SDK credential built from it and the acquisition in progress; it
+/// recognises an unchanged value by a non-logged fingerprint. A different value returned by a lookup that started before
+/// one already accepted is treated as stale and fails closed, so an implementation should not serve older values after
+/// newer ones.</para>
 /// <para><b>Failure contract.</b> Report an expected failure (a secret that is missing, unreadable or unauthorised) by
 /// throwing <see cref="ShardCredentialException"/>. The provider never forwards that object: it throws a fresh
 /// <see cref="ShardCredentialFailure.SecretUnavailable"/> and drops the supplied failure kind, <c>Source</c>, <c>Data</c> and
