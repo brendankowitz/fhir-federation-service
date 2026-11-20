@@ -537,18 +537,18 @@ public sealed class OraclePageComparatorTests
     [InlineData("Patient/dup")]
     [InlineData("ftp://127.0.0.1:5102/Patient/dup")]
     [InlineData("http://user@127.0.0.1:5102/Patient/dup")]
-    public void FullUrlNotAnAbsoluteHttpUrl_FailsOwnership(string fullUrl)
+    public void FullUrlNotAnAbsoluteHttpUrl_FailsOwnership(string observedFullReference)
     {
         var c = OracleFixtures.Bind("collision.tagged-union", "per-shard", Bases);
         JsonNode[] federation =
         [
             Page(next: true, Match(East, "Patient", "dup", "Eli")),
-            Page(next: false, Entry("match", fullUrl, "Patient", "dup", "Gus")),
+            Page(next: false, Entry("match", observedFullReference, "Patient", "dup", "Gus")),
         ];
 
         var failures = OraclePageComparator.Compare(c, federation, oraclePages: null);
 
-        failures.ShouldContain($"[collision.tagged-union] federation page 2: fullUrl {fullUrl} is not an absolute http(s) URL without userinfo");
+        failures.ShouldContain($"[collision.tagged-union] federation page 2: fullUrl {observedFullReference} is not an absolute http(s) URL without userinfo");
     }
 
     [Theory]
@@ -620,7 +620,7 @@ public sealed class OraclePageComparatorTests
         return new JsonObject { ["fullUrl"] = fullUrl, ["resource"] = resource, ["search"] = new JsonObject { ["mode"] = mode } };
     }
 
-    private static JsonNode Page(bool next, params JsonObject[] entries)
+    private static JsonObject Page(bool next, params JsonObject[] entries)
     {
         var links = new JsonArray(new JsonObject { ["relation"] = "self", ["url"] = "http://harness.invalid/self" });
         if (next)

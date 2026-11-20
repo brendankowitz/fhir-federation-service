@@ -34,13 +34,13 @@ internal static class OracleUrl
         var authorityStart = uri.Scheme.Length + "://".Length;
         var authorityEnd = url.IndexOfAny(['/', '?', '#'], authorityStart);
         var authority = authorityEnd < 0 ? url[authorityStart..] : url[authorityStart..authorityEnd];
-        if (authority.Length == 0 || authority.Contains('@') || uri.Host.Length == 0)
+        if (authority.Length == 0 || authority.Contains('@', StringComparison.Ordinal) || uri.Host.Length == 0)
         {
             return null;
         }
 
         var rest = authorityEnd < 0 ? string.Empty : url[authorityEnd..];
-        return uri.GetComponents(UriComponents.SchemeAndServer, UriFormat.UriEscaped) + (rest.StartsWith('/') ? rest : "/" + rest);
+        return uri.GetComponents(UriComponents.SchemeAndServer, UriFormat.UriEscaped) + (rest.Length > 0 && rest[0] == '/' ? rest : "/" + rest);
     }
 }
 
@@ -67,7 +67,7 @@ internal sealed record OracleBases
         if (canonical is null
             || !System.Text.Ascii.IsValid(baseUrl)
             || canonical.IndexOfAny(['?', '#']) >= 0
-            || baseUrl.Contains('%')
+            || baseUrl.Contains('%', StringComparison.Ordinal)
             || HasDotSegment(canonical))
         {
             throw new ArgumentException(
@@ -81,7 +81,7 @@ internal sealed record OracleBases
     private static bool HasDotSegment(string canonicalBase)
     {
         var authorityStart = canonicalBase.IndexOf("://", StringComparison.Ordinal) + "://".Length;
-        var pathStart = canonicalBase.IndexOf('/', authorityStart);
+        var pathStart = canonicalBase.IndexOf('/', authorityStart, StringComparison.Ordinal);
         return pathStart >= 0 && canonicalBase[pathStart..].Split('/').Any(segment => segment is "." or "..");
     }
 }
