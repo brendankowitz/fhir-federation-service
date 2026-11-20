@@ -13,7 +13,8 @@ namespace Ignixa.Federation.Tests.BackendContracts;
 /// is not a way to satisfy it. Case 3 only characterizes it: it ignores the base, so it also admits
 /// foreign references with the same type and id.
 ///
-/// One seeded backend serves three independently reported cases. Every expected id list is a
+/// One seeded backend serves three independently reported single-term cases and the repeated-<c>subject</c>
+/// join cases. Every expected id list is a
 /// literal in this file, written from the requirement and the upstream source, never computed from
 /// the seed code. Seeded data (see README):
 /// <list type="bullet">
@@ -90,10 +91,49 @@ public sealed class ReferenceSearchContractTests(ReferenceBackendFixture backend
         AssertMatches(comparison);
     }
 
+    /// <summary>
+    /// Contract. The forward-join searches: a single term, and the joined shapes of repeated <c>subject</c>
+    /// occurrences. Each case sends its literal text in GET and the same text as a form POST, and requires
+    /// the literal match multiset (<c>equal</c>: foreign A only; <c>unequal</c>: nothing) and the decoded
+    /// selection pairs in <c>Bundle.self</c>, apart from each other. Two equal occurrences must echo twice in GET
+    /// and every unequal pair must echo once each. See <see cref="Post_Observation_subject_returns_the_literal_matches_and_echoes_the_selection"/>
+    /// for the POST characterization.
+    /// </summary>
+    [Theory(Timeout = CaseTimeoutMilliseconds)]
+    [InlineData("equal")]
+    [InlineData("unequal")]
+    public Task Get_Observation_subject_returns_the_literal_matches_and_echoes_the_selection(string label) =>
+        AssertSubjectJoinAsync(HttpMethod.Get, label, TestContext.Current.CancellationToken);
+
+    /// <summary>
+    /// The same cases as a form body to <c>POST Observation/_search</c>, plus the two single-term positive controls.
+    /// The match multiset is a contract. For <c>equal</c>, the echo is a characterization only: one occurrence
+    /// (collapsed) or two (echoed) both pass. That says nothing about whether the identical predicates
+    /// independently affected the result, and it does not authorize POST for production joins.
+    /// </summary>
+    [Theory(Timeout = CaseTimeoutMilliseconds)]
+    [InlineData("foreign-single")]
+    [InlineData("own-single")]
+    [InlineData("equal")]
+    [InlineData("unequal")]
+    public Task Post_Observation_subject_returns_the_literal_matches_and_echoes_the_selection(string label) =>
+        AssertSubjectJoinAsync(HttpMethod.Post, label, TestContext.Current.CancellationToken);
+
     private Task<SearchsetEvidence> SearchAsync(string subject, CancellationToken cancellationToken)
     {
         output.WriteLine($"Backend /metadata software: {backend.SoftwareIdentity}");
         return backend.SearchObservationsBySubjectAsync(subject, cancellationToken);
+    }
+
+    private async Task AssertSubjectJoinAsync(HttpMethod method, string label, CancellationToken cancellationToken)
+    {
+        SubjectJoinCase join = backend.SubjectJoin(label);
+        output.WriteLine($"Backend /metadata software: {backend.SoftwareIdentity}");
+        SubjectJoinEvidence actual = await backend.SearchSubjectJoinAsync(method, join, cancellationToken);
+
+        string report = actual.Describe($"{method.Method} {label} Observation.subject", join, method);
+        Assert.True(actual.IsAsExpected(join, method), report);
+        output.WriteLine(report);
     }
 
     private void AssertMatches(MatchComparison comparison)

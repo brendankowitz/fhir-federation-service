@@ -43,10 +43,10 @@ jobs:
         run: >-
           dotnet run --project test/Ignixa.Federation.Tests.BackendContracts/Ignixa.Federation.Tests.BackendContracts.csproj
           --configuration Release -- --show-live-output on --progress off --fail-skips on
-          --filter-class '*EvidenceTests' --minimum-expected-tests 214
+          --filter-class '*EvidenceTests' --minimum-expected-tests 295
 
       - name: Run live Docker contracts
         run: >-
           dotnet run --project test/Ignixa.Federation.Tests.BackendContracts/Ignixa.Federation.Tests.BackendContracts.csproj
           --configuration Release --no-build -- --show-live-output on --progress off --fail-skips on
-          --filter-class '*ContractTests' --minimum-expected-tests 25
+          --filter-class '*ContractTests' --minimum-expected-tests 31

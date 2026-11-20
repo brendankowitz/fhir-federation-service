@@ -177,6 +177,42 @@ the echo, is the evidence that the tested predicates took effect. That run is no
 `r4-fhir-server:5.2.84` image and not a Linux Docker run, so it is not evidence for this suite. No live
 outcome of this witness is recorded yet.
 
+## Repeated Observation.subject join witness (`ReferenceSearchContractTests`)
+
+A fifth witness extends the reference witness. It reuses the existing reference fixture and seed (so no extra
+backend start) and records how the backend answers `Observation?subject=...` when `subject` is given twice.
+Six live cases are added: `equal` and `unequal` as GET, and `foreign-single`, `own-single`, `equal` and
+`unequal` as form POST. The two single-term POST cases are positive controls on the same method.
+
+| Case | Selection (each `subject` is the full reference) | Required matches |
+| --- | --- | --- |
+| `foreign-single` (POST only) | foreign A `Patient/dup` | `obs-foreign-absolute-dup` |
+| `own-single` (POST only) | own-absolute `Patient/dup` | `obs-own-absolute-dup`, `obs-relative-dup` |
+| `equal` | foreign A twice, spelled `subject` and `%73ubject`, second value with `%50atient` | `obs-foreign-absolute-dup` |
+| `unequal` | foreign A, then own-absolute `Patient/dup` | none |
+
+The expected ids are literals, never derived from a response. The two `equal` spellings differ as raw text and
+decode to the same pair. Every request appends `&_count=100&_total=accurate` and sends `Prefer: handling=strict`.
+GET is `Observation?<selection>&<controls>` with canonicalization disabled; POST is `Observation/_search` with the
+same text as a raw form body.
+
+Each case reports two facts apart. The **match** multiset of one complete page is a `[contract]` for every case
+and method. The **`Bundle.self` echo** compares the decoded pairs, ignoring only `_count` and `_total`, with the
+requested selection as a multiset:
+
+- Both methods accept the exact echo of every occurrence.
+- A GET echo that collapses the repeated pair, or drops, alters or adds a pair, fails even when the match is
+  correct.
+- A form POST echo that collapses repeated equal terms to one per distinct term is **characterization only**:
+  it is reported as such and passes if the match is correct. Zero, three, wrong, missing or extra terms fail.
+- A correct echo never excuses a wrong match.
+
+POST collapse being tolerated is a record of what the backend does. It is not authorization for any production
+behavior. Reports print reserved ids, term labels and counts, never a reference value, query or response text.
+Offline tests (`SubjectJoinEvidenceTests`, no Docker) cover the parser, the match and echo rules, the raw
+spellings, the report text, and the real GET and POST wire through a loopback server. Any native run of another
+build is separate and is not evidence for this suite. No live outcome of this witness is recorded yet.
+
 ## Run it
 
 Requires .NET SDK 11.0.100. The live tests also require a local Docker engine for `linux/amd64` containers.
@@ -184,12 +220,13 @@ The harness uses `/var/run/docker.sock` on Linux and the Docker Desktop Linux en
 Run the same two commands as CI from the repository root:
 
 ```text
-dotnet run --project test/Ignixa.Federation.Tests.BackendContracts/Ignixa.Federation.Tests.BackendContracts.csproj --configuration Release -- --show-live-output on --progress off --fail-skips on --filter-class '*EvidenceTests' --minimum-expected-tests 214
-dotnet run --project test/Ignixa.Federation.Tests.BackendContracts/Ignixa.Federation.Tests.BackendContracts.csproj --configuration Release --no-build -- --show-live-output on --progress off --fail-skips on --filter-class '*ContractTests' --minimum-expected-tests 25
+dotnet run --project test/Ignixa.Federation.Tests.BackendContracts/Ignixa.Federation.Tests.BackendContracts.csproj --configuration Release -- --show-live-output on --progress off --fail-skips on --filter-class '*EvidenceTests' --minimum-expected-tests 295
+dotnet run --project test/Ignixa.Federation.Tests.BackendContracts/Ignixa.Federation.Tests.BackendContracts.csproj --configuration Release --no-build -- --show-live-output on --progress off --fail-skips on --filter-class '*ContractTests' --minimum-expected-tests 31
 ```
 
-The first command builds the project and runs the 214 offline tests. The second runs the twenty-five live
-cases (three reference, six count, four repeated `_id`, twelve Patient.given) using that build. The separate
+The first command builds the project and runs the 295 offline tests. The second runs the thirty-one live
+cases (three reference, six count, four repeated `_id`, twelve Patient.given, six Observation.subject join)
+using that build. The separate
 filters and minimum test counts prevent offline tests from satisfying the live gate. Failed or skipped cases
 make their command exit non-zero.
 
@@ -247,11 +284,11 @@ base and can include foreign references, so it is not an exact-local query.
 ## Evidence status
 
 - Local (Windows, no Docker engine): the project builds with the .NET 11.0.100 SDK. The offline tests pass.
-  The twenty-five live cases (three reference, six count, four repeated `_id`, twelve Patient.given) run and fail
-  with `[prerequisite]`, as they should without Docker: the offline run is 214 passed, 0 failed, 0 skipped,
-  and the live run is 25 total, 0 passed, 25 failed, 0 skipped.
+  The thirty-one live cases (three reference, six count, four repeated `_id`, twelve Patient.given, six
+  Observation.subject join) run and fail with `[prerequisite]`, as they should without Docker: the offline run
+  is 295 passed, 0 failed, 0 skipped, and the live run is 31 total, 0 passed, 31 failed, 0 skipped.
 - Pending Docker or CI: startup, port binding, match sets, the Patient count totals, the repeated
-  `_id` match and echo outcomes, and the Patient.given match and echo outcomes have not been verified against a
-  live backend; no outcome is recorded here and none is assumed. The first Linux run in
-  `.github/workflows/backend-contracts.yml` supplies that evidence. Until then the count and Patient.given
-  witnesses are not accepted.
+  `_id` match and echo outcomes, the Patient.given match and echo outcomes, and the Observation.subject join
+  match and echo outcomes have not been verified against a live backend; no outcome is recorded here and none is
+  assumed. The first Linux run in `.github/workflows/backend-contracts.yml` supplies that evidence. Until then
+  the count, Patient.given and Observation.subject join witnesses are not accepted.

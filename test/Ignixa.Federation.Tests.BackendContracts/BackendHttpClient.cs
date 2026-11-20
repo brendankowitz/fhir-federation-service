@@ -234,7 +234,7 @@ internal sealed class BackendHttpClient : IDisposable
     internal static HttpRequestMessage BuildRepeatedIdRequest(HttpMethod method, RepeatedIdShape shape, Uri baseAddress)
     {
         string controls = shape == RepeatedIdShape.Primary ? "_count=100&_total=accurate" : "_count=0";
-        return BuildLiteralPatientRequest(method, $"{PlainIdSpelling}&{EncodedIdSpelling}&{controls}", baseAddress);
+        return BuildLiteralRequest(method, "Patient", $"{PlainIdSpelling}&{EncodedIdSpelling}&{controls}", baseAddress);
     }
 
     /// <summary>
@@ -246,19 +246,31 @@ internal sealed class BackendHttpClient : IDisposable
     /// <param name="given">The case whose <see cref="GivenCase.WireQuery"/> is sent.</param>
     /// <param name="baseAddress">The backend base address, ending in a slash.</param>
     internal static HttpRequestMessage BuildGivenRequest(HttpMethod method, GivenCase given, Uri baseAddress) =>
-        BuildLiteralPatientRequest(method, $"{given.WireQuery}&_count=100&_total=accurate", baseAddress);
+        BuildLiteralRequest(method, "Patient", $"{given.WireQuery}&_count=100&_total=accurate", baseAddress);
 
-    private static HttpRequestMessage BuildLiteralPatientRequest(HttpMethod method, string query, Uri baseAddress)
+    /// <summary>
+    /// Builds an Observation.subject join request whose selection text is sent exactly as written, followed by
+    /// <c>_count=100&amp;_total=accurate</c>: in the GET target, and in the body of <c>POST Observation/_search</c>.
+    /// Raw spellings such as <c>%73ubject</c> and <c>%50atient</c> reach the wire literally in both. Strict handling
+    /// is requested.
+    /// </summary>
+    /// <param name="method">GET or POST.</param>
+    /// <param name="join">The case whose <see cref="SubjectJoinCase.WireQuery"/> is sent.</param>
+    /// <param name="baseAddress">The backend base address, ending in a slash.</param>
+    internal static HttpRequestMessage BuildSubjectJoinRequest(HttpMethod method, SubjectJoinCase join, Uri baseAddress) =>
+        BuildLiteralRequest(method, "Observation", $"{join.WireQuery}&_count=100&_total=accurate", baseAddress);
+
+    private static HttpRequestMessage BuildLiteralRequest(HttpMethod method, string resourceType, string query, Uri baseAddress)
     {
         HttpRequestMessage request;
         if (method == HttpMethod.Get)
         {
-            var target = new Uri($"{baseAddress.AbsoluteUri}Patient?{query}", new UriCreationOptions { DangerousDisablePathAndQueryCanonicalization = true });
+            var target = new Uri($"{baseAddress.AbsoluteUri}{resourceType}?{query}", new UriCreationOptions { DangerousDisablePathAndQueryCanonicalization = true });
             request = new HttpRequestMessage(HttpMethod.Get, target);
         }
         else if (method == HttpMethod.Post)
         {
-            request = new HttpRequestMessage(HttpMethod.Post, new Uri(baseAddress, "Patient/_search"))
+            request = new HttpRequestMessage(HttpMethod.Post, new Uri(baseAddress, $"{resourceType}/_search"))
             {
                 Content = new ByteArrayContent(System.Text.Encoding.ASCII.GetBytes(query))
                 {
@@ -268,7 +280,7 @@ internal sealed class BackendHttpClient : IDisposable
         }
         else
         {
-            throw new ArgumentOutOfRangeException(nameof(method), "Only GET and POST have a literal Patient request shape.");
+            throw new ArgumentOutOfRangeException(nameof(method), "Only GET and POST have a literal request shape.");
         }
 
         request.Headers.TryAddWithoutValidation("Prefer", "handling=strict");
@@ -287,6 +299,21 @@ internal sealed class BackendHttpClient : IDisposable
             $"the {method.Method} {given.Label} Patient.given search",
             "a result",
             GivenEvidence.Parse,
+            cancellationToken);
+    }
+
+    /// <summary>
+    /// Sends <see cref="BuildSubjectJoinRequest"/> and accounts for the response. Failures name only the method, the
+    /// case label, the HTTP status and fixed text, never a response body, a server link or the request.
+    /// </summary>
+    public async Task<SubjectJoinEvidence> SearchSubjectJoinAsync(HttpMethod method, SubjectJoinCase join, CancellationToken cancellationToken)
+    {
+        using HttpRequestMessage request = BuildSubjectJoinRequest(method, join, _http.BaseAddress!);
+        return await SendForEvidenceAsync(
+            request,
+            $"the {method.Method} {join.Label} Observation.subject search",
+            "a result",
+            SubjectJoinEvidence.Parse,
             cancellationToken);
     }
 
