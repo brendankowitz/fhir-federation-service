@@ -1,0 +1,8 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <IsPackable>true</IsPackable>
+    <Description>Pure domain model and instrumentation contracts for Ignixa Federation, a read-only FHIR R4 search federation gateway.</Description>
+  </PropertyGroup>
+
+</Project>
