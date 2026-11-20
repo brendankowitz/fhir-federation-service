@@ -19,7 +19,8 @@ namespace Ignixa.Federation.Core.Execution;
 /// <para>
 /// Every call's result is kept as a completed task and its failure observed, so a discarded failure is never an unobserved
 /// task exception; only a needed result is turned into a page or an exception. <see cref="DisposeAsync"/> cancels and joins
-/// every speculative call, which releases the whole window, and must run on every exit.
+/// every speculative call, which releases the whole window, and must run on every exit. A client cancellation callback that
+/// throws is observed and discarded with its speculation; it neither skips the join nor replaces the execution's outcome.
 /// </para>
 /// </remarks>
 internal sealed class FetchScheduler : IAsyncDisposable
@@ -121,18 +122,33 @@ internal sealed class FetchScheduler : IAsyncDisposable
 
     public Task<ShardPage> ContinueAsync(ShardCursor cursor) => NeededAsync(cursor.Shard, null, cursor);
 
-    /// <summary>Cancels speculation and waits until every speculative call has finished.</summary>
+    /// <summary>
+    /// Cancels speculation and waits until every speculative call has finished. It never throws, so the page or exception
+    /// the execution ends with is the one it returns.
+    /// </summary>
     public async ValueTask DisposeAsync()
     {
-        await _speculation.CancelAsync();
-        Task[] started;
-        lock (_lock)
+        try
         {
-            started = [.. _workers];
-        }
+            Task cancel = _speculation.CancelAsync();
+            await cancel.ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
 
-        await Task.WhenAll(started);
-        _speculation.Dispose();
+            // Only speculative calls register on this token, so a callback that throws belongs to discarded speculation.
+            _ = cancel.Exception;
+
+            Task[] started;
+            lock (_lock)
+            {
+                started = [.. _workers];
+            }
+
+            // Workers never fault: CallAsync turns every outcome into a completed task.
+            await Task.WhenAll(started);
+        }
+        finally
+        {
+            _speculation.Dispose();
+        }
     }
 
     private async Task<ShardPage> NeededAsync(ShardId shard, ShardSearchRequest? request, ShardCursor? cursor)

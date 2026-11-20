@@ -13,12 +13,18 @@ public sealed class UnsortedPageExecutorSpeculationTests
 
     private static readonly string[] Exits = ["filled", "failed", "contract", "budget"];
 
+    private static readonly string[] FrontierOutcomes = ["filled", "failed"];
+
     /// <summary>Runs each timing-sensitive test 20 times.</summary>
     public static TheoryData<int> Iterations => [.. Enumerable.Range(1, 20)];
 
     /// <summary>Each way a page ends while a speculative call runs, other than caller cancellation, 20 times.</summary>
     public static TheoryData<string, int> ExitsWhileSpeculating =>
         [.. from exit in Exits from iteration in Enumerable.Range(1, 20) select (exit, iteration)];
+
+    /// <summary>The frontier filling the page and the frontier's needed call failing, each 20 times.</summary>
+    public static TheoryData<string, int> FrontierOutcomesUnderAThrowingCallback =>
+        [.. from exit in FrontierOutcomes from iteration in Enumerable.Range(1, 20) select (exit, iteration)];
 
     private static CancellationToken Token => TestContext.Current.CancellationToken;
 
@@ -265,6 +271,72 @@ public sealed class UnsortedPageExecutorSpeculationTests
                 thrown.Shard.ShouldBe(Fixture.Shard(0));
                 thrown.Reason.ShouldBe(exit == "failed" ? ShardFailureReason.Failed : ShardFailureReason.ContractViolation);
                 break;
+        }
+
+        client.Calls.Count.ShouldBe(3);
+        client.Calls.ShouldAllBe(call => call.Finished.IsCompleted);
+        client.InFlight.ShouldBe(0);
+    }
+
+    /// <summary>
+    /// A speculative call's cancellation callback throws, and the call then stays parked until the test releases it. The
+    /// page must still join the call before it ends, and keep the frontier's filled page or the needed shard's own failure
+    /// rather than the callback's exception.
+    /// </summary>
+    [Theory]
+    [MemberData(nameof(FrontierOutcomesUnderAThrowingCallback))]
+    public async Task SpeculativeCancellationCallbackThatThrows_IsContainedAndTheCallIsJoinedBeforeThePageEnds(string exit, int iteration)
+    {
+        _ = iteration;
+        var client = new FakeShardClient();
+        var registered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var callbackRan = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var frontier = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var needed = new InvalidOperationException("backend said 500");
+        ShardCursor cursor = Fixture.Cursor(0, "1");
+        client.OnSearch(0, Fixture.Page(cursor, Fixture.Entries(0, "a")));
+        client.OnContinue(cursor, async cancellationToken =>
+        {
+            await frontier.Task.WaitAsync(cancellationToken);
+            return exit == "filled" ? Fixture.Page(null, Fixture.Entries(0, "b", "c")) : throw needed;
+        });
+        client.OnSearch(Fixture.Shard(1), async (_, cancellationToken) =>
+        {
+            using CancellationTokenRegistration registration = cancellationToken.Register(() =>
+            {
+                callbackRan.SetResult();
+                throw new InvalidOperationException("cancellation callback boom");
+            });
+            registered.SetResult();
+            await release.Task;
+            throw new OperationCanceledException(cancellationToken);
+        });
+
+        Task<UnsortedPage> execution = Fixture.Executor(client, Fixture.Registry(2), 2).ExecuteAsync(Fixture.Streams(2), 3, null, 10, Token);
+        await registered.Task.WaitAsync(Token);
+        frontier.SetResult();
+        await callbackRan.Task.WaitAsync(Token);
+
+        // s1's call is parked on release, so a joined page cannot have ended. Yielding gives an unjoined one time to end.
+        for (int yields = 0; yields < 10; yields++)
+        {
+            execution.IsCompleted.ShouldBeFalse();
+            await Task.Yield();
+        }
+
+        execution.IsCompleted.ShouldBeFalse();
+        release.SetResult();
+        if (exit == "filled")
+        {
+            (await execution).Ids().ShouldBe(Fixture.Ids(0, "a", "b", "c"));
+        }
+        else
+        {
+            ShardFailureException thrown = await Should.ThrowAsync<ShardFailureException>(execution);
+            thrown.Shard.ShouldBe(Fixture.Shard(0));
+            thrown.Reason.ShouldBe(ShardFailureReason.Failed);
+            thrown.InnerException.ShouldBeSameAs(needed);
         }
 
         client.Calls.Count.ShouldBe(3);
