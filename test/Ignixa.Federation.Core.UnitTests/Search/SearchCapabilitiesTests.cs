@@ -9,8 +9,16 @@ namespace Ignixa.Federation.Core.UnitTests.Search;
 
 public sealed class SearchCapabilitiesTests
 {
+    private const string PatientNameCanonical = "http://hl7.org/fhir/SearchParameter/Patient-name";
+
     private static ShardSearchCapability Shard(string id, IEnumerable<ResourceSearchSupport>? resources = null) =>
         new(ShardId.Parse(id), resources ?? AllResources, Certification());
+
+    private static SearchCapabilities WithWestPatient(params SearchParameterSupport[] parameters) =>
+        Capabilities(westResources: [new ResourceSearchSupport(Type("Patient"), parameters, [], []), .. AllResources.Skip(1)]);
+
+    private static string[] PatientCodes(SearchCapabilities capabilities) =>
+        [.. capabilities.Resources.Single(r => r.Type.Value == "Patient").Parameters.Select(p => p.Code)];
 
     private static void ShouldPublishIncludes(SearchCapabilities capabilities, string type, string[] includes, string[] revIncludes)
     {
@@ -108,7 +116,7 @@ public sealed class SearchCapabilitiesTests
 
         ResourceSearchSupport patient = capabilities.Resources.Single(r => r.Type.Value == "Patient");
         patient.Parameters.Select(p => p.Code).ShouldBe(["_id", "name"]);
-        patient.Parameters.Single(p => p.Code == "name").Definition.ShouldBe(new Uri("http://hl7.org/fhir/SearchParameter/Patient-name"));
+        patient.Parameters.Single(p => p.Code == "name").Definition.ShouldBe("http://hl7.org/fhir/SearchParameter/Patient-name");
     }
 
     [Fact]
@@ -134,6 +142,84 @@ public sealed class SearchCapabilitiesTests
         SearchCapabilities capabilities = Capabilities(westResources: [westPatient, .. AllResources.Skip(1)]);
 
         capabilities.Resources.Single(r => r.Type.Value == "Patient").Parameters.Select(p => p.Code).ShouldBe(["_id"]);
+    }
+
+    // Identity is lexical: a canonical that a URI parser would equate with the R4 one is still a different canonical.
+    // The withheld code is absent from the published metadata and from planning, and costs nothing else.
+    [Theory]
+    [InlineData("http://hl7.org/fhir/SearchParameter/Patient-name#v2")]
+    [InlineData("HTTP://HL7.ORG/fhir/SearchParameter/Patient-name")]
+    [InlineData("http://hl7.org:80/fhir/SearchParameter/Patient-name")]
+    // Deliberate: a versioned reference to the packaged canonical is a different canonical, because identity is lexical.
+    [InlineData("http://hl7.org/fhir/SearchParameter/Patient-name|4.0.1")]
+    [InlineData("https://example.invalid|1")]
+    public void WithholdsACodeWhoseDefinitionIsNotExactlyTheR4Canonical(string definition)
+    {
+        SearchCapabilities capabilities = WithWestPatient(
+            Param("_id", SearchParamType.Token),
+            Param("name", SearchParamType.String, definition),
+            Param("gender", SearchParamType.Token));
+
+        PatientCodes(capabilities).ShouldBe(["_id", "gender"]);
+        capabilities.Resources.Select(r => r.Type.Value).ShouldBe(
+            ["Observation", "Organization", "Patient", "Practitioner", "Questionnaire", "QuestionnaireResponse"]);
+        capabilities.Resources.Single(r => r.Type.Value == "Observation").Parameters.Select(p => p.Code)
+            .ShouldBe(["_id", "code", "date", "value-quantity"]);
+        SearchPlanner planner = Planner(capabilities);
+        ShouldFail("Patient", "name=Smith", SearchFailureCode.UnsupportedParameter, planner: planner);
+        PlanOk("Patient", "gender=male", planner).Occurrences.ShouldHaveSingleItem().Kind.ShouldBe(OccurrenceKind.Predicate);
+        PlanOk("Observation", "code=1234", planner).Occurrences.ShouldHaveSingleItem().Kind.ShouldBe(OccurrenceKind.Predicate);
+    }
+
+    // Every occurrence of a code must carry the R4 meaning: a different one withholds it, an absent one neither rescues
+    // nor withholds it, and listing a code twice is not itself a conflict.
+    [Theory]
+    [InlineData(PatientNameCanonical, PatientNameCanonical + "#v2", false)]
+    [InlineData(PatientNameCanonical + "#v2", PatientNameCanonical, false)]
+    [InlineData(null, PatientNameCanonical + "#v2", false)]
+    [InlineData(PatientNameCanonical + "#v2", null, false)]
+    [InlineData(PatientNameCanonical, null, true)]
+    [InlineData(null, PatientNameCanonical, true)]
+    public void AdmitsACodeListedTwiceOnlyWhenNoOccurrenceNamesAnotherCanonical(string? first, string? second, bool admitted)
+    {
+        SearchCapabilities capabilities = WithWestPatient(
+            Param("_id", SearchParamType.Token),
+            Param("name", SearchParamType.String, first),
+            Param("name", SearchParamType.String, second),
+            Param("gender", SearchParamType.Token));
+
+        PatientCodes(capabilities).ShouldBe(admitted ? ["_id", "gender", "name"] : ["_id", "gender"]);
+        SearchPlanner planner = Planner(capabilities);
+        if (admitted)
+        {
+            PlanOk("Patient", "name=Smith", planner).Occurrences.ShouldHaveSingleItem().Kind.ShouldBe(OccurrenceKind.Predicate);
+        }
+        else
+        {
+            ShouldFail("Patient", "name=Smith", SearchFailureCode.UnsupportedParameter, planner: planner);
+        }
+
+        PlanOk("Patient", "gender=male", planner).Occurrences.ShouldHaveSingleItem().Kind.ShouldBe(OccurrenceKind.Predicate);
+    }
+
+    [Fact]
+    public void RepublishedParametersRoundTripUnchanged()
+    {
+        SearchCapabilities first = Capabilities();
+        ResourceSearchSupport[] republished = [.. first.Resources.Select(r => new ResourceSearchSupport(r.Type, r.Parameters, [], []))];
+        ShardRegistry registry = Registry();
+
+        var second = new SearchCapabilities(registry, registry.Shards.Select(s => new ShardSearchCapability(s.Id, republished, Certification())));
+
+        second.Resources.Select(r => r.Type.Value).ShouldBe(first.Resources.Select(r => r.Type.Value));
+        for (int i = 0; i < first.Resources.Count; i++)
+        {
+            second.Resources[i].Parameters.Select(p => (p.Code, p.Definition))
+                .ShouldBe(first.Resources[i].Parameters.Select(p => (p.Code, p.Definition)));
+        }
+
+        first.Resources.Single(r => r.Type.Value == "Patient").Parameters.Select(p => p.Code)
+            .ShouldBe(["_id", "_lastUpdated", "birthdate", "family", "gender", "name"]);
     }
 
     [Fact]

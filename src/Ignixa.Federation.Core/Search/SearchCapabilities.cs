@@ -13,9 +13,10 @@ namespace Ignixa.Federation.Core.Search;
 /// intersection for <c>/metadata</c> and the proofs the planner checks (design spec §9).
 /// </summary>
 /// <remarks>
-/// A parameter is published only under its R4 meaning: the R4 definition with that exact code, the same type, and, when
-/// the shard names a definition, the R4 canonical. A shard that binds a code to another meaning loses the code; meanings
-/// are never rebound. Immutable; safe to share across threads.
+/// A parameter is published only under its R4 meaning: the R4 definition with that exact code and type, and every
+/// occurrence every shard declares names either no definition or exactly the R4 canonical (ordinal; version and fragment
+/// count; no URI normalization). A shard that binds a code to another meaning loses the code; meanings are never
+/// rebound. Immutable; safe to share across threads.
 /// </remarks>
 public sealed class SearchCapabilities
 {
@@ -206,7 +207,10 @@ public sealed class SearchCapabilities
         {
             if (R4Search.FindDefinition(type, code) is { } definition
                 && perShard.All(r => r.Parameters.Any(p => p.Code == code)
-                    && r.Parameters.Where(p => p.Code == code).All(p => p.Type == definition.Type && (p.Definition is null || p.Definition == definition.Url))))
+                    && r.Parameters.Where(p => p.Code == code).All(p =>
+                        p.Type == definition.Type
+                        && (p.Definition is null
+                            || string.Equals(p.Definition, definition.Url.OriginalString, StringComparison.Ordinal)))))
             {
                 parameters.Add(code, definition);
             }
@@ -229,7 +233,7 @@ public sealed class SearchCapabilities
         published.Parameters.Values
             .Where(d => SearchPlanner.CanPublishParameter(type, d))
             .OrderBy(d => d.Code, StringComparer.Ordinal)
-            .Select(d => new SearchParameterSupport(d.Code, d.Type, d.Url)),
+            .Select(d => new SearchParameterSupport(d.Code, d.Type, d.Url.OriginalString)),
         Admitted(type, published.Includes, reverse: false),
         Admitted(type, published.RevIncludes, reverse: true));
 
