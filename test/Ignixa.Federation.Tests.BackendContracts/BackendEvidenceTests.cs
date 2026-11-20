@@ -4,7 +4,8 @@ namespace Ignixa.Federation.Tests.BackendContracts;
 
 /// <summary>
 /// Backend-independent checks of the evidence path. They run without Docker and show that the
-/// contract assertions fail for the two documented breaks, so a green live run means something.
+/// contract assertions fail for the documented breaks (type/id-only matching, literal URL equality,
+/// and a host-ignoring foreign query), so a green live run means something.
 /// The canned searchsets stand in for what a broken backend would return.
 /// </summary>
 public sealed class BackendEvidenceTests
@@ -19,7 +20,7 @@ public sealed class BackendEvidenceTests
              "software":{"name":"Sample FHIR Backend","version":"{{{version}}}"}}
             """;
 
-        Assert.Equal($"Sample FHIR Backend {version}", FhirHttpClient.ReadSoftwareIdentity(metadata));
+        Assert.Equal($"Sample FHIR Backend {version}", BackendHttpClient.ReadSoftwareIdentity(metadata));
     }
 
     [Fact]
@@ -30,7 +31,7 @@ public sealed class BackendEvidenceTests
              "version":"5.2.84"}}
             """;
 
-        var failure = Assert.Throws<BackendEvidenceException>(() => FhirHttpClient.ReadSoftwareIdentity(metadata));
+        var failure = Assert.Throws<BackendEvidenceException>(() => BackendHttpClient.ReadSoftwareIdentity(metadata));
 
         Assert.Equal(BackendFailureKind.Startup, failure.Kind);
         Assert.DoesNotContain("Do not print", failure.Message);
@@ -44,7 +45,7 @@ public sealed class BackendEvidenceTests
     public void Break_type_and_id_only_matching_admits_the_foreign_reference_and_is_reported()
     {
         SearchsetEvidence typeIdOnlyBackend = SearchsetEvidence.Parse(
-            Searchset("obs-relative-dup", "obs-own-absolute-dup", "obs-foreign-absolute-dup"));
+            Searchset("obs-relative-dup", "obs-own-absolute-dup", "obs-foreign-absolute-dup", "obs-foreign-b-absolute-dup"));
 
         MatchComparison comparison = MatchComparison.Compare(
             EvidenceLabel.Contract, LocalQueryDescription, LocalQueryExpected, typeIdOnlyBackend);
@@ -52,8 +53,73 @@ public sealed class BackendEvidenceTests
         Assert.False(comparison.IsEqual);
         string report = comparison.Describe();
         Assert.StartsWith("[contract]", report);
-        Assert.Contains("unexpected: [obs-foreign-absolute-dup]", report);
+        Assert.Contains("unexpected: [obs-foreign-absolute-dup, obs-foreign-b-absolute-dup]", report);
         Assert.Contains("missing: []", report);
+    }
+
+    [Fact]
+    public void Break_host_ignoring_foreign_query_also_returns_the_other_foreign_host_and_is_reported()
+    {
+        // A backend that ignores the host answers the foreign A query with both foreign references.
+        // The shared foreign A comparison is the one the live case uses, so this fails if the live
+        // expectation ever accepts foreign B.
+        SearchsetEvidence hostIgnoringBackend = SearchsetEvidence.Parse(
+            Searchset(SeedData.ForeignAbsoluteObservationId, SeedData.OtherForeignAbsoluteObservationId));
+
+        MatchComparison comparison = ReferenceSearchContractTests.CompareForeignAQuery(hostIgnoringBackend);
+
+        Assert.False(comparison.IsEqual);
+        string report = comparison.Describe();
+        Assert.Contains("unexpected: [obs-foreign-b-absolute-dup]", report);
+        Assert.Contains("missing: []", report);
+
+        SearchsetEvidence exactBackend = SearchsetEvidence.Parse(Searchset(SeedData.ForeignAbsoluteObservationId));
+        Assert.True(ReferenceSearchContractTests.CompareForeignAQuery(exactBackend).IsEqual);
+    }
+
+    [Fact]
+    public void Outgoing_observations_seed_the_exact_reference_spelling_for_each_id()
+    {
+        var subjects = SeedData.Resources("http://127.0.0.1:45123/custom/r4/")
+            .Select(r => JsonNode.Parse(r.Json)!)
+            .Where(json => json["resourceType"]!.GetValue<string>() == "Observation")
+            .ToDictionary(json => json["id"]!.GetValue<string>(), json => json["subject"]!["reference"]!.GetValue<string>());
+
+        Assert.Equal(5, subjects.Count);
+        Assert.Equal("Patient/dup", subjects["obs-relative-dup"]);
+        Assert.Equal("http://127.0.0.1:45123/custom/r4/Patient/dup", subjects["obs-own-absolute-dup"]);
+        Assert.Equal("https://foreign-shard.invalid/Patient/dup", subjects["obs-foreign-absolute-dup"]);
+        Assert.Equal("https://foreign-shard-b.invalid/Patient/dup", subjects["obs-foreign-b-absolute-dup"]);
+        Assert.Equal("Patient/other", subjects["obs-control-other"]);
+    }
+
+    [Theory]
+    [InlineData("server-error", "incomplete search response: the search returned unexpected HTTP 500")]
+    [InlineData("missing-total", "incomplete search response: the searchset has no total")]
+    [InlineData("missing-seeds", "complete search page contained 1 of 5 seeded Observations (2 total matches)")]
+    public async Task Seed_readiness_timeout_reports_the_last_safe_observation(string response, string expectedDetail)
+    {
+        const string UnreservedId = "do-not-log-this-id";
+        const string UntrustedLink = "https://do-not-log-this-url.invalid/";
+
+        BackendEvidenceException failure = await Assert.ThrowsAsync<BackendEvidenceException>(() =>
+            MicrosoftFhirSqlBackend.WaitForSeedSearchableAsync(
+                (_, _) => response switch
+                {
+                    "server-error" => Task.FromException<SearchsetEvidence>(new BackendEvidenceException(
+                        BackendFailureKind.IncompleteSearch, "the search returned unexpected HTTP 500")),
+                    "missing-total" => Task.FromResult(SearchsetEvidence.Parse(
+                        Build(["obs-relative-dup"], total: null, selfLink: UntrustedLink))),
+                    _ => Task.FromResult(SearchsetEvidence.Parse(
+                        Build(["obs-relative-dup", UnreservedId], selfLink: UntrustedLink))),
+                },
+                TimeSpan.FromMilliseconds(20),
+                TestContext.Current.CancellationToken));
+
+        Assert.Equal(BackendFailureKind.IncompleteSearch, failure.Kind);
+        Assert.Contains(expectedDetail, failure.Message);
+        Assert.DoesNotContain(UnreservedId, failure.Message);
+        Assert.DoesNotContain(UntrustedLink, failure.Message);
     }
 
     [Fact]

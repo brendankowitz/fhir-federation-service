@@ -40,4 +40,4 @@ jobs:
           dotnet-version: 11.0.100
 
       - name: Run backend contract tests
-        run: dotnet run --project test/Ignixa.Federation.Tests.BackendContracts/Ignixa.Federation.Tests.BackendContracts.csproj --configuration Release -- --show-live-output on --progress off --minimum-expected-tests 24
+        run: dotnet run --project test/Ignixa.Federation.Tests.BackendContracts/Ignixa.Federation.Tests.BackendContracts.csproj --configuration Release -- --show-live-output on --progress off --minimum-expected-tests 29

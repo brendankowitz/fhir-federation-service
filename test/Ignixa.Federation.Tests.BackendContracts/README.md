@@ -11,33 +11,43 @@ This is not a profile certification and not a federation end-to-end test. No fed
 
 One backend is started and seeded once. The three cases share it and report separately.
 
-Seed (all ids are reserved synthetic ids):
+Seed (all ids are reserved synthetic ids). Foreign A and foreign B have the same scheme, port, path, type
+and id and differ only in host. Both are reference text only, and neither is ever contacted.
 
 | Observation | `subject.reference` |
 | --- | --- |
 | `obs-relative-dup` | `Patient/dup` |
 | `obs-own-absolute-dup` | `<local base>/Patient/dup`, where the local base is the URL this test client uses |
-| `obs-foreign-absolute-dup` | `https://foreign-shard.invalid/Patient/dup` (never contacted) |
+| `obs-foreign-absolute-dup` (foreign A) | `https://foreign-shard.invalid/Patient/dup` |
+| `obs-foreign-b-absolute-dup` (foreign B) | `https://foreign-shard-b.invalid/Patient/dup` |
 | `obs-control-other` | `Patient/other` |
 
 | Case | Label | Query | Expected matches |
 | --- | --- | --- | --- |
 | 1 | contract | `subject=<local base>/Patient/dup` | `obs-own-absolute-dup`, `obs-relative-dup` |
-| 2 | contract | `subject=https://foreign-shard.invalid/Patient/dup` | `obs-foreign-absolute-dup` |
-| 3 | characterization | `subject=Patient/dup` | all three `dup` observations |
+| 2 | contract | `subject=https://foreign-shard.invalid/Patient/dup` | `obs-foreign-absolute-dup` only |
+| 3 | characterization | `subject=Patient/dup` | all four `dup` observations |
 
 A **contract** case states what the federation relies on. A **characterization** case records what the
-backend does. Case 3 is not interchangeable with case 1: a type-and-id query admits foreign references
-with the same id, so the federation must not use it to mean "local".
+backend does. The requirement is a profile-certified exact-local query: the backend must answer a
+host-qualified query for its own base with the relative and own-absolute references and no foreign
+reference (case 1). Case 3 characterizes the relative spelling `subject=Patient/dup`. It does not constrain
+the base, so it admits both foreign references. It is not a way to make the contract pass, and the federation
+must not use it to mean "local". Case 2 must exclude foreign B, so a backend that ignores the host fails it.
 
 Expected ids are literals in the test, compared as sorted multisets. The expected outcomes follow the
 backend source at release 5.2.84 (`ReferenceSearchValueParser`, `SearchValueExpressionBuilderHelper`).
 
-The suite also holds offline tests for the comparison itself. They need no Docker and show that the
-two documented mistakes are caught:
+The suite also holds offline tests for the comparison itself. They need no Docker and show that these
+mistakes are caught:
 
-- treating a host-qualified query as type-and-id only, which admits the foreign reference;
-- comparing the reference text literally, which drops the relative reference from case 1.
+- treating a host-qualified query as type-and-id only, which admits the foreign references in case 1;
+- comparing the reference text literally, which drops the relative reference from case 1;
+- ignoring the host in a foreign query, which returns foreign B for case 2. This control uses the same
+  comparison as the live case.
+
+An offline fixture check also verifies each observation's outgoing `subject.reference` spelling.
+It does not require the server to preserve that spelling on read-back.
 
 ## Run it
 
@@ -45,7 +55,7 @@ Requires .NET SDK 11.0.100 and a local Docker engine for `linux/amd64` container
 `/var/run/docker.sock` on Linux and the Docker Desktop Linux engine on Windows. From the repository root:
 
 ```text
-dotnet run --project test/Ignixa.Federation.Tests.BackendContracts/Ignixa.Federation.Tests.BackendContracts.csproj --configuration Release -- --show-live-output on --progress off --minimum-expected-tests 24
+dotnet run --project test/Ignixa.Federation.Tests.BackendContracts/Ignixa.Federation.Tests.BackendContracts.csproj --configuration Release -- --show-live-output on --progress off --minimum-expected-tests 29
 ```
 
 The command exits non-zero if a case fails. To run only the offline tests, replace the options after
@@ -89,15 +99,16 @@ Reports identify the backend using the bounded `software.name` and `software.ver
 codes, and exception type names. Startup failures may also report container state and exit code.
 Reports do not contain container logs, response bodies, endpoints, or credentials.
 
-Before any case runs, the fixture waits until all four seeded Observations are returned by an `_id` search. Each
-case then requests `_count=100` with an accurate total, and it fails unless the page has no next link and the total
-equals the number of matches.
+Before any case runs, the fixture waits until all five seeded Observations are returned by an `_id` search.
+If readiness times out, it reports the last sanitized observation: why a response was incomplete, or how
+many seeds were in a complete response. Each case then requests `_count=100` with an accurate total and fails
+unless the page has no next link and the total equals the number of matches.
 
 ## Known limitation: relative references
 
 The pinned source indexes a relative reference and an absolute reference to its own base as local.
 Case 1 expects both. Case 3 checks a separate limitation: `subject=Patient/dup` does not constrain the
-base and can include foreign references. Do not treat it as an exact-local filter.
+base and can include foreign references, so it is not an exact-local query.
 
 ## Evidence status
 

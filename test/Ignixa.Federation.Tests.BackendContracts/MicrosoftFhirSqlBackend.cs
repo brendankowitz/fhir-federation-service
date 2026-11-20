@@ -17,18 +17,18 @@ namespace Ignixa.Federation.Tests.BackendContracts;
 internal sealed class MicrosoftFhirSqlBackend : IAsyncDisposable
 {
     // Source: microsoft/fhir-server release/5.2.84, commit 2a67597a015b957066822b0d54f2ccc46971c14e.
-    private const string FhirImage =
+    private const string ServerImage =
         "mcr.microsoft.com/healthcareapis/r4-fhir-server:5.2.84@sha256:6f2798229c7f9f987909475c7ed99b1ddd87d30a08c55520f475f8a58c5c75f1";
 
     private const string SqlImage =
         "mcr.microsoft.com/mssql/server:2022-CU28-ubuntu-22.04@sha256:4525e3efac9f3e241cb003bb2ff2a82818b502f37e12049d788b1a9fa7e13b7f";
 
-    private const ushort FhirContainerPort = 8080;
+    private const ushort ServerContainerPort = 8080;
     private const string SqlAlias = "sql";
     private const string SqlReadyMessage = "SQL Server is now ready for client connections";
 
     private static readonly TimeSpan StartupBudget = TimeSpan.FromMinutes(12);
-    private static readonly TimeSpan FhirReadyBudget = TimeSpan.FromMinutes(5);
+    private static readonly TimeSpan ServerReadyBudget = TimeSpan.FromMinutes(5);
     private static readonly TimeSpan SeedSearchableBudget = TimeSpan.FromSeconds(60);
     private static readonly TimeSpan PollInterval = TimeSpan.FromSeconds(3);
     private static readonly TimeSpan RemovalBudget = TimeSpan.FromSeconds(30);
@@ -37,7 +37,7 @@ internal sealed class MicrosoftFhirSqlBackend : IAsyncDisposable
         : "unix:///var/run/docker.sock");
 
     private string? _sqlName;
-    private string? _fhirName;
+    private string? _serverName;
     private INetwork? _network;
 
     private MicrosoftFhirSqlBackend()
@@ -47,7 +47,7 @@ internal sealed class MicrosoftFhirSqlBackend : IAsyncDisposable
     /// <summary>The base the test client uses against the backend, with a trailing slash.</summary>
     public string LocalBaseUrl { get; private set; } = string.Empty;
 
-    public FhirHttpClient Client { get; private set; } = null!;
+    public BackendHttpClient Client { get; private set; } = null!;
     public string SoftwareIdentity { get; private set; } = string.Empty;
 
     /// <summary>
@@ -76,9 +76,9 @@ internal sealed class MicrosoftFhirSqlBackend : IAsyncDisposable
                 _ => new(BackendFailureKind.Startup, $"initializing the backend failed ({e.GetType().Name})."),
             };
             string? sqlState = await DescribeContainerAsync("SQL", backend._sqlName);
-            string? fhirState = await DescribeContainerAsync("FHIR", backend._fhirName);
+            string? serverState = await DescribeContainerAsync("FHIR", backend._serverName);
             string? cleanupFailure = await backend.CleanUpAsync();
-            string[] details = [.. new[] { sqlState, fhirState, cleanupFailure }.OfType<string>()];
+            string[] details = [.. new[] { sqlState, serverState, cleanupFailure }.OfType<string>()];
             if (details.Length > 0)
             {
                 throw new BackendEvidenceException(failure.Kind, $"{failure.Detail} {string.Join(" ", details)}");
@@ -126,17 +126,17 @@ internal sealed class MicrosoftFhirSqlBackend : IAsyncDisposable
     {
         Client?.Dispose();
 
-        string? fhir = await TryRemoveAsync("FHIR container", _fhirName is { } api
+        string? server = await TryRemoveAsync("FHIR container", _serverName is { } api
             ? ct => RemoveContainerAsync(api, ct)
             : null);
         string? sql = await TryRemoveAsync("SQL container", _sqlName is { } database
             ? ct => RemoveContainerAsync(database, ct)
             : null);
         string? network = await TryRemoveAsync("Docker network", _network is { } bridge ? bridge.DeleteAsync : null);
-        _fhirName = null;
+        _serverName = null;
         _sqlName = null;
         _network = null;
-        string[] failures = [.. new[] { fhir, sql, network }.OfType<string>()];
+        string[] failures = [.. new[] { server, sql, network }.OfType<string>()];
         return failures.Length == 0 ? null : $"Cleanup failed: {string.Join(", ", failures)}.";
     }
 
@@ -224,24 +224,24 @@ internal sealed class MicrosoftFhirSqlBackend : IAsyncDisposable
             $"Server={SqlAlias},1433;Initial Catalog=FHIR;Persist Security Info=False;User ID=sa;Password={password};" +
             "MultipleActiveResultSets=False;Connection Timeout=30;TrustServerCertificate=true";
 
-        IContainer fhir = await RunPhaseAsync(
+        IContainer server = await RunPhaseAsync(
             BackendFailureKind.Startup,
             "starting the FHIR server",
             async () =>
             {
                 string name = $"fhir-backend-contract-fhir-{runId}";
-                IContainer container = new ContainerBuilder(FhirImage)
+                IContainer container = new ContainerBuilder(ServerImage)
                     .WithName(name)
                     .WithDockerEndpoint(DockerEndpoint)
                     .WithNetwork(network)
-                    .WithExposedPort(FhirContainerPort)
+                    .WithExposedPort(ServerContainerPort)
                     .WithCreateParameterModifier(parameters =>
                     {
                         // Loopback only, Docker picks the host port.
                         parameters.HostConfig ??= new HostConfig();
                         parameters.HostConfig.PortBindings = new Dictionary<string, IList<PortBinding>>
                         {
-                            [$"{FhirContainerPort}/tcp"] = [new PortBinding { HostIP = "127.0.0.1", HostPort = string.Empty }],
+                            [$"{ServerContainerPort}/tcp"] = [new PortBinding { HostIP = "127.0.0.1", HostPort = string.Empty }],
                         };
                     })
                     .WithEnvironment("DataStore", "SqlServer")
@@ -253,35 +253,35 @@ internal sealed class MicrosoftFhirSqlBackend : IAsyncDisposable
                     // SecurityProvider requires a non-null Authority even with security off. The
                     // value is never contacted because discovery only runs when security is on.
                     .WithEnvironment("FhirServer__Security__Authentication__Authority", "https://security-disabled.invalid")
-                    .WithEnvironment("ASPNETCORE_URLS", $"http://+:{FhirContainerPort}")
+                    .WithEnvironment("ASPNETCORE_URLS", $"http://+:{ServerContainerPort}")
                     .WithLogger(NullLogger.Instance)
                     .Build();
-                _fhirName = name;
+                _serverName = name;
                 await container.StartAsync(cancellationToken);
                 return container;
             });
 
-        LocalBaseUrl = $"http://127.0.0.1:{fhir.GetMappedPublicPort(FhirContainerPort)}/";
-        Client = new FhirHttpClient(new Uri(LocalBaseUrl));
+        LocalBaseUrl = $"http://127.0.0.1:{server.GetMappedPublicPort(ServerContainerPort)}/";
+        Client = new BackendHttpClient(new Uri(LocalBaseUrl));
 
-        SoftwareIdentity = await WaitForMetadataAsync(fhir, cancellationToken);
+        SoftwareIdentity = await WaitForMetadataAsync(server, cancellationToken);
         await SeedAsync(cancellationToken);
-        await WaitForSeedSearchableAsync(cancellationToken);
+        await WaitForSeedSearchableAsync(Client.SearchObservationsAsync, SeedSearchableBudget, cancellationToken);
     }
 
-    private async Task<string> WaitForMetadataAsync(IContainer fhir, CancellationToken cancellationToken)
+    private async Task<string> WaitForMetadataAsync(IContainer server, CancellationToken cancellationToken)
     {
         using var phase = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        phase.CancelAfter(FhirReadyBudget);
+        phase.CancelAfter(ServerReadyBudget);
         try
         {
             while (true)
             {
-                if (fhir.State != TestcontainersStates.Running)
+                if (server.State != TestcontainersStates.Running)
                 {
                     throw new BackendEvidenceException(
                         BackendFailureKind.Startup,
-                        $"the FHIR container stopped before it was ready (state {fhir.State}). Container output is not shown because it can contain the connection string.");
+                        $"the FHIR container stopped before it was ready (state {server.State}). Container output is not shown because it can contain the connection string.");
                 }
 
                 if (await Client.GetSoftwareIdentityAsync(phase.Token) is { } identity)
@@ -296,7 +296,7 @@ internal sealed class MicrosoftFhirSqlBackend : IAsyncDisposable
         {
             throw new BackendEvidenceException(
                 BackendFailureKind.Startup,
-                $"the FHIR server did not answer metadata within {FhirReadyBudget.TotalMinutes:0} minutes.");
+                $"the FHIR server did not answer metadata within {ServerReadyBudget.TotalMinutes:0} minutes.");
         }
     }
 
@@ -312,28 +312,35 @@ internal sealed class MicrosoftFhirSqlBackend : IAsyncDisposable
     /// Metadata alone says nothing about the search index. This polls an <c>_id</c> search until every
     /// seeded Observation is returned, so a later missing id is a contract result and not lag.
     /// </summary>
-    private async Task WaitForSeedSearchableAsync(CancellationToken cancellationToken)
+    internal static async Task WaitForSeedSearchableAsync(
+        Func<string, CancellationToken, Task<SearchsetEvidence>> search,
+        TimeSpan budget,
+        CancellationToken cancellationToken)
     {
         string query = $"_id={string.Join(',', SeedData.AllObservationIds)}";
         string[] expected = [.. SeedData.AllObservationIds.Order(StringComparer.Ordinal)];
 
         using var phase = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        phase.CancelAfter(SeedSearchableBudget);
+        phase.CancelAfter(budget);
+        string lastObservation = "no search attempt completed";
         try
         {
             while (true)
             {
                 try
                 {
-                    SearchsetEvidence found = await Client.SearchObservationsAsync(query, phase.Token);
+                    SearchsetEvidence found = await search(query, phase.Token);
                     if (found.MatchIds.SequenceEqual(expected))
                     {
                         return;
                     }
+
+                    int seededCount = expected.Intersect(found.MatchIds, StringComparer.Ordinal).Count();
+                    lastObservation = $"complete search page contained {seededCount} of {expected.Length} seeded Observations ({found.MatchIds.Count} total matches)";
                 }
                 catch (BackendEvidenceException e) when (e.Kind == BackendFailureKind.IncompleteSearch)
                 {
-                    // Not ready yet; the budget below turns persistent failure into a reported one.
+                    lastObservation = $"incomplete search response: {e.Detail}";
                 }
 
                 await Task.Delay(PollInterval, phase.Token);
@@ -343,7 +350,7 @@ internal sealed class MicrosoftFhirSqlBackend : IAsyncDisposable
         {
             throw new BackendEvidenceException(
                 BackendFailureKind.IncompleteSearch,
-                $"the {expected.Length} seeded Observations were not all searchable within {SeedSearchableBudget.TotalSeconds:0} seconds, so no contract can be judged.");
+                $"seed search did not return the expected page within {budget.TotalSeconds:0} seconds. Last observation: {lastObservation}. No contract can be judged.");
         }
     }
 

@@ -9,14 +9,14 @@ namespace Ignixa.Federation.Tests.BackendContracts;
 /// proxy, and reports failures as <see cref="BackendEvidenceException"/> with status codes only, so
 /// no response body, endpoint, or credential reaches a test report.
 /// </summary>
-internal sealed class FhirHttpClient : IDisposable
+internal sealed class BackendHttpClient : IDisposable
 {
     private const long MaxResponseBytes = 4 * 1024 * 1024;
     private static readonly TimeSpan RequestTimeout = TimeSpan.FromSeconds(30);
 
     private readonly HttpClient _http;
 
-    public FhirHttpClient(Uri baseAddress)
+    public BackendHttpClient(Uri baseAddress)
     {
         var handler = new HttpClientHandler
         {

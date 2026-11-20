@@ -14,6 +14,7 @@ internal static class SeedData
     public const string RelativeObservationId = "obs-relative-dup";
     public const string OwnAbsoluteObservationId = "obs-own-absolute-dup";
     public const string ForeignAbsoluteObservationId = "obs-foreign-absolute-dup";
+    public const string OtherForeignAbsoluteObservationId = "obs-foreign-b-absolute-dup";
     public const string ControlObservationId = "obs-control-other";
 
     /// <summary>
@@ -22,11 +23,18 @@ internal static class SeedData
     /// </summary>
     public const string ForeignBaseUrl = "https://foreign-shard.invalid/";
 
+    /// <summary>
+    /// A second foreign base that differs from <see cref="ForeignBaseUrl"/> only in its host, so a
+    /// query that ignores the host cannot tell the two foreign references apart.
+    /// </summary>
+    public const string OtherForeignBaseUrl = "https://foreign-shard-b.invalid/";
+
     private static readonly string[] ObservationIds =
     [
         RelativeObservationId,
         OwnAbsoluteObservationId,
         ForeignAbsoluteObservationId,
+        OtherForeignAbsoluteObservationId,
         ControlObservationId,
     ];
 
@@ -46,6 +54,7 @@ internal static class SeedData
         Observation(RelativeObservationId, $"Patient/{DuplicatePatientId}"),
         Observation(OwnAbsoluteObservationId, $"{localBaseUrl}Patient/{DuplicatePatientId}"),
         Observation(ForeignAbsoluteObservationId, $"{ForeignBaseUrl}Patient/{DuplicatePatientId}"),
+        Observation(OtherForeignAbsoluteObservationId, $"{OtherForeignBaseUrl}Patient/{DuplicatePatientId}"),
         Observation(ControlObservationId, $"Patient/{OtherPatientId}"),
     ];
 
