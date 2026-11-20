@@ -1,0 +1,418 @@
+using System.Collections.ObjectModel;
+using System.Text;
+using Ignixa.Federation.Core.Configuration;
+using Ignixa.Federation.Core.Identity;
+using Ignixa.Federation.Core.Search;
+using Ignixa.Federation.Core.Shards;
+
+namespace Ignixa.Federation.Core.Execution.Chains;
+
+/// <summary>
+/// Resolves a plan's distributed forward chains into unsorted primary requests for <see cref="UnsortedPageExecutor"/>
+/// (design spec §7.5). Each distributed chain searches its target on every shard for the planned terminal, keeps the
+/// distinct physical keys found, and replaces the chain with one reference list per shard, spelled in the forms that shard
+/// certified for own and foreign keys. A passthrough chain is sent unchanged.
+/// </summary>
+/// <remarks>
+/// <para>
+/// Before any request is sent the resolver authorizes the searched type and every type a chain searches, in either mode,
+/// refuses semantics this stage does not execute, and measures every witness request against its shard's
+/// <see cref="ShardRequestBound"/>. Chains then resolve one at a time in ordinal order, so a chain with no witness proves the
+/// result empty without searching later chains. Each primary request is measured before it is exposed.
+/// </para>
+/// <para>
+/// The configured limits and request bounds are snapshotted at construction. The resolver holds no per-request state, so
+/// one instance may resolve concurrent plans; each resolution owns its calls and joins them before it returns or throws.
+/// </para>
+/// </remarks>
+public sealed class ForwardChainResolver
+{
+    private static readonly ParameterOccurrence IdsOnly = new("_elements", "id");
+
+    private readonly IShardClient _client;
+    private readonly ShardRegistry _registry;
+    private readonly Target[] _targets; // In registry order, which orders witness searches and primary streams.
+    private readonly Dictionary<ShardId, Target> _byShard;
+    private readonly int _maxChainKeys;
+    private readonly int _maxParallelBackendCalls;
+    private readonly TimeSpan _chainSubquery;
+
+    /// <summary>Initializes a new instance of the <see cref="ForwardChainResolver"/> class.</summary>
+    /// <param name="client">The client every witness search is sent through.</param>
+    /// <param name="registry">The registry this resolver serves; a plan must have been made against this very instance.</param>
+    /// <param name="requestBounds">One operator-trusted bound per registry shard, and no other; copied.</param>
+    /// <param name="limits">
+    /// The limits; <see cref="LimitOptions.MaxChainKeys"/> and <see cref="LimitOptions.MaxParallelBackendCalls"/> are read
+    /// once and must be positive.
+    /// </param>
+    /// <param name="timeouts">
+    /// The timeouts; <see cref="TimeoutOptions.ChainSubquery"/> bounds each chain's witness searches and
+    /// <see cref="TimeoutOptions.BackendCall"/> each call. Both are read once and must be positive.
+    /// </param>
+    /// <exception cref="ArgumentNullException">A required argument is <see langword="null"/>.</exception>
+    /// <exception cref="ArgumentException">
+    /// <paramref name="requestBounds"/> misses a registry shard, names another shard, or asks for
+    /// <see cref="ShardSearchMethod.PostSearch"/> on a shard whose profile does not support it.
+    /// </exception>
+    /// <exception cref="ArgumentOutOfRangeException">A limit or timeout is not positive.</exception>
+    public ForwardChainResolver(
+        IShardClient client,
+        ShardRegistry registry,
+        IReadOnlyDictionary<ShardId, ShardRequestBound> requestBounds,
+        LimitOptions limits,
+        TimeoutOptions timeouts)
+    {
+        ArgumentNullException.ThrowIfNull(client);
+        ArgumentNullException.ThrowIfNull(registry);
+        ArgumentNullException.ThrowIfNull(requestBounds);
+        ArgumentNullException.ThrowIfNull(limits);
+        ArgumentNullException.ThrowIfNull(timeouts);
+        _maxChainKeys = limits.MaxChainKeys;
+        _maxParallelBackendCalls = limits.MaxParallelBackendCalls;
+        _chainSubquery = timeouts.ChainSubquery;
+        TimeSpan backendCall = timeouts.BackendCall;
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(_maxChainKeys, nameof(limits));
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(_maxParallelBackendCalls, nameof(limits));
+        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(_chainSubquery, TimeSpan.Zero, nameof(timeouts));
+        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(backendCall, TimeSpan.Zero, nameof(timeouts));
+
+        if (requestBounds.Count != registry.Shards.Count)
+        {
+            throw new ArgumentException("Every registry shard, and no other, needs a request bound.", nameof(requestBounds));
+        }
+
+        _byShard = [];
+        foreach (ShardDescriptor shard in registry.Shards)
+        {
+            if (!requestBounds.TryGetValue(shard.Id, out ShardRequestBound? bound) || bound is null)
+            {
+                throw new ArgumentException("Every registry shard, and no other, needs a request bound.", nameof(requestBounds));
+            }
+
+            if (bound.Method == ShardSearchMethod.PostSearch && !shard.Profile.SupportsPostSearch)
+            {
+                throw new ArgumentException("A request bound asks for POST search on a shard whose profile does not support it.", nameof(requestBounds));
+            }
+
+            _byShard.Add(shard.Id, new Target(shard, bound));
+        }
+
+        _targets = [.. registry.Shards.Select(s => _byShard[s.Id])];
+        _client = new DeadlineShardClient(client, backendCall);
+        _registry = registry;
+    }
+
+    /// <summary>Resolves <paramref name="plan"/>'s distributed forward chains.</summary>
+    /// <param name="plan">A plan the planner made against this resolver's registry instance.</param>
+    /// <param name="readableTypes">The resource types the caller may read.</param>
+    /// <param name="fetchBudget">The shard calls the request may still start; witness calls are charged against it.</param>
+    /// <param name="payloadByteBudget">The decoded resource bytes the request may still read; witness entries are charged against it.</param>
+    /// <param name="cancellationToken">The caller's token, which bounds the whole resolution.</param>
+    /// <returns>
+    /// <see cref="ForwardChainReady"/> with one primary request per shard; <see cref="ForwardChainEmpty"/> when a chain
+    /// has no witness on any shard; or <see cref="ForwardChainRefusal"/>. Each carries the budgets left.
+    /// </returns>
+    /// <exception cref="ArgumentNullException">A required argument is <see langword="null"/>.</exception>
+    /// <exception cref="ArgumentException"><paramref name="plan"/> was made against another registry instance.</exception>
+    /// <exception cref="ArgumentOutOfRangeException">A budget is negative.</exception>
+    /// <exception cref="FetchBudgetExhaustedException">The witness searches need more calls than <paramref name="fetchBudget"/>.</exception>
+    /// <exception cref="ShardFailureException">A witness search failed, timed out by its call deadline, or broke the shard contract.</exception>
+    /// <exception cref="ChainSubqueryTimeoutException">A chain's witness searches did not finish within their deadline.</exception>
+    /// <exception cref="OperationCanceledException"><paramref name="cancellationToken"/> was cancelled.</exception>
+    public async Task<ForwardChainResolution> ResolveAsync(
+        QueryPlan plan,
+        IReadOnlySet<ResourceType> readableTypes,
+        int fetchBudget,
+        long payloadByteBudget,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(plan);
+        ArgumentNullException.ThrowIfNull(readableTypes);
+        ArgumentOutOfRangeException.ThrowIfNegative(fetchBudget);
+        ArgumentOutOfRangeException.ThrowIfNegative(payloadByteBudget);
+        if (!ReferenceEquals(plan.Registry, _registry))
+        {
+            throw new ArgumentException("The plan was made against another registry instance.", nameof(plan));
+        }
+
+        var allowance = new Allowance(fetchBudget, payloadByteBudget);
+        if (Refuse(plan, readableTypes) is { } refused)
+        {
+            return allowance.Refuse(refused.Reason, refused.Ordinal, null);
+        }
+
+        int pageSize = plan.PageSize!.Value; // Refuse rejected a count-only plan.
+        // With distributed reverse chains refused, the replaced occurrences are exactly the distributed forward chains.
+        PlannedOccurrence[] chains = [.. plan.Occurrences.Where(o => o.ReplacementKey is not null)];
+        foreach (PlannedOccurrence chain in chains)
+        {
+            foreach (Target target in _targets)
+            {
+                if (!target.Fits(chain.Hop!.Path.Target, Witness(chain), target.Shard.Profile.MaxCount))
+                {
+                    return allowance.Refuse(ForwardChainRefusalReason.RequestTooLarge, chain.Occurrence.Ordinal, target.Shard.Id);
+                }
+            }
+        }
+
+        var witnesses = new Dictionary<int, IReadOnlyList<ResourceKey>>();
+        foreach (PlannedOccurrence chain in chains)
+        {
+            Drained drained = await DrainAsync(chain, allowance, cancellationToken);
+            int ordinal = chain.Occurrence.Ordinal;
+            if (drained.Refusal is { } refusal)
+            {
+                return allowance.Refuse(refusal.Reason, ordinal, refusal.Shard);
+            }
+
+            if (drained.Keys.Count == 0)
+            {
+                return new ForwardChainEmpty(ordinal, allowance.Fetches, allowance.PayloadBytes);
+            }
+
+            witnesses.Add(ordinal, drained.Keys);
+        }
+
+        var streams = new List<ShardSearchRequest>(_targets.Length);
+        foreach (Target target in _targets)
+        {
+            var replacements = chains.ToDictionary(
+                chain => chain.Occurrence.Ordinal,
+                chain => Spell(witnesses[chain.Occurrence.Ordinal], target.Shard, chain.Hop!.Certifications[target.Shard.Id]));
+            IReadOnlyList<ParameterOccurrence> parameters = plan.BuildBackendParameters(replacements);
+            if (!target.Fits(plan.Type, parameters, Math.Min(pageSize, target.Shard.Profile.MaxCount)))
+            {
+                return allowance.Refuse(ForwardChainRefusalReason.RequestTooLarge, -1, target.Shard.Id);
+            }
+
+            streams.Add(new ShardSearchRequest(target.Shard.Id, plan.Type, parameters, pageSize, target.Bound.Method));
+        }
+
+        return new ForwardChainReady(
+            streams.AsReadOnly(),
+            pageSize,
+            new ReadOnlyDictionary<int, IReadOnlyList<ResourceKey>>(witnesses),
+            allowance.Fetches,
+            allowance.PayloadBytes);
+    }
+
+    /// <summary>Finds the first reason to refuse <paramref name="plan"/> before any I/O: authorization, then semantics.</summary>
+    private static (ForwardChainRefusalReason Reason, int Ordinal)? Refuse(QueryPlan plan, IReadOnlySet<ResourceType> readableTypes)
+    {
+        if (!readableTypes.Contains(plan.Type))
+        {
+            return (ForwardChainRefusalReason.Unauthorized, -1);
+        }
+
+        foreach (PlannedOccurrence planned in plan.Occurrences)
+        {
+            ResourceType? searched = planned switch
+            {
+                { Kind: OccurrenceKind.ForwardChain, Hop: { } hop } => hop.Path.Target,
+                { Kind: OccurrenceKind.ReverseChain, Hop: { } hop } => hop.Path.Source,
+                _ => null,
+            };
+            if (searched is not null && !readableTypes.Contains(searched))
+            {
+                return (ForwardChainRefusalReason.Unauthorized, planned.Occurrence.Ordinal);
+            }
+        }
+
+        foreach (PlannedOccurrence planned in plan.Occurrences)
+        {
+            ForwardChainRefusalReason? unsupported = planned switch
+            {
+                { Kind: OccurrenceKind.ReverseChain, Hop.Mode: ChainResolutionMode.Distributed } => ForwardChainRefusalReason.ReverseChain,
+                { Kind: OccurrenceKind.Include } => ForwardChainRefusalReason.Include,
+                { Kind: OccurrenceKind.RevInclude } => ForwardChainRefusalReason.RevInclude,
+                { Kind: OccurrenceKind.Sort } => ForwardChainRefusalReason.Sort,
+                _ => null,
+            };
+            if (unsupported is { } reason)
+            {
+                return (reason, planned.Occurrence.Ordinal);
+            }
+        }
+
+        if (plan.CountOnly)
+        {
+            return (ForwardChainRefusalReason.CountOnly, -1);
+        }
+
+        return plan.IncludeTotal ? (ForwardChainRefusalReason.Total, -1) : null;
+    }
+
+    /// <summary>Gets a chain's witness parameters: exactly the planned terminal, asking only for ids.</summary>
+    private static ParameterOccurrence[] Witness(PlannedOccurrence chain) => [chain.Hop!.Terminal!, IdsOnly];
+
+    /// <summary>
+    /// Spells <paramref name="keys"/> as one FHIR OR list for <paramref name="queried"/>: each own key in the shard's
+    /// certified own-side forms and each foreign key in its foreign forms, which never include a relative reference.
+    /// </summary>
+    private string Spell(IReadOnlyList<ResourceKey> keys, ShardDescriptor queried, ReferencePathCertification certification)
+    {
+        var values = new List<string>();
+        foreach (ResourceKey key in keys)
+        {
+            ReferenceSearchForms forms = key.Shard == queried.Id ? certification.OwnSideForms : certification.ForeignForms;
+            string relative = $"{key.Type.Value}/{key.Id.Value}";
+            if (forms.HasFlag(ReferenceSearchForms.Relative))
+            {
+                values.Add(Escape(relative));
+            }
+
+            if (forms.HasFlag(ReferenceSearchForms.CanonicalAbsolute))
+            {
+                values.Add(Escape(_registry.FullUrl(key)));
+            }
+
+            if (forms.HasFlag(ReferenceSearchForms.LinkBaseAliases))
+            {
+                values.AddRange(_byShard[key.Shard].Shard.CanonicalLinkBaseAliases.Select(alias => Escape($"{alias}/{relative}")));
+            }
+        }
+
+        return string.Join(',', values);
+    }
+
+    /// <summary>FHIR-escapes one OR alternative, so its own <c>, | $ \</c> are not read as search syntax.</summary>
+    private static string Escape(string value) =>
+        value.Replace("\\", "\\\\", StringComparison.Ordinal)
+            .Replace(",", "\\,", StringComparison.Ordinal)
+            .Replace("|", "\\|", StringComparison.Ordinal)
+            .Replace("$", "\\$", StringComparison.Ordinal);
+
+    /// <summary>
+    /// Searches one distributed chain's target on every shard and drains every page, within the chain deadline, the key cap
+    /// and the request's budgets.
+    /// </summary>
+    private async Task<Drained> DrainAsync(PlannedOccurrence chain, Allowance allowance, CancellationToken cancellationToken)
+    {
+        ResourceType type = chain.Hop!.Path.Target;
+        ParameterOccurrence[] witness = Witness(chain);
+        ShardStream[] streams =
+        [
+            .. _targets.Select(t => new ShardStream(
+                new ShardSearchRequest(t.Shard.Id, type, witness, t.Shard.Profile.MaxCount, t.Bound.Method),
+                t.Shard)),
+        ];
+
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        deadline.CancelAfter(_chainSubquery);
+        var scheduler = new FetchScheduler(_client, allowance.Fetches, _maxParallelBackendCalls, deadline.Token);
+        try
+        {
+            scheduler.Speculate(streams.Skip(1).Select(s => s.FirstPage(int.MaxValue)));
+            var keys = new HashSet<ResourceKey>();
+            foreach (ShardStream stream in streams)
+            {
+                var redeemed = new HashSet<ShardCursor>();
+                CursorCycleState cycle = CursorCycleState.Initial;
+                (ShardPage page, _) = await scheduler.FirstPageAsync(stream, int.MaxValue);
+                while (true)
+                {
+                    deadline.Token.ThrowIfCancellationRequested();
+                    stream.Validate(page, redeemed);
+                    if (!allowance.TryCharge(page))
+                    {
+                        return new Drained([], (ForwardChainRefusalReason.PayloadBudgetExceeded, stream.Shard));
+                    }
+
+                    keys.UnionWith(page.Entries.Select(e => e.Key));
+                    if (keys.Count > _maxChainKeys)
+                    {
+                        return new Drained([], (ForwardChainRefusalReason.TooManyKeys, stream.Shard));
+                    }
+
+                    if (page.Next is not { } next)
+                    {
+                        break;
+                    }
+
+                    cycle = stream.Follow(cycle, next);
+                    redeemed.Add(next);
+                    page = await scheduler.ContinueAsync(next);
+                }
+            }
+
+            return new Drained(
+                [.. keys.OrderBy(k => _byShard[k.Shard].Shard.Ordinal).ThenBy(k => k.Id.Value, StringComparer.Ordinal)],
+                null);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            throw;
+        }
+        catch (OperationCanceledException exception) when (deadline.IsCancellationRequested)
+        {
+            throw new ChainSubqueryTimeoutException(chain.Occurrence.Ordinal, exception);
+        }
+        finally
+        {
+            await scheduler.DisposeAsync();
+            allowance.Fetches -= scheduler.Started;
+        }
+    }
+
+    /// <summary>A shard and its trusted request bound, with the request-target path a GET search is sent to.</summary>
+    private sealed class Target
+    {
+        private readonly string _path;
+
+        public Target(ShardDescriptor shard, ShardRequestBound bound)
+        {
+            Shard = shard;
+            Bound = bound;
+
+            // The path of the canonical base, without its trailing slash: "https://host/fhir" sends GET /fhir/Type?query.
+            string url = shard.CanonicalBaseUrl;
+            int authority = url.IndexOf("://", StringComparison.Ordinal) + 3;
+            int path = url.AsSpan(authority).IndexOf('/');
+            _path = path < 0 ? string.Empty : url[(authority + path)..].TrimEnd('/');
+        }
+
+        public ShardDescriptor Shard { get; }
+
+        public ShardRequestBound Bound { get; }
+
+        /// <summary>
+        /// Gets whether the complete initial request for <paramref name="parameters"/> with <c>_count</c> =
+        /// <paramref name="count"/> fits the bound: the form body for POST, or the request-target path and query for GET.
+        /// </summary>
+        public bool Fits(ResourceType type, IReadOnlyList<ParameterOccurrence> parameters, int count)
+        {
+            string query = QueryRewriter.Render(parameters);
+            query = query.Length == 0 ? $"_count={count}" : $"{query}&_count={count}";
+            string sent = Bound.Method == ShardSearchMethod.Get ? $"{_path}/{type.Value}?{query}" : query;
+            return Encoding.UTF8.GetByteCount(sent) <= Bound.MaxRequestBytes;
+        }
+    }
+
+    /// <summary>The request's shard calls and payload bytes still available, carried across every chain.</summary>
+    private sealed class Allowance(int fetches, long payloadBytes)
+    {
+        public int Fetches { get; set; } = fetches;
+
+        public long PayloadBytes { get; private set; } = payloadBytes;
+
+        /// <summary>Charges a page's decoded resource bytes; false, charging nothing, when they exceed what is left.</summary>
+        public bool TryCharge(ShardPage page)
+        {
+            long bytes = page.Entries.Sum(e => (long)e.Resource.Length);
+            if (bytes > PayloadBytes)
+            {
+                return false;
+            }
+
+            PayloadBytes -= bytes;
+            return true;
+        }
+
+        public ForwardChainRefusal Refuse(ForwardChainRefusalReason reason, int ordinal, ShardId? shard) =>
+            new(reason, ordinal, shard, Fetches, PayloadBytes);
+    }
+
+    /// <summary>A drained chain: its distinct witness keys in shard then id order, or why draining stopped.</summary>
+    private sealed record Drained(IReadOnlyList<ResourceKey> Keys, (ForwardChainRefusalReason Reason, ShardId Shard)? Refusal);
+}
