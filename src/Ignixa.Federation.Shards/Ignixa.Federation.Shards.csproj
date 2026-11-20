@@ -6,8 +6,13 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <!-- The tests reach one internal seam: trusting only a generated loopback leaf certificate. -->
+    <!-- The tests reach two internal seams: trusting only a generated loopback leaf certificate, and the
+         credential construction the Azure provider delegates to (so no real identity is ever contacted). -->
     <InternalsVisibleTo Include="Ignixa.Federation.Shards.UnitTests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Azure.Identity" />
   </ItemGroup>
 
   <ItemGroup>
