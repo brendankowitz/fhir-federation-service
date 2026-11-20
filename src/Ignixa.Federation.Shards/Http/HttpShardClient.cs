@@ -235,6 +235,22 @@ public sealed class HttpShardClient : IShardClient, IDisposable
     private Task<ShardPage> SearchCoreAsync(
         ShardSearchRequest request, ShardRequestContext context, WireWitness? witness, CancellationToken cancellationToken)
     {
+        (string query, bool post) = PrepareSearch(request);
+        return CallAsync(request.Type, query, post, ShardCallFailure.RequestTooLarge, page => FirstPage(request, query, page), context, witness, cancellationToken);
+    }
+
+    // Whether the wire form this search would send fits the configured ceiling for its own method, by the same rules a
+    // send applies. It validates exactly as a send does, then measures; it acquires nothing and touches no network, breaker
+    // or meter. Fitting is size admission only: it says nothing about the backend's own limits.
+    internal bool FitsSearch(ShardSearchRequest request)
+    {
+        (string query, bool post) = PrepareSearch(request);
+        return FitsLimits(request.Type, query, post, out _);
+    }
+
+    // The checks a first search makes before anything is measured or sent, and the query it sends.
+    private (string Query, bool Post) PrepareSearch(ShardSearchRequest request)
+    {
         ArgumentNullException.ThrowIfNull(request);
         if (request.Shard != _shard.Id)
         {
@@ -252,8 +268,7 @@ public sealed class HttpShardClient : IShardClient, IDisposable
             throw new ArgumentOutOfRangeException(nameof(request), request.PageSize, "The page size exceeds the backend's maximum _count.");
         }
 
-        string query = BuildQuery(request);
-        return CallAsync(request.Type, query, post, ShardCallFailure.RequestTooLarge, page => FirstPage(request, query, page), context, witness, cancellationToken);
+        return (BuildQuery(request), post);
     }
 
     /// <inheritdoc/>
@@ -648,6 +663,15 @@ public sealed class HttpShardClient : IShardClient, IDisposable
         return cursor(link);
     }
 
+    // The one place the request URI and the size admission are decided, for a send and for a preflight alike. The escaped
+    // canonical path and the validated query are ASCII, so these lengths are the actual wire byte counts: the whole
+    // origin-form target for a GET, the form body for a POST. Equality fits.
+    private bool FitsLimits(ResourceType type, string query, bool post, out Uri uri)
+    {
+        uri = new Uri(post ? $"{_shard.CanonicalBaseUrl}/{type.Value}/_search" : $"{_shard.CanonicalBaseUrl}/{type.Value}?{query}", in Verbatim);
+        return post ? query.Length <= _limits.MaxPostBodyBytes : uri.PathAndQuery.Length <= _limits.MaxGetTargetBytes;
+    }
+
     private async Task<ShardPage> CallAsync(
         ResourceType type,
         string query,
@@ -659,9 +683,7 @@ public sealed class HttpShardClient : IShardClient, IDisposable
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        var uri = new Uri(post ? $"{_shard.CanonicalBaseUrl}/{type.Value}/_search" : $"{_shard.CanonicalBaseUrl}/{type.Value}?{query}", in Verbatim);
-        // The escaped canonical path and validated query are ASCII, so these lengths are the actual wire byte counts.
-        if (post ? query.Length > _limits.MaxPostBodyBytes : uri.PathAndQuery.Length > _limits.MaxGetTargetBytes)
+        if (!FitsLimits(type, query, post, out Uri uri))
         {
             throw Failure(
                 tooLarge,

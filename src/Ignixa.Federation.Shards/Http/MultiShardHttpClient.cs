@@ -109,6 +109,30 @@ public sealed class MultiShardHttpClient : IShardClient, IDisposable
     public Task<ShardPage> SearchAsync(ShardSearchRequest request, CancellationToken cancellationToken) =>
         SearchWithContextAsync(request, context: default, cancellationToken);
 
+    /// <summary>
+    /// Reports whether the selected wire form of an assembled search fits its shard's configured size ceiling.
+    /// </summary>
+    /// <param name="request">The assembled request, for a registered shard; the method it selects is the one measured.</param>
+    /// <returns>
+    /// <see langword="true"/> when the request's own method fits its ceiling, equality included: a GET as the whole
+    /// origin-form target (canonical base path, type and verbatim query), a POST as its form body. Both include the
+    /// appended <c>_count</c>. <see langword="false"/> when the size exceeds the ceiling and send would reject it as
+    /// <see cref="ShardCallFailure.RequestTooLarge"/>. A fit does not imply the backend accepts the request.
+    /// </returns>
+    /// <remarks>
+    /// Uses the same validation and wire rules as an initial send, without acquiring credentials, using the network or
+    /// recording a transfer. Does not choose a method, rewrite parameters or measure continuations.
+    /// </remarks>
+    /// <exception cref="ArgumentNullException"><paramref name="request"/> is <see langword="null"/>.</exception>
+    /// <exception cref="ArgumentException">The request's shard is not registered, or the owning client refuses the request (as <see cref="SearchAsync"/>).</exception>
+    /// <exception cref="ArgumentOutOfRangeException">The page size exceeds the owning backend's maximum <c>_count</c>.</exception>
+    /// <exception cref="ObjectDisposedException">The router is disposed.</exception>
+    public bool FitsSearchRequest(ShardSearchRequest request)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        return OwnerOf(request.Shard, nameof(request)).FitsSearch(request);
+    }
+
     /// <inheritdoc/>
     /// <exception cref="ArgumentNullException"><paramref name="cursor"/> is <see langword="null"/>.</exception>
     /// <exception cref="ArgumentException">
