@@ -12,4 +12,7 @@ public sealed record LastUpdatedOrder(TimeSpan Precision, bool StableTies)
     public TimeSpan Precision { get; } = Precision > TimeSpan.Zero
         ? Precision
         : throw new ArgumentOutOfRangeException(nameof(Precision), Precision, "Ordering precision must be greater than zero.");
+
+    /// <summary>Gets a value indicating whether ties keep a stable order across pages.</summary>
+    public bool StableTies { get; } = StableTies;
 }

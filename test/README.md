@@ -1,10 +1,10 @@
 # Tests
 
-Test projects use xunit.v3 on Microsoft.Testing.Platform, with Shouldly. There are 330 tests today.
+Test projects use xunit.v3 on Microsoft.Testing.Platform, with Shouldly. There are 358 tests today.
 
 | Project | Covers | Tests |
 |---|---|---|
-| `Ignixa.Federation.Core.UnitTests` | The `Core` telemetry names (`FederationTelemetry`) and the absence of HTTP and hosting references. Identity types, the shard contract types, shard registry validation, the registry version hash against golden values, `FederationOptions` validation, and binding the spec §4.2 example. | 319 |
+| `Ignixa.Federation.Core.UnitTests` | The `Core` telemetry names (`FederationTelemetry`) and the absence of HTTP and hosting references. Identity types, the shard contract types, shard registry validation, the registry version hash against golden values, `FederationOptions` validation, binding the spec §4.2 example, and the absence of public setters on contract types. | 347 |
 | `Ignixa.Federation.Shards.UnitTests` | `ShardActivity` spans for backend calls. | 7 |
 | `Ignixa.Federation.Tests.Integration` | The hosted `Api`: `/health/live` and `/health/ready`, including which checks each endpoint runs. | 4 |
 

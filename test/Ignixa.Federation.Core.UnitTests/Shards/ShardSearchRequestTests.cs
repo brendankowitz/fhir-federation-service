@@ -56,12 +56,16 @@ public sealed class ShardSearchRequestTests
         request.Parameters.ShouldBe([new ParameterOccurrence("code", "a")]);
     }
 
-    // FHIR parameter names are case-sensitive: only the exact name collides with the page size.
-    [Fact]
-    public void OtherSpellingsOfCount_AreOrdinaryParameters()
+    // FHIR parameter names are case-sensitive, and a backend decodes a key once: only a key that decodes to exactly
+    // _count collides with the page size. The raw key is kept as written.
+    [Theory]
+    [InlineData("_Count")]
+    [InlineData("%255Fcount")]
+    [InlineData("_counts")]
+    public void OtherSpellingsOfCount_AreOrdinaryParameters(string key)
     {
-        new ShardSearchRequest(East, Observation, [new("_Count", "10")], 20, ShardSearchMethod.Get)
-            .Parameters.ShouldBe([new ParameterOccurrence("_Count", "10")]);
+        new ShardSearchRequest(East, Observation, [new(key, "10")], 20, ShardSearchMethod.Get)
+            .Parameters.ShouldBe([new ParameterOccurrence(key, "10")]);
     }
 
     [Fact]
@@ -72,11 +76,19 @@ public sealed class ShardSearchRequestTests
         Should.Throw<ArgumentOutOfRangeException>(() => new ShardSearchRequest(East, Observation, [], -1, ShardSearchMethod.Get));
     }
 
-    [Fact]
-    public void CountOccurrence_IsRejectedBecausePageSizeOwnsIt()
+    [Theory]
+    [InlineData("_count")]
+    [InlineData("%5Fcount")]
+    [InlineData("%5fcount")]
+    [InlineData("_%63ount")]
+    [InlineData("_count:x")]
+    [InlineData("%5Fcount:x")]
+    [InlineData("_count%3Ax")]
+    public void KeyThatDecodesToCount_IsRejectedBecausePageSizeOwnsIt(string key)
     {
         Should.Throw<ArgumentException>(
-            () => new ShardSearchRequest(East, Observation, [new("code", "a"), new("_count", "10")], 20, ShardSearchMethod.Get));
+            () => new ShardSearchRequest(East, Observation, [new("code", "a"), new(key, "10")], 20, ShardSearchMethod.Get))
+            .ParamName.ShouldBe("parameters");
     }
 
     [Fact]

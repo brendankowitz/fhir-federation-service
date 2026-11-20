@@ -53,4 +53,29 @@ public sealed class ShardCursorTests
         Should.Throw<ArgumentException>(() => new ShardCursor(East, Patient, null!, NextLinkRedemption.FollowGet));
         Should.Throw<ArgumentOutOfRangeException>(() => new ShardCursor(East, Patient, "next", (NextLinkRedemption)9));
     }
+
+    // The emitted cursor carries the redemption for the stream's starting method, not the profile's raw policy.
+    [Theory]
+    [InlineData(ShardSearchMethod.PostSearch, NextLinkRedemption.RepostToSearch)]
+    [InlineData(ShardSearchMethod.Get, NextLinkRedemption.FollowGet)]
+    public void Next_TakesTheRedemptionForTheMethodTheStreamStartedWith(ShardSearchMethod startedWith, NextLinkRedemption expected)
+    {
+        var profile = new BackendProfile("P", SupportsPostSearch: true, 100, NextLinkRedemption.RepostToSearch, null);
+        var request = new ShardSearchRequest(East, Patient, [new("name", "Sarah")], 20, startedWith);
+
+        var cursor = ShardCursor.Next(request, profile, "https://east.example/fhir/Patient?name=Sarah&ct=xyz");
+
+        cursor.ShouldBe(new ShardCursor(East, Patient, "https://east.example/fhir/Patient?name=Sarah&ct=xyz", expected));
+    }
+
+    [Fact]
+    public void Next_RejectsMissingPartsAndABlankTarget()
+    {
+        var profile = new BackendProfile("P", SupportsPostSearch: true, 100, NextLinkRedemption.FollowGet, null);
+        var request = new ShardSearchRequest(East, Patient, [], 20, ShardSearchMethod.Get);
+
+        Should.Throw<ArgumentNullException>(() => ShardCursor.Next(null!, profile, "next")).ParamName.ShouldBe("request");
+        Should.Throw<ArgumentNullException>(() => ShardCursor.Next(request, null!, "next")).ParamName.ShouldBe("profile");
+        Should.Throw<ArgumentException>(() => ShardCursor.Next(request, profile, " "));
+    }
 }

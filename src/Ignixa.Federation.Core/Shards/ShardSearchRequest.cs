@@ -4,6 +4,11 @@ using Ignixa.Federation.Core.Search;
 namespace Ignixa.Federation.Core.Shards;
 
 /// <summary>One search against one shard, for <see cref="IShardClient.SearchAsync"/> (design spec §7).</summary>
+/// <remarks>
+/// The constructor throws on any key that decodes to <c>_count</c>, so a caller building a request from a client query
+/// (the query rewriter) must first strip or reject the client's <c>_count</c> spellings and carry the page size in
+/// <see cref="PageSize"/>.
+/// </remarks>
 public sealed class ShardSearchRequest
 {
     /// <summary>Initializes a new instance of the <see cref="ShardSearchRequest"/> class.</summary>
@@ -14,7 +19,9 @@ public sealed class ShardSearchRequest
     /// <param name="method">How to send the search.</param>
     /// <exception cref="ArgumentNullException">A required argument is <see langword="null"/>.</exception>
     /// <exception cref="ArgumentException">
-    /// <paramref name="parameters"/> contains <see langword="null"/> or a <c>_count</c> key, which <paramref name="pageSize"/> owns.
+    /// <paramref name="parameters"/> contains <see langword="null"/> or a key that percent-decodes to <c>_count</c>, with or
+    /// without a modifier (<c>%5Fcount</c>, <c>_count:x</c>), because <paramref name="pageSize"/> owns it. The comparison is
+    /// ordinal on one decoding, so <c>_Count</c> and <c>%255Fcount</c> are ordinary parameters.
     /// </exception>
     /// <exception cref="ArgumentOutOfRangeException"><paramref name="pageSize"/> is negative or <paramref name="method"/> is undefined.</exception>
     public ShardSearchRequest(
@@ -41,9 +48,11 @@ public sealed class ShardSearchRequest
                 throw new ArgumentException("Parameters must not contain null.", nameof(parameters));
             }
 
-            if (string.Equals(occurrence.Key, "_count", StringComparison.Ordinal))
+            if (DecodesToCount(occurrence.Key))
             {
-                throw new ArgumentException("Parameters must not contain _count; the page size sets it.", nameof(parameters));
+                throw new ArgumentException(
+                    "Parameters must not contain a key that decodes to _count, with or without a modifier; the page size sets it.",
+                    nameof(parameters));
             }
         }
 
@@ -60,7 +69,10 @@ public sealed class ShardSearchRequest
     /// <summary>Gets the resource type to search.</summary>
     public ResourceType Type { get; }
 
-    /// <summary>Gets the query occurrences to send, with their order, duplicates and encoded text preserved. Never contains <c>_count</c>.</summary>
+    /// <summary>
+    /// Gets the query occurrences to send, with their order, duplicates and encoded text preserved. Never contains a key
+    /// that decodes to <c>_count</c>.
+    /// </summary>
     public IReadOnlyList<ParameterOccurrence> Parameters { get; }
 
     /// <summary>Gets the <c>_count</c> to send. Zero asks for a count only (design spec §7.2).</summary>
@@ -68,4 +80,14 @@ public sealed class ShardSearchRequest
 
     /// <summary>Gets how to send the search.</summary>
     public ShardSearchMethod Method { get; }
+
+    // A backend percent-decodes a key once and treats a modified name (_count:x) as the same parameter, so either
+    // spelling would race the page size. The comparison is on the decoded name; the stored raw key is never altered.
+    private static bool DecodesToCount(string key)
+    {
+        string decoded = Uri.UnescapeDataString(key);
+        int colon = decoded.IndexOf(':', StringComparison.Ordinal);
+        string name = colon < 0 ? decoded : decoded[..colon];
+        return string.Equals(name, "_count", StringComparison.Ordinal);
+    }
 }
