@@ -1,5 +1,7 @@
 using System.Diagnostics.CodeAnalysis;
+using System.Diagnostics.Metrics;
 using Ignixa.Federation.Core.Configuration;
+using Ignixa.Federation.Core.Diagnostics;
 
 namespace Ignixa.Federation.Api.Budgets;
 
@@ -50,6 +52,9 @@ namespace Ignixa.Federation.Api.Budgets;
 public sealed class RequestBudget : IDisposable
 {
     private const double MaxTimerMilliseconds = uint.MaxValue - 1;
+
+    private static readonly Counter<long> DeadlineCallbackFaults =
+        FederationTelemetry.Meter.CreateCounter<long>("federation.request.deadline_callback_faults");
 
     private readonly object _gate = new();
     private readonly long _callAllowance;
@@ -263,6 +268,11 @@ public sealed class RequestBudget : IDisposable
         try
         {
             _linked.Cancel();
+        }
+        catch (AggregateException)
+        {
+            // Cancel has notified the registrations. Count the fault without exporting callback exception details.
+            DeadlineCallbackFaults.Add(1);
         }
         finally
         {

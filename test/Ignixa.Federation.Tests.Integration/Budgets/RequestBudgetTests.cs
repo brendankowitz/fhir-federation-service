@@ -1,5 +1,7 @@
+using System.Diagnostics.Metrics;
 using Ignixa.Federation.Api.Budgets;
 using Ignixa.Federation.Core.Configuration;
+using Ignixa.Federation.Core.Diagnostics;
 using Shouldly;
 
 namespace Ignixa.Federation.Tests.Integration.Budgets;
@@ -216,7 +218,7 @@ public sealed class RequestBudgetTests
     {
         const int Limit = 10_000;
         using RequestBudget budget = Create(maxBytes: Limit);
-        int refused = 0;
+        int failures = 0;
 
         RunContended(ParallelWorkers, _ =>
         {
@@ -228,15 +230,13 @@ public sealed class RequestBudgetTests
                 }
                 catch (RequestTooCostlyException)
                 {
-                    Interlocked.Increment(ref refused);
+                    Interlocked.Increment(ref failures);
                 }
             }
         });
 
-        // 8 x 2500 = 20000 bytes were consumed and every one was charged. Every chunk beyond the limit is refused; a chunk
-        // within it that lands after a concurrent breach may be refused too, because the request has already failed.
         budget.ResponseBytes.ShouldBe(20_000);
-        refused.ShouldBeGreaterThanOrEqualTo(10_000);
+        failures.ShouldBe(10_000);
     }
 
     [Fact]
@@ -306,6 +306,37 @@ public sealed class RequestBudgetTests
     }
 
     [Fact]
+    public void Deadline_ContainsThrowingRegistrationsAndRecordsAnUntaggedFault()
+    {
+        var time = new ManualTimeProvider();
+        using RequestBudget budget = Create(time: time);
+        using var listener = new MeterListener();
+        var measurements = new List<(long Count, int TagCount)>();
+        listener.InstrumentPublished = (instrument, meterListener) =>
+        {
+            if (ReferenceEquals(instrument.Meter, FederationTelemetry.Meter)
+                && instrument.Name == "federation.request.deadline_callback_faults")
+            {
+                meterListener.EnableMeasurementEvents(instrument);
+            }
+        };
+        listener.SetMeasurementEventCallback<long>((_, count, tags, _) => measurements.Add((count, tags.Length)));
+        listener.Start();
+
+        bool peerNotified = false;
+        using CancellationTokenRegistration peer = budget.Token.Register(() => peerNotified = true);
+        using CancellationTokenRegistration faulty = budget.Token.Register(
+            () => throw new InvalidOperationException("Synthetic callback detail."));
+
+        Should.NotThrow(() => time.Advance(RequestDeadline));
+
+        budget.Token.IsCancellationRequested.ShouldBeTrue();
+        peerNotified.ShouldBeTrue();
+        Should.Throw<RequestDeadlineExceededException>(budget.Checkpoint);
+        measurements.ShouldBe([(1L, 0)]);
+    }
+
+    [Fact]
     public void Deadline_IsCheckedAtDecisionPoints_WithoutADeliveredTimerCallback()
     {
         var time = new ManualTimeProvider { TimersEnabled = false };
@@ -350,13 +381,11 @@ public sealed class RequestBudgetTests
         using var release = new ManualResetEventSlim();
         TimeSpan waitLimit = TimeSpan.FromSeconds(10);
         CancellationToken testCancellation = TestContext.Current.CancellationToken;
+        bool releasedBeforeTimeout = false;
         using CancellationTokenRegistration registration = budget.Token.Register(() =>
         {
             entered.SetResult();
-            if (!release.Wait(waitLimit, testCancellation))
-            {
-                throw new TimeoutException("The budget did not release its deadline callback.");
-            }
+            releasedBeforeTimeout = release.Wait(waitLimit, testCancellation);
         });
 
         Task advancing = Task.Run(() => time.Advance(RequestDeadline), testCancellation);
@@ -371,6 +400,7 @@ public sealed class RequestBudgetTests
         }
 
         await advancing.WaitAsync(waitLimit, testCancellation);
+        releasedBeforeTimeout.ShouldBeTrue();
     }
 
     [Fact]
