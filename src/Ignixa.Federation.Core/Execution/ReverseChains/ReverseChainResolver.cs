@@ -1,4 +1,5 @@
 using System.Collections.Frozen;
+using Ignixa.FhirPath.Expressions;
 using Ignixa.Federation.Core.Execution.Includes;
 using Ignixa.Federation.Core.Identity;
 using Ignixa.Federation.Core.Search;
@@ -20,6 +21,7 @@ public sealed class ReverseChainResolver
     private readonly IShardClient _client;
     private readonly SearchCapabilities _capabilities;
     private readonly ReferenceClassifier _classifier;
+    private readonly int _maxChainSourceRows;
 
     /// <summary>Creates a resolver with positive key, row and concurrency limits and a positive sub-query timeout.</summary>
     public ReverseChainResolver(IShardClient client, SearchCapabilities capabilities, int maxChainKeys, int maxChainSourceRows, int maxParallelCalls, TimeSpan subqueryTimeout)
@@ -33,6 +35,7 @@ public sealed class ReverseChainResolver
         _client = client;
         _capabilities = capabilities;
         _classifier = new ReferenceClassifier(capabilities.Registry);
+        _maxChainSourceRows = maxChainSourceRows;
     }
 
     /// <summary>Resolves reverse chains without issuing any primary search.</summary>
@@ -41,7 +44,8 @@ public sealed class ReverseChainResolver
         ArgumentNullException.ThrowIfNull(plan);
         ArgumentNullException.ThrowIfNull(authorizedTypes);
         Admit(plan, authorizedTypes);
-        int calls = 0;
+        ArgumentOutOfRangeException.ThrowIfNegative(fetchBudget);
+        var budget = new CallBudget(fetchBudget);
         var distributed = plan.Occurrences.Where(o => o.Action == OccurrenceAction.Replace).ToArray();
         List<ResourceKey>? candidates = null;
         foreach (PlannedOccurrence occurrence in distributed)
@@ -51,27 +55,13 @@ public sealed class ReverseChainResolver
             var witnesses = new List<ResourceKey>();
             foreach (ShardDescriptor shard in _capabilities.Registry.Shards)
             {
-                var request = new ShardSearchRequest(shard.Id, hop.Path.Source, [hop.Terminal!], shard.Profile.MaxCount, ReverseChainTarget.MethodFor(shard));
-                ShardPage page = await _client.SearchAsync(request, cancellationToken);
-                calls++;
-                foreach (ShardEntry entry in page.Entries)
-                {
-                    foreach (string literal in IncludeReferenceExtractor.Extract(entry, expression))
-                    {
-                        if (_classifier.Classify(entry.Key.Shard, literal) is { Kind: ReferenceKind.Relative or ReferenceKind.KnownAbsolute, Target: { } key }
-                            && key.Type == hop.Path.Target)
-                        {
-                            witnesses.Add(key);
-                        }
-
-                    }
-                }
+                await ReadShardAsync(shard, hop, expression, witnesses, budget, cancellationToken);
             }
 
             candidates = candidates is null ? [.. witnesses.Distinct()] : [.. candidates.Intersect(witnesses)];
             if (candidates.Count == 0)
             {
-                return new ReverseChainResolution([], calls);
+                return new ReverseChainResolution([], budget.Calls);
             }
         }
 
@@ -93,7 +83,61 @@ public sealed class ReverseChainResolver
             targets.Add(new ReverseChainTarget(plan, shard, replacements));
         }
 
-        return new ReverseChainResolution(targets.AsReadOnly(), calls);
+        return new ReverseChainResolution(targets.AsReadOnly(), budget.Calls);
+    }
+
+    private async Task ReadShardAsync(
+        ShardDescriptor shard, ReferenceHop hop, Expression expression, List<ResourceKey> witnesses, CallBudget budget, CancellationToken token)
+    {
+        int wanted = (int)Math.Min(int.MaxValue, (long)_maxChainSourceRows + 1);
+        var template = new ShardSearchRequest(shard.Id, hop.Path.Source, [hop.Terminal!], wanted, ReverseChainTarget.MethodFor(shard));
+        var stream = new ShardStream(template, shard);
+        var redeemed = new HashSet<ShardCursor>();
+        CursorCycleState cycle = CursorCycleState.Initial;
+        ShardCursor? cursor = null;
+        do
+        {
+            token.ThrowIfCancellationRequested();
+            budget.Reserve();
+            ShardPage page = cursor is null
+                ? await _client.SearchAsync(stream.FirstPage(wanted), token)
+                : await _client.ContinueAsync(cursor, token);
+            stream.Validate(page, redeemed);
+            foreach (ShardEntry entry in page.Entries)
+            {
+                foreach (string literal in IncludeReferenceExtractor.Extract(entry, expression))
+                {
+                    if (_classifier.Classify(entry.Key.Shard, literal) is { Kind: ReferenceKind.Relative or ReferenceKind.KnownAbsolute, Target: { } key }
+                        && key.Type == hop.Path.Target)
+                    {
+                        witnesses.Add(key);
+                    }
+                }
+            }
+
+            cursor = page.Next;
+            if (cursor is not null)
+            {
+                cycle = stream.Follow(cycle, cursor);
+                redeemed.Add(cursor);
+            }
+        }
+        while (cursor is not null);
+    }
+
+    private sealed class CallBudget(int limit)
+    {
+        private long _reserved;
+
+        public int Calls => checked((int)_reserved);
+
+        public void Reserve()
+        {
+            if (Interlocked.Increment(ref _reserved) > limit)
+            {
+                throw new FetchBudgetExhaustedException(limit);
+            }
+        }
     }
 
     private void Admit(QueryPlan plan, IReadOnlySet<ResourceType> authorizedTypes)
@@ -125,6 +169,5 @@ public sealed class ReverseChainResolver
                 throw new ReverseChainRefusedException(hop.Path, ReverseChainRefusal.NotCertified);
             }
         }
-
     }
 }
