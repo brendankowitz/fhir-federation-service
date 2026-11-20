@@ -118,7 +118,10 @@ public sealed class ForwardChainResolver
     /// <exception cref="FetchBudgetExhaustedException">The witness searches need more calls than <paramref name="fetchBudget"/>.</exception>
     /// <exception cref="ShardFailureException">A witness search failed, timed out by its call deadline, or broke the shard contract.</exception>
     /// <exception cref="ChainSubqueryTimeoutException">A chain's witness searches did not finish within their deadline.</exception>
-    /// <exception cref="OperationCanceledException"><paramref name="cancellationToken"/> was cancelled.</exception>
+    /// <exception cref="OperationCanceledException">
+    /// <paramref name="cancellationToken"/> was cancelled; it wins over any outcome, and is thrown only after every witness
+    /// call has ended.
+    /// </exception>
     public async Task<ForwardChainResolution> ResolveAsync(
         QueryPlan plan,
         IReadOnlySet<ResourceType> readableTypes,
@@ -135,7 +138,20 @@ public sealed class ForwardChainResolver
             throw new ArgumentException("The plan was made against another registry instance.", nameof(plan));
         }
 
-        var allowance = new Allowance(fetchBudget, payloadByteBudget);
+        cancellationToken.ThrowIfCancellationRequested();
+        ForwardChainResolution resolution = await ResolveCoreAsync(plan, readableTypes, new Allowance(fetchBudget, payloadByteBudget), cancellationToken);
+
+        // Every witness call has ended by now; a caller that cancelled meanwhile receives its cancellation, not an outcome.
+        cancellationToken.ThrowIfCancellationRequested();
+        return resolution;
+    }
+
+    private async Task<ForwardChainResolution> ResolveCoreAsync(
+        QueryPlan plan,
+        IReadOnlySet<ResourceType> readableTypes,
+        Allowance allowance,
+        CancellationToken cancellationToken)
+    {
         if (Refuse(plan, readableTypes) is { } refused)
         {
             return allowance.Refuse(refused.Reason, refused.Ordinal, null);

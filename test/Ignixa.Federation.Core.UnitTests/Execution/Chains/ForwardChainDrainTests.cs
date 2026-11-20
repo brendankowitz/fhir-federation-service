@@ -2,6 +2,7 @@ using Ignixa.Federation.Core.Configuration;
 using Ignixa.Federation.Core.Execution;
 using Ignixa.Federation.Core.Execution.Chains;
 using Ignixa.Federation.Core.Identity;
+using Ignixa.Federation.Core.Search;
 using Ignixa.Federation.Core.Shards;
 using Ignixa.Federation.Core.UnitTests.Shards;
 using Shouldly;
@@ -200,23 +201,23 @@ public sealed class ForwardChainDrainTests
         client.Calls.Count(c => c.Shard == East).ShouldBe(links + 1);
     }
 
-    [Fact]
-    public async Task CallerCancellation_PropagatesAsTheCallersCancellation()
+    [Theory]
+    [InlineData(LateOutcome.Cancelled)]
+    [InlineData(LateOutcome.Page)]
+    [InlineData(LateOutcome.Fault)]
+    public async Task CallerCancellation_WaitsForTheCallToEnd_AndWinsOverWhatItReturns(LateOutcome outcome)
     {
         ShardRegistry registry = Registry();
         var client = new FakeShardClient();
-        var gate = new TaskCompletionSource();
-        client.OnSearch(East, async (_, ct) =>
-        {
-            await gate.Task.WaitAsync(ct);
-            return Witness(East, Patient, null);
-        });
+        var late = new LateCall();
+        late.Serve(client, East, Patient, outcome);
         ServePages(client, West, Patient, []);
         using var caller = CancellationTokenSource.CreateLinkedTokenSource(Token);
 
         Task<ForwardChainResolution> resolving = Resolver(client, registry).ResolveAsync(Plan(registry, Chain), caller.Token);
         await client.WhenStarted(1);
         await caller.CancelAsync();
+        await late.ShouldHoldAsync(resolving, client);
 
         OperationCanceledException thrown = await Should.ThrowAsync<OperationCanceledException>(resolving);
         thrown.CancellationToken.ShouldBe(caller.Token);
@@ -224,54 +225,85 @@ public sealed class ForwardChainDrainTests
     }
 
     [Theory]
-    [InlineData(true)]
-    [InlineData(false)]
-    public async Task ChainSubqueryDeadline_FailsWithTheChainOrdinal(bool clientHonoursCancellation)
+    [InlineData(LateOutcome.Cancelled)]
+    [InlineData(LateOutcome.Page)]
+    [InlineData(LateOutcome.Fault)]
+    public async Task ChainSubqueryDeadline_WaitsForTheCallsToEnd_AndFailsWithTheChainOrdinal(LateOutcome outcome)
     {
         ShardRegistry registry = Registry();
         var client = new FakeShardClient();
-        var never = new TaskCompletionSource();
-        ServeHanging(client, East, Practitioner, never, clientHonoursCancellation, otherwise: "p1");
-        ServeHanging(client, West, Practitioner, never, clientHonoursCancellation);
+        var late = new LateCall();
+        late.Serve(client, East, Practitioner, outcome, otherwise: "p1");
+        late.Serve(client, West, Practitioner, outcome);
         var timeouts = new TimeoutOptions { ChainSubquery = TimeSpan.FromMilliseconds(100), BackendCall = TimeSpan.FromMinutes(1) };
 
-        try
-        {
-            ChainSubqueryTimeoutException thrown = await Should.ThrowAsync<ChainSubqueryTimeoutException>(
-                Resolver(client, registry, timeouts: timeouts).ResolveAsync(Plan(registry, TwoChains), Token));
+        Task<ForwardChainResolution> resolving = Resolver(client, registry, timeouts: timeouts).ResolveAsync(Plan(registry, TwoChains), Token);
+        await late.ShouldHoldAsync(resolving, client);
 
-            thrown.Ordinal.ShouldBe(1);
-            thrown.ShouldBeAssignableTo<TimeoutException>();
-        }
-        finally
-        {
-            never.SetResult();
-        }
+        ChainSubqueryTimeoutException thrown = await Should.ThrowAsync<ChainSubqueryTimeoutException>(resolving);
+        thrown.Ordinal.ShouldBe(1);
+        thrown.ShouldBeAssignableTo<TimeoutException>();
+        client.InFlight.ShouldBe(0);
     }
 
     [Theory]
-    [InlineData(true)]
-    [InlineData(false)]
-    public async Task BackendCallDeadline_IsAShardTimeout(bool clientHonoursCancellation)
+    [InlineData(LateOutcome.Cancelled)]
+    [InlineData(LateOutcome.Page)]
+    [InlineData(LateOutcome.Fault)]
+    public async Task BackendCallDeadline_WaitsForTheCallToEnd_AndIsAShardTimeout(LateOutcome outcome)
     {
         ShardRegistry registry = Registry();
         var client = new FakeShardClient();
-        var never = new TaskCompletionSource();
-        ServeHanging(client, East, Patient, never, clientHonoursCancellation);
+        var late = new LateCall();
+        late.Serve(client, East, Patient, outcome);
         ServePages(client, West, Patient, []);
         var timeouts = new TimeoutOptions { BackendCall = TimeSpan.FromMilliseconds(100), ChainSubquery = TimeSpan.FromMinutes(1) };
 
-        try
-        {
-            ShardFailureException thrown = await Should.ThrowAsync<ShardFailureException>(
-                Resolver(client, registry, timeouts: timeouts).ResolveAsync(Plan(registry, Chain), Token));
+        Task<ForwardChainResolution> resolving = Resolver(client, registry, timeouts: timeouts).ResolveAsync(Plan(registry, Chain), Token);
+        await late.ShouldHoldAsync(resolving, client);
 
-            (thrown.Shard, thrown.Reason).ShouldBe((East, ShardFailureReason.Timeout));
-        }
-        finally
+        ShardFailureException thrown = await Should.ThrowAsync<ShardFailureException>(resolving);
+        (thrown.Shard, thrown.Reason).ShouldBe((East, ShardFailureReason.Timeout));
+        client.InFlight.ShouldBe(0);
+    }
+
+    [Theory]
+    [InlineData(Chain, "Observation.subject:Patient")] // A passthrough chain: no witness search.
+    [InlineData("code=a", null)] // No chain at all.
+    [InlineData("code=a&_sort=-_lastUpdated", null)] // Refused before any request.
+    public async Task CancelledCaller_GetsItsCancellation_EvenWhenNoWitnessIsSearched(string query, string? passthrough)
+    {
+        ShardRegistry registry = Registry();
+        var client = new FakeShardClient();
+        using var caller = CancellationTokenSource.CreateLinkedTokenSource(Token);
+        await caller.CancelAsync();
+        QueryPlan plan = passthrough is null ? Plan(registry, query) : Plan(registry, query, passthrough);
+
+        OperationCanceledException thrown = await Should.ThrowAsync<OperationCanceledException>(
+            Resolver(client, registry).ResolveAsync(plan, caller.Token));
+
+        thrown.CancellationToken.ShouldBe(caller.Token);
+        client.Calls.ShouldBeEmpty();
+    }
+
+    [Fact]
+    public async Task CancellationDuringTheLastWitnessCall_IsNotAnsweredWithAnOutcome()
+    {
+        ShardRegistry registry = Registry();
+        var client = new FakeShardClient();
+        using var caller = CancellationTokenSource.CreateLinkedTokenSource(Token);
+        ServePages(client, East, Patient, []);
+        client.OnSearch(West, async (_, _) =>
         {
-            never.SetResult();
-        }
+            await caller.CancelAsync(); // The page still arrives, but after the caller gave up.
+            return Witness(West, Patient, null);
+        });
+
+        OperationCanceledException thrown = await Should.ThrowAsync<OperationCanceledException>(
+            Resolver(client, registry).ResolveAsync(Plan(registry, Chain), caller.Token));
+
+        thrown.CancellationToken.ShouldBe(caller.Token);
+        client.InFlight.ShouldBe(0);
     }
 
     [Fact]
@@ -327,24 +359,68 @@ public sealed class ForwardChainDrainTests
             return Task.FromResult(linked[0]);
         });
 
-    /// <summary>Answers <paramref name="type"/> searches only after <paramref name="never"/>, which the test completes on exit.</summary>
-    private static void ServeHanging(
-        FakeShardClient client,
-        ShardId shard,
-        ResourceType type,
-        TaskCompletionSource never,
-        bool honoursCancellation,
-        params string[] otherwise) =>
-        client.OnSearch(shard, async (request, ct) =>
-        {
-            if (request.Type != type)
-            {
-                return Witness(shard, request.Type, null, otherwise);
-            }
+    /// <summary>How a <see cref="LateCall"/> ends once the test releases it.</summary>
+    public enum LateOutcome
+    {
+        /// <summary>It honours the cancellation, after its cleanup.</summary>
+        Cancelled,
 
-            await (honoursCancellation ? never.Task.WaitAsync(ct) : never.Task);
-            return Witness(shard, type, null);
-        });
+        /// <summary>It returns a page anyway.</summary>
+        Page,
+
+        /// <summary>It fails with an error of its own.</summary>
+        Fault,
+    }
+
+    /// <summary>
+    /// Shard calls that end only when the test releases them, like a client still cleaning up after cancellation, so a test
+    /// can prove the resolver waits for the actual call rather than abandoning it.
+    /// </summary>
+    private sealed class LateCall
+    {
+        private readonly TaskCompletionSource _cancelled = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource _release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        /// <summary>Holds <paramref name="type"/> searches on <paramref name="shard"/>; other types return <paramref name="otherwise"/>.</summary>
+        public void Serve(FakeShardClient client, ShardId shard, ResourceType type, LateOutcome outcome, params string[] otherwise) =>
+            client.OnSearch(shard, async (request, ct) =>
+            {
+                if (request.Type != type)
+                {
+                    return Witness(shard, request.Type, null, otherwise);
+                }
+
+                using (ct.Register(() => _cancelled.TrySetResult()))
+                {
+                    await _release.Task;
+                }
+
+                return outcome switch
+                {
+                    LateOutcome.Cancelled => throw new OperationCanceledException(ct),
+                    LateOutcome.Page => Witness(shard, type, null, "late"),
+                    _ => throw new InvalidOperationException("A failure after cancellation."),
+                };
+            });
+
+        /// <summary>
+        /// Waits until a held call's token is cancelled, asserts that <paramref name="resolving"/> still waits for the call,
+        /// then releases every held call.
+        /// </summary>
+        public async Task ShouldHoldAsync(Task resolving, FakeShardClient client)
+        {
+            try
+            {
+                await _cancelled.Task.WaitAsync(Token);
+                (await Task.WhenAny(resolving, Task.Delay(100, Token))).ShouldNotBe(resolving);
+                client.InFlight.ShouldBeGreaterThan(0);
+            }
+            finally
+            {
+                _release.TrySetResult();
+            }
+        }
+    }
 
     private static async Task ShouldViolateContractAsync(FakeShardClient client, ShardId shard)
     {
