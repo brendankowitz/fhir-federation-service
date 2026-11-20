@@ -13,6 +13,33 @@ public sealed class ReverseChainPagingTests
     private readonly ReverseChainFixture _f = new();
 
     [Theory]
+    [InlineData(1)]
+    [InlineData(2)]
+    public async Task EachClauseGetsItsOwnRowAndDistinctKeyLimits(int keyLimit)
+    {
+        _f.Client.OnSearch(East, (request, _) =>
+        {
+            string clause = request.Parameters.Single().Value;
+            // Both clauses witness "common". At limit two, each also witnesses a different private key:
+            // three distinct patients request-wide, but never more than two in either clause.
+            return Task.FromResult(Page(null,
+                Obs("first-" + clause, "Patient/common"),
+                Obs("second-" + clause, keyLimit == 1 ? "Patient/common" : "Patient/only-" + clause)));
+        });
+        _f.Client.OnSearch(West, Page(null));
+        var plan = _f.Plan(ReverseChainFixture.Has + "=1&" + ReverseChainFixture.Has + "=2");
+
+        var result = await _f.Resolver(keys: keyLimit, rows: 2)
+            .ResolveAsync(plan, AllTypes, 4, TestContext.Current.CancellationToken);
+
+        result.Calls.ShouldBe(4);
+        var target = result.Targets.ShouldHaveSingleItem();
+        target.Shard.ShouldBe(East);
+        target.Replacements[0].ShouldBe("common");
+        target.Replacements[1].ShouldBe("common");
+    }
+
+    [Theory]
     [InlineData(true)]
     [InlineData(false)]
     public async Task OnlyProvenOverflowOfTheOccurrenceWideLimitIsRefused(bool limitRows)
