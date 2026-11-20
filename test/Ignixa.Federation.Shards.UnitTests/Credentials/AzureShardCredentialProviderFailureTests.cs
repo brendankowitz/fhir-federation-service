@@ -68,6 +68,11 @@ public sealed class AzureShardCredentialProviderFailureTests
     [InlineData("http")]
     [InlineData("io")]
     [InlineData("unauthorized")]
+    [InlineData("invalid-operation")]
+    [InlineData("argument")]
+    [InlineData("key-not-found")]
+    [InlineData("timeout")]
+    [InlineData("aggregate")]
     public async Task AKnownSecretStoreFailureBecomesASanitizedSecretUnavailable(string kind)
     {
         var secrets = new ScriptedSecretResolver("unused") { Lookup = (_, _) => throw LeakyStoreFailure(kind) };
@@ -82,22 +87,117 @@ public sealed class AzureShardCredentialProviderFailureTests
         sdk.CreatedCount.ShouldBe(0);
     }
 
-    [Fact]
-    public async Task AResolverThatReportsAMissingSecretWithTheTypedExceptionIsPassedThroughItsFixedMessage()
+    [Theory]
+    [InlineData(ShardCredentialFailure.SecretUnavailable)]
+    [InlineData(ShardCredentialFailure.InvalidConfiguration)]
+    [InlineData(ShardCredentialFailure.TokenUnavailable)]
+    public async Task ATypedFailureFromTheResolverIsReplacedByAFreshSecretUnavailableWithoutItsDataOrSource(ShardCredentialFailure supplied)
     {
-        var secrets = new ScriptedSecretResolver("unused")
-        {
-            Lookup = (_, _) => throw new ShardCredentialException(ShardCredentialFailure.SecretUnavailable),
-        };
+        var original = new ShardCredentialException(supplied) { Source = LeakedVault, HelpLink = LeakedVault };
+        original.Data["secret"] = LeakedSecret;
+        var secrets = new ScriptedSecretResolver("unused") { Lookup = (_, _) => throw original };
         var sdk = new RecordingCredentialFactory();
         AzureShardCredentialProvider provider = sdk.Provider(secrets);
 
         ShardCredentialException failure = await Should.ThrowAsync<ShardCredentialException>(
             () => provider.GetAccessTokenAsync(SyntheticAuths.Client("api://synthetic-shard"), Ct).AsTask());
 
+        failure.ShouldNotBeSameAs(original);
         failure.Failure.ShouldBe(ShardCredentialFailure.SecretUnavailable);
+        failure.Source.ShouldNotBe(LeakedVault);
+        failure.HelpLink.ShouldBeNull();
         AssertSanitized(failure);
         sdk.CreatedCount.ShouldBe(0);
+    }
+
+    [Fact]
+    public async Task AnExceptionOutsideTheResolverContractIsNotClaimedToBeSanitized()
+    {
+        var unexpected = new NotSupportedException(LeakedSecret);
+        var secrets = new ScriptedSecretResolver("unused") { Lookup = (_, _) => throw unexpected };
+        var sdk = new RecordingCredentialFactory();
+        AzureShardCredentialProvider provider = sdk.Provider(secrets);
+
+        NotSupportedException thrown = await Should.ThrowAsync<NotSupportedException>(
+            () => provider.GetAccessTokenAsync(SyntheticAuths.Client("api://synthetic-shard"), Ct).AsTask());
+
+        thrown.ShouldBeSameAs(unexpected);
+        sdk.CreatedCount.ShouldBe(0);
+    }
+
+    [Fact]
+    public async Task AValidSecretReturnedAfterCancellationNeverReachesTheSdk()
+    {
+        using var cts = new CancellationTokenSource();
+        var secrets = new ScriptedSecretResolver("unused")
+        {
+            Lookup = async (_, _) =>
+            {
+                await cts.CancelAsync();
+                return LeakedSecret;
+            },
+        };
+        var sdk = new RecordingCredentialFactory();
+        AzureShardCredentialProvider provider = sdk.Provider(secrets);
+
+        OperationCanceledException canceled = await Should.ThrowAsync<OperationCanceledException>(
+            () => provider.GetAccessTokenAsync(SyntheticAuths.Client("api://synthetic-shard", LeakedTenant, LeakedClient, LeakedSecretName), cts.Token).AsTask());
+
+        canceled.CancellationToken.ShouldBe(cts.Token);
+        sdk.CreatedCount.ShouldBe(0);
+        sdk.Clients.ShouldBeEmpty();
+    }
+
+    [Theory]
+    [InlineData("request")]
+    [InlineData("authentication")]
+    [InlineData("timeout")]
+    [InlineData("typed")]
+    [InlineData("argument")]
+    public async Task ANamedResolverFailureAfterCallerCancellationIsACleanCancellation(string kind)
+    {
+        using var cts = new CancellationTokenSource();
+        var secrets = new ScriptedSecretResolver("unused")
+        {
+            Lookup = async (_, _) =>
+            {
+                await cts.CancelAsync();
+                throw kind == "typed" ? new ShardCredentialException(ShardCredentialFailure.SecretUnavailable) : LeakyStoreFailure(kind);
+            },
+        };
+        var sdk = new RecordingCredentialFactory();
+        AzureShardCredentialProvider provider = sdk.Provider(secrets);
+
+        OperationCanceledException canceled = await Should.ThrowAsync<OperationCanceledException>(
+            () => provider.GetAccessTokenAsync(SyntheticAuths.Client("api://synthetic-shard", LeakedTenant, LeakedClient, LeakedSecretName), cts.Token).AsTask());
+
+        canceled.CancellationToken.ShouldBe(cts.Token);
+        AssertSanitized(canceled);
+        sdk.CreatedCount.ShouldBe(0);
+    }
+
+    [Theory]
+    [InlineData("authentication")]
+    [InlineData("unavailable")]
+    [InlineData("request")]
+    public async Task ANamedSdkFailureAfterCallerCancellationIsACleanCancellation(string kind)
+    {
+        using var cts = new CancellationTokenSource();
+        var sdk = new RecordingCredentialFactory
+        {
+            OnCreate = c => c.Acquire = async (_, _) =>
+            {
+                await cts.CancelAsync();
+                throw LeakySdkFailure(kind);
+            },
+        };
+        AzureShardCredentialProvider provider = sdk.Provider(new ScriptedSecretResolver(LeakedSecret));
+
+        OperationCanceledException canceled = await Should.ThrowAsync<OperationCanceledException>(
+            () => provider.GetAccessTokenAsync(SyntheticAuths.Client("api://synthetic-shard", LeakedTenant, LeakedClient, LeakedSecretName), cts.Token).AsTask());
+
+        canceled.CancellationToken.ShouldBe(cts.Token);
+        AssertSanitized(canceled);
     }
 
     [Theory]
@@ -162,6 +262,15 @@ public sealed class AzureShardCredentialProviderFailureTests
     [InlineData("eyJsynthetic header")]
     [InlineData("eyJsynthetic\r\nheader")]
     [InlineData("eyJsynthetic\theader")]
+    [InlineData("abc;xyz")]
+    [InlineData("===")]
+    [InlineData("abc=more")]
+    [InlineData("abc,xyz")]
+    [InlineData("abc\"xyz")]
+    [InlineData("abc\\xyz")]
+    [InlineData("abc:xyz")]
+    [InlineData("=abc")]
+    [InlineData("abc\u00e9")]
     public async Task AMissingOrMalformedTokenIsNotASuccessAndIsNeverQuoted(string token)
     {
         var sdk = new RecordingCredentialFactory
@@ -175,6 +284,42 @@ public sealed class AzureShardCredentialProviderFailureTests
 
         failure.Failure.ShouldBe(ShardCredentialFailure.InvalidToken);
         failure.Message.ShouldNotContain("eyJ");
+    }
+
+    [Theory]
+    [InlineData("abc;xyz")]
+    [InlineData("abc=more")]
+    public async Task AMalformedTokenIsNotQuotedInTheFailure(string token)
+    {
+        var sdk = new RecordingCredentialFactory
+        {
+            OnCreate = c => c.Acquire = (_, _) => ValueTask.FromResult(new AccessToken(token, DateTimeOffset.UtcNow.AddHours(1))),
+        };
+        AzureShardCredentialProvider provider = sdk.Provider(new ScriptedSecretResolver("synthetic-secret-value"));
+
+        ShardCredentialException failure = await Should.ThrowAsync<ShardCredentialException>(
+            () => provider.GetAccessTokenAsync(SyntheticAuths.Managed("api://synthetic-shard"), Ct).AsTask());
+
+        failure.ToString().ShouldNotContain(token);
+    }
+
+    [Theory]
+    [InlineData("eyJhbGciOi.synthetic_payload-sig~")]
+    [InlineData("abc+def/ghi")]
+    [InlineData("abc=")]
+    [InlineData("abc==")]
+    [InlineData("a")]
+    public async Task EveryRfc6750B64TokenIsReturnedExactly(string token)
+    {
+        var sdk = new RecordingCredentialFactory
+        {
+            OnCreate = c => c.Acquire = (_, _) => ValueTask.FromResult(new AccessToken(token, DateTimeOffset.UtcNow.AddHours(1))),
+        };
+        AzureShardCredentialProvider provider = sdk.Provider(new ScriptedSecretResolver("synthetic-secret-value"));
+
+        string result = await provider.GetAccessTokenAsync(SyntheticAuths.Managed("api://synthetic-shard"), Ct);
+
+        result.ShouldBe(token);
     }
 
     [Fact]
@@ -296,6 +441,11 @@ public sealed class AzureShardCredentialProviderFailureTests
         "http" => new HttpRequestException($"No such host: {LeakedVault}", new InvalidOperationException(LeakedSecret)),
         "io" => new IOException($"Could not read /mnt/secrets/{LeakedSecretName}: {LeakedSecret}"),
         "unauthorized" => new UnauthorizedAccessException($"Access to {LeakedSecretName} denied for {LeakedClient}"),
+        "invalid-operation" => new InvalidOperationException($"Secret {LeakedSecretName} holds {LeakedSecret}", new ArgumentException(LeakedToken)),
+        "argument" => new ArgumentException($"Bad secret name {LeakedSecretName}={LeakedSecret}", new InvalidOperationException(LeakedToken)),
+        "key-not-found" => new KeyNotFoundException($"No secret {LeakedSecretName} in {LeakedVault}"),
+        "timeout" => new TimeoutException($"Timed out reading {LeakedVault} with {LeakedToken}"),
+        "aggregate" => new AggregateException($"Lookup of {LeakedSecretName} failed", new InvalidOperationException(LeakedSecret), new IOException(LeakedToken)),
         _ => throw new ArgumentOutOfRangeException(nameof(kind)),
     };
 

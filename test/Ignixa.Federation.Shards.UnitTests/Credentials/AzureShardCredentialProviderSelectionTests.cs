@@ -117,6 +117,8 @@ public sealed class AzureShardCredentialProviderSelectionTests
     [InlineData("https://fhir.synthetic.example", "https://fhir.synthetic.example/.default")]
     [InlineData("https://fhir.synthetic.example/", "https://fhir.synthetic.example//.default")]
     [InlineData("https://fhir.synthetic.example/audience", "https://fhir.synthetic.example/audience/.default")]
+    [InlineData("0b1f6f3e-5a0c-4a52-9d61-3c1f2f0a7e11", "0b1f6f3e-5a0c-4a52-9d61-3c1f2f0a7e11/.default")]
+    [InlineData("api://0b1f6f3e-5a0c-4a52-9d61-3c1f2f0a7e11", "api://0b1f6f3e-5a0c-4a52-9d61-3c1f2f0a7e11/.default")]
     public async Task TheAudienceBecomesExactlyOneDefaultScopeKeepingItsSpelling(string resource, string expectedScope)
     {
         var sdk = new RecordingCredentialFactory();

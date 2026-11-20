@@ -7,11 +7,18 @@ namespace Ignixa.Federation.Shards.Credentials;
 /// <remarks>
 /// <para><b>Freshness.</b> <see cref="AzureShardCredentialProvider"/> calls this once for every token acquisition and keeps
 /// nothing, so the implementation owns any caching and must return a rotated secret as soon as its store does.</para>
-/// <para><b>Failure contract.</b> Report a secret that is missing, unreadable or unauthorised by throwing
-/// <see cref="ShardCredentialException"/>, whose message is fixed text. The provider also converts the exceptions a secret
-/// store client normally raises (Azure SDK request and authentication failures, <see cref="HttpRequestException"/>,
-/// <see cref="IOException"/>, <see cref="UnauthorizedAccessException"/>), and a canceled token. Any other exception is a
-/// contract violation: it fails the acquisition but reaches the caller unchanged, so its message must not hold a secret.</para>
+/// <para><b>Failure contract.</b> Report an expected failure (a secret that is missing, unreadable or unauthorised) by
+/// throwing <see cref="ShardCredentialException"/>. The provider never forwards that object: it throws a fresh
+/// <see cref="ShardCredentialFailure.SecretUnavailable"/> and drops the supplied failure kind, <c>Source</c>, <c>Data</c> and
+/// inner exceptions. It applies the same replacement to a short explicit list of exceptions a secret store client normally
+/// raises: Azure SDK request and authentication failures, <see cref="HttpRequestException"/>, <see cref="IOException"/>,
+/// <see cref="UnauthorizedAccessException"/>, <see cref="InvalidOperationException"/>, <see cref="ArgumentException"/>,
+/// <see cref="KeyNotFoundException"/>, <see cref="TimeoutException"/> and <see cref="AggregateException"/>. Once the caller's
+/// token is canceled, any of these, or a cancellation, surfaces only as a cancellation. Nothing else is sanitized: any other
+/// exception is a bug in the resolver and reaches the caller unchanged, so an implementation must not put a secret or
+/// other secret-bearing diagnostics in any exception it can throw.</para>
+/// <para><b>Cancellation.</b> Honor the cancellation token. A value returned after it was canceled is discarded and never
+/// used.</para>
 /// </remarks>
 public interface IShardSecretResolver
 {

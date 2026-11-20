@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Collections.Concurrent;
 using Azure;
 using Azure.Core;
@@ -13,13 +14,17 @@ namespace Ignixa.Federation.Shards.Credentials;
 /// </summary>
 /// <remarks>
 /// <para><b>Variants.</b> <see cref="ManagedIdentityAuth"/> uses a <see cref="ManagedIdentityCredential"/> for exactly the
-/// system-assigned identity or the user-assigned client id. <see cref="ClientCredentialsAuth"/> uses a
-/// <see cref="ClientSecretCredential"/> for exactly its tenant and client, with the secret from the
-/// <see cref="IShardSecretResolver"/>. Both are pinned to the Azure public cloud authority with SDK logging and tracing off.</para>
+/// system-assigned identity or the user-assigned client id; the identity is whatever the deployed platform (App Service,
+/// Container Apps, AKS, a VM) supplies through its own managed identity endpoint, and nothing here selects a cloud or
+/// authority. <see cref="ClientCredentialsAuth"/> uses a <see cref="ClientSecretCredential"/> for exactly its tenant and
+/// client, with the secret from the <see cref="IShardSecretResolver"/>, bound to the Azure public cloud authority. Both
+/// have SDK logging and tracing off.</para>
 /// <para><b>Scope.</b> The configured resource is an audience; the one requested scope is that text followed by
 /// <c>/.default</c>, spelled exactly as configured. A trailing slash is kept: it can be part of the audience, and the
 /// double slash that results is what Azure documents for such an audience. The only validation is that the resource holds
-/// no whitespace or control character and does not already end in <c>/.default</c>.</para>
+/// no whitespace or control character and does not already end in <c>/.default</c>. It is not required to be a URI,
+/// because an Entra audience may be an application id GUID or an <c>api://</c> identifier, and no other URI rule has been
+/// shown to be needed.</para>
 /// <para><b>Caching.</b> A client-secret credential is built for every acquisition from a freshly resolved secret, so a
 /// rotated secret takes effect on the next call and no secret or client token is kept here; the cost is one token request
 /// per call. A managed identity credential holds no secret, so one is kept per identity (a bounded set: the identities in
@@ -30,6 +35,9 @@ namespace Ignixa.Federation.Shards.Credentials;
 public sealed class AzureShardCredentialProvider : IShardCredentialProvider
 {
     private const string DefaultScopeSuffix = "/.default";
+
+    private static readonly SearchValues<char> B64TokenCharacters =
+        SearchValues.Create("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~+/");
 
     private readonly IShardSecretResolver _secrets;
     private readonly Func<string?, TokenCredential> _managedIdentity;
@@ -67,9 +75,10 @@ public sealed class AzureShardCredentialProvider : IShardCredentialProvider
         {
             return await AcquireAsync(auth, cancellationToken).ConfigureAwait(false);
         }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        catch (Exception ex) when (cancellationToken.IsCancellationRequested && ex is OperationCanceledException or ShardCredentialException)
         {
-            // A fresh exception: the one caught may carry SDK text.
+            // The caller gave up, so whatever the SDK or the resolver reported is moot. A fresh exception: the one caught
+            // may carry SDK text.
             throw new OperationCanceledException(cancellationToken);
         }
         catch (OperationCanceledException)
@@ -119,13 +128,20 @@ public sealed class AzureShardCredentialProvider : IShardCredentialProvider
 
         // A token that arrived after the caller gave up is not returned.
         cancellationToken.ThrowIfCancellationRequested();
-        if (string.IsNullOrWhiteSpace(token.Token) || token.Token.AsSpan().ContainsAnyExceptInRange('!', '~'))
+        if (!IsB64Token(token.Token))
         {
-            // The caller's own bearer check is the strict one; this only refuses text that cannot be a token at all.
+            // Only the RFC 6750 b64token grammar can be a bearer credential; the text is never quoted.
             throw new ShardCredentialException(ShardCredentialFailure.InvalidToken);
         }
 
         return token.Token;
+    }
+
+    // RFC 6750 b64token = 1*( ALPHA / DIGIT / "-" / "." / "_" / "~" / "+" / "/" ) *"=".
+    private static bool IsB64Token(string? token)
+    {
+        ReadOnlySpan<char> body = token.AsSpan().TrimEnd('=');
+        return !body.IsEmpty && !body.ContainsAnyExcept(B64TokenCharacters);
     }
 
     private TokenCredential ManagedCredential(string? clientId)
@@ -153,9 +169,10 @@ public sealed class AzureShardCredentialProvider : IShardCredentialProvider
         }
     }
 
-    // The resolver is an external boundary. Its contract (IShardSecretResolver) is the typed ShardCredentialException, which
-    // already has a fixed message and passes through. The classes below are what secret store clients normally raise; any
-    // other exception breaks the contract and propagates, because nothing safe can be said about it.
+    // The resolver is an external boundary. Its contract (IShardSecretResolver) is the typed ShardCredentialException, and a
+    // secret store client normally raises the other types listed in IsKnownStoreFailure. Each is replaced by a fresh
+    // SecretUnavailable: the original object, with its message, inner exception, Data and Source, is never forwarded. Any other
+    // exception breaks the contract and propagates unchanged, because nothing safe can be said about it.
     private async ValueTask<string> ResolveSecretAsync(string secretName, CancellationToken cancellationToken)
     {
         string secret;
@@ -163,27 +180,13 @@ public sealed class AzureShardCredentialProvider : IShardCredentialProvider
         {
             secret = await _secrets.ResolveAsync(secretName, cancellationToken).ConfigureAwait(false);
         }
-        catch (RequestFailedException)
-        {
-            throw new ShardCredentialException(ShardCredentialFailure.SecretUnavailable);
-        }
-        catch (AuthenticationFailedException)
-        {
-            throw new ShardCredentialException(ShardCredentialFailure.SecretUnavailable);
-        }
-        catch (HttpRequestException)
-        {
-            throw new ShardCredentialException(ShardCredentialFailure.SecretUnavailable);
-        }
-        catch (IOException)
-        {
-            throw new ShardCredentialException(ShardCredentialFailure.SecretUnavailable);
-        }
-        catch (UnauthorizedAccessException)
+        catch (Exception ex) when (IsKnownStoreFailure(ex))
         {
             throw new ShardCredentialException(ShardCredentialFailure.SecretUnavailable);
         }
 
+        // A secret that arrives after the caller gave up must not reach the SDK.
+        cancellationToken.ThrowIfCancellationRequested();
         if (string.IsNullOrWhiteSpace(secret))
         {
             throw new ShardCredentialException(ShardCredentialFailure.SecretUnavailable);
@@ -191,6 +194,20 @@ public sealed class AzureShardCredentialProvider : IShardCredentialProvider
 
         return secret;
     }
+
+    // An explicit allow-list, not a catch-all. Cancellation is deliberately absent: it is handled by the caller's token.
+    private static bool IsKnownStoreFailure(Exception ex) =>
+        ex is ShardCredentialException
+            or RequestFailedException
+            or AuthenticationFailedException
+            or HttpRequestException
+            or IOException
+            or UnauthorizedAccessException
+            or InvalidOperationException
+            or ArgumentException
+            or KeyNotFoundException
+            or TimeoutException
+            or AggregateException;
 
     private static async ValueTask<AccessToken> RequestTokenAsync(TokenCredential credential, string scope, CancellationToken cancellationToken)
     {

@@ -7,7 +7,9 @@ namespace Ignixa.Federation.Shards.Credentials;
 /// <para>The message is fixed text chosen from <see cref="Failure"/> alone. There is deliberately no constructor that
 /// takes a message or an inner exception, so no secret, token, tenant, client id, secret name or SDK error text can
 /// reach a log through this type.</para>
-/// <para>An <see cref="IShardSecretResolver"/> throws it to report a secret it cannot supply.</para>
+/// <para>An <see cref="IShardSecretResolver"/> may throw it to report a secret it cannot supply, but the provider replaces
+/// that instance with its own <see cref="ShardCredentialFailure.SecretUnavailable"/>, so a resolver cannot attach
+/// <see cref="Exception.Data"/> or a <see cref="Exception.Source"/> that reaches a caller.</para>
 /// </remarks>
 [SuppressMessage(
     "Design",
