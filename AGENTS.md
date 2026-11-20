@@ -19,9 +19,11 @@ test/
   Ignixa.Federation.Core.UnitTests/
   Ignixa.Federation.Shards.UnitTests/
   Ignixa.Federation.Tests.Integration/
+  Ignixa.Federation.SampleClient.UnitTests/
 deploy/    Dockerfile and compose.yaml
 docs/      Documentation and the design spec
-samples/   Planned sample client
+samples/
+  Ignixa.Federation.SampleClient/   Sample console client for the public search wire contract
 tools/     Dev scripts
 ```
 
@@ -31,6 +33,7 @@ tools/     Dev scripts
 * `Shards` makes HTTP calls to backends. It has no ASP.NET dependency.
 * `Api` is the host. Endpoints, authentication, dependency injection, and response shaping live here.
 * Dependencies point one way: `Api` references `Shards` and `Core`, and `Shards` references `Core`.
+* The sample client in `samples/` uses only the public HTTP wire contract. It references no `src/` project.
 * Parse external data into domain types at the boundary. Inside the boundary, trust the types and do not re-validate.
 
 ## Naming
