@@ -214,6 +214,8 @@ public sealed class ReverseChainResolver
                 }
             }
 
+            // Observe a deadline delivered during the last extraction while this scan still holds its slot.
+            token.ThrowIfCancellationRequested();
             cursor = page.Next;
             if (cursor is not null)
             {
