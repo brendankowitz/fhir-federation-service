@@ -171,4 +171,32 @@ public sealed class ReferencePathCertificationTests
         certification.ForeignForms.ShouldBe(ReferenceSearchForms.CanonicalAbsolute);
         certification.CoveredRegistryVersion.ShouldBe(Covered);
     }
+
+    [Theory]
+    [InlineData(ReferencePathOperations.RevIncludeSearch, "Observation?@Observation.subject:Patient&code=1")]
+    [InlineData(ReferencePathOperations.DistributedForward, "Observation?@Observation.subject:Patient")]
+    public void RejectsRevIncludeEvidenceForTheWrongShapeOrOperation(ReferencePathOperations operations, string shape)
+    {
+        Should.Throw<ArgumentException>(() => new ReferencePathCertification(
+            ObservationSubjectPatient,
+            operations,
+            ReferenceSearchForms.CanonicalAbsolute,
+            ReferenceSearchForms.CanonicalAbsolute,
+            Covered,
+            revIncludeSearchShape: shape)).ParamName.ShouldBe("revIncludeSearchShape");
+    }
+
+    [Theory]
+    [InlineData(ReferencePathOperations.DistributedForward, " ")]
+    [InlineData(ReferencePathOperations.RevIncludeSearch, "Observation?@Observation.subject:Patient")]
+    public void RejectsForwardEvidenceThatIsBlankOrAssignedToTheWrongOperation(ReferencePathOperations operations, string shape)
+    {
+        Should.Throw<ArgumentException>(() => new ReferencePathCertification(
+            ObservationSubjectPatient,
+            operations,
+            ReferenceSearchForms.CanonicalAbsolute,
+            ReferenceSearchForms.CanonicalAbsolute,
+            Covered,
+            forwardSearchShapes: [shape])).ParamName.ShouldBe("forwardSearchShapes");
+    }
 }
