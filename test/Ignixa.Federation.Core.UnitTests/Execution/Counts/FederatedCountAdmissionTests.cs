@@ -206,10 +206,15 @@ public sealed class FederatedCountAdmissionTests
     [Fact]
     public void DialectKeysDuplicatedUnderShardIdentityAreRejected()
     {
+        // Reference equality keeps both east keys; the registry is covered either way, so only the duplicate check refuses.
+        ShardId equalEast = ShardId.Parse("east");
+        equalEast.ShouldBe(East);
+        ReferenceEquals(equalEast, East).ShouldBeFalse();
         var dialects = new Dictionary<ShardId, CountDialect>(ReferenceEqualityComparer.Instance)
         {
             [East] = CountDialect.CountZero,
-            [ShardId.Parse("east")] = CountDialect.CountZero,
+            [equalEast] = CountDialect.CountZeroWithSummaryCount,
+            [West] = CountDialect.CountZero,
         };
 
         Should.Throw<ArgumentException>(() => new FederatedCountExecutor(_client, _capabilities, dialects, 4));

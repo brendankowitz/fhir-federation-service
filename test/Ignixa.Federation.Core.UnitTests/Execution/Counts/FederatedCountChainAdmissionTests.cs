@@ -57,7 +57,8 @@ public sealed class FederatedCountChainAdmissionTests
     }
 
     /// <summary>
-    /// coverage attested for the registry version; the other chains still count.
+    /// A changed registry version refuses only a reference rewrite, which needs its coverage attested for the current
+    /// registry version; the other chains still count.
     /// </summary>
     [Theory]
     [MemberData(nameof(Chains))]
@@ -141,6 +142,24 @@ public sealed class FederatedCountChainAdmissionTests
         }
     }
 
+    /// <summary>The planned foreign-side forms are evidence only a reference rewrite relies on; the other chains still count.</summary>
+    [Theory]
+    [MemberData(nameof(Chains))]
+    public async Task ChangedForeignFormsRefuseOnlyAReferenceRewrite(string chain)
+    {
+        (QueryPlan plan, string shape, IReadOnlyDictionary<int, string> replacements) = PlanBeforeTheChange(chain);
+        SearchCapabilities capabilities = CertifiedWith(shape, SubjectHop(foreignForms: ReferenceSearchForms.CanonicalAbsolute));
+
+        if (chain == DistributedForward)
+        {
+            await ShouldRefuse(plan, capabilities, replacements);
+        }
+        else
+        {
+            (await Count(plan, capabilities, replacements)).ShouldBe(5);
+        }
+    }
+
     [Theory]
     [MemberData(nameof(Chains))]
     public async Task EquivalentButSeparatelyBuiltEvidenceCounts(string chain)
@@ -185,11 +204,12 @@ public sealed class FederatedCountChainAdmissionTests
     private static ReferencePathCertification SubjectHop(
         ReferencePathOperations operations = AllOperations,
         ReferenceSearchForms ownSideForms = ReferenceSearchForms.Relative | ReferenceSearchForms.CanonicalAbsolute,
-        string[]? forwardShapes = null) => new(
+        string[]? forwardShapes = null,
+        ReferenceSearchForms foreignForms = ReferenceSearchForms.CanonicalAbsolute | ReferenceSearchForms.LinkBaseAliases) => new(
         ObservationSubjectPatient,
         operations,
         ownSideForms,
-        ReferenceSearchForms.CanonicalAbsolute | ReferenceSearchForms.LinkBaseAliases,
+        foreignForms,
         Registry().Version,
         operations.HasFlag(ReferencePathOperations.DistributedForward) ? forwardShapes ?? [PlannedCountShape] : [],
         StandaloneShape(ObservationSubjectPatient));

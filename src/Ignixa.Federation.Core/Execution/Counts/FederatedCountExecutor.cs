@@ -97,8 +97,8 @@ public sealed class FederatedCountExecutor
     /// Not every shard searches the plan's type or certifies its count shape exact; or a chain's hop is not certified by
     /// these capabilities as the plan certified it: the operation the planner required (native or distributed, forward or
     /// reverse) is no longer certified on every shard, the certified shards differ from the plan's, or, for a reference
-    /// rewrite, a shard's coverage is not attested for the current registry version or its emitted forms, coverage or
-    /// planned count shapes differ from the plan's.
+    /// rewrite, a shard's coverage is not attested for the current registry version, its emitted forms or coverage
+    /// differ from the plan's, or it no longer includes every planned count shape.
     /// </exception>
     /// <exception cref="FetchBudgetExhaustedException">The count needs more calls than <paramref name="callBudget"/>.</exception>
     /// <exception cref="ShardFailureException">
@@ -193,13 +193,20 @@ public sealed class FederatedCountExecutor
     /// the shards the plan certified, under <see cref="SearchCapabilities.CertifiedPath"/>'s rules (every current shard
     /// and, for a reference rewrite, coverage attested for the current registry version). A reference rewrite also sends
     /// resolved references in the planned forms and was proven for its count search, so each shard must still attest the
-    /// same forms and coverage and every planned count shape. Removed occurrences, such as includes, reach no shard.
+    /// same forms and coverage and every planned count shape. Occurrences that are not chains, such as includes, carry no
+    /// hop and are skipped; a chain without a hop, or one the shards would not receive as a kept or replaced predicate
+    /// (for example a removed one), is refused.
     /// </summary>
     private bool HopStillCertified(PlannedOccurrence occurrence)
     {
-        if (occurrence is not { Kind: OccurrenceKind.ForwardChain or OccurrenceKind.ReverseChain, Action: not OccurrenceAction.Remove, Hop: { } hop })
+        if (occurrence.Kind is not (OccurrenceKind.ForwardChain or OccurrenceKind.ReverseChain))
         {
             return true;
+        }
+
+        if (occurrence is not { Action: OccurrenceAction.Keep or OccurrenceAction.Replace, Hop: { } hop })
+        {
+            return false;
         }
 
         // Mirrors the planner: a passthrough hop is kept and joined natively, a distributed one is replaced.
