@@ -1,4 +1,5 @@
 using System.Collections.Frozen;
+using System.Runtime.ExceptionServices;
 using Ignixa.FhirPath.Expressions;
 using Ignixa.Federation.Core.Execution.Includes;
 using Ignixa.Federation.Core.Identity;
@@ -23,6 +24,8 @@ public sealed class ReverseChainResolver
     private readonly ReferenceClassifier _classifier;
     private readonly int _maxChainSourceRows;
     private readonly int _maxChainKeys;
+    private readonly int _maxParallelCalls;
+    private readonly TimeSpan _subqueryTimeout;
 
     /// <summary>Creates a resolver with positive key, row and concurrency limits and a positive sub-query timeout.</summary>
     public ReverseChainResolver(IShardClient client, SearchCapabilities capabilities, int maxChainKeys, int maxChainSourceRows, int maxParallelCalls, TimeSpan subqueryTimeout)
@@ -38,6 +41,8 @@ public sealed class ReverseChainResolver
         _classifier = new ReferenceClassifier(capabilities.Registry);
         _maxChainSourceRows = maxChainSourceRows;
         _maxChainKeys = maxChainKeys;
+        _maxParallelCalls = maxParallelCalls;
+        _subqueryTimeout = subqueryTimeout;
     }
 
     /// <summary>Resolves reverse chains without issuing any primary search.</summary>
@@ -45,22 +50,16 @@ public sealed class ReverseChainResolver
     {
         ArgumentNullException.ThrowIfNull(plan);
         ArgumentNullException.ThrowIfNull(authorizedTypes);
-        Admit(plan, authorizedTypes);
         ArgumentOutOfRangeException.ThrowIfNegative(fetchBudget);
+        cancellationToken.ThrowIfCancellationRequested();
+        Admit(plan, authorizedTypes);
         var budget = new CallBudget(fetchBudget);
         var distributed = plan.Occurrences.Where(o => o.Action == OccurrenceAction.Replace).ToArray();
         List<ResourceKey>? candidates = null;
         foreach (PlannedOccurrence occurrence in distributed)
         {
             ReferenceHop hop = occurrence.Hop!;
-            var expression = IncludeReferenceExtractor.ParseExpression(hop);
-            var witnesses = new ReverseChainWitnesses(hop.Path, _maxChainSourceRows, _maxChainKeys);
-            foreach (ShardDescriptor shard in _capabilities.Registry.Shards)
-            {
-                await ReadShardAsync(shard, hop, expression, witnesses, budget, cancellationToken);
-            }
-
-            var keys = witnesses.OrderedKeys();
+            var keys = await WitnessesAsync(hop, budget, cancellationToken);
             candidates = candidates is null ? keys : [.. candidates.Intersect(keys)];
             if (candidates.Count == 0)
             {
@@ -89,6 +88,61 @@ public sealed class ReverseChainResolver
         return new ReverseChainResolution(targets.AsReadOnly(), budget.Calls);
     }
 
+    private async Task<List<ResourceKey>> WitnessesAsync(ReferenceHop hop, CallBudget budget, CancellationToken caller)
+    {
+        var expression = IncludeReferenceExtractor.ParseExpression(hop);
+        var witnesses = new ReverseChainWitnesses(hop.Path, _maxChainSourceRows, _maxChainKeys);
+        using var stop = CancellationTokenSource.CreateLinkedTokenSource(caller);
+        stop.CancelAfter(_subqueryTimeout);
+        using var gate = new SemaphoreSlim(_maxParallelCalls);
+        Exception? firstFailure = null;
+        Task all = Task.WhenAll(_capabilities.Registry.Shards.Select(ScanAsync));
+        await all.ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
+
+        caller.ThrowIfCancellationRequested();
+        if (firstFailure is not null)
+        {
+            ExceptionDispatchInfo.Throw(firstFailure);
+        }
+
+        return witnesses.OrderedKeys();
+
+        async Task ScanAsync(ShardDescriptor shard)
+        {
+            bool acquired = false;
+            try
+            {
+                await gate.WaitAsync(stop.Token);
+                acquired = true;
+                await ReadShardAsync(shard, hop, expression, witnesses, budget, stop.Token);
+                stop.Token.ThrowIfCancellationRequested();
+            }
+            catch (Exception exception)
+            {
+                Exception failure = exception switch
+                {
+                    ShardFailureException or FetchBudgetExhaustedException or ReverseChainRefusedException => exception,
+                    OperationCanceledException => new ShardFailureException(shard.Id, ShardFailureReason.Timeout, exception),
+                    _ => new ShardFailureException(shard.Id, ShardFailureReason.Failed, exception),
+                };
+                if (Interlocked.CompareExchange(ref firstFailure, failure, null) is null)
+                {
+                    // Stop before releasing this slot. A throwing client callback must not mask the original failure.
+                    await stop.CancelAsync().ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
+                }
+
+                throw;
+            }
+            finally
+            {
+                if (acquired)
+                {
+                    gate.Release();
+                }
+            }
+        }
+    }
+
     private async Task ReadShardAsync(
         ShardDescriptor shard, ReferenceHop hop, Expression expression, ReverseChainWitnesses witnesses, CallBudget budget, CancellationToken token)
     {
@@ -106,10 +160,12 @@ public sealed class ReverseChainResolver
             ShardPage page = cursor is null
                 ? await _client.SearchAsync(stream.FirstPage(wanted), token)
                 : await _client.ContinueAsync(cursor, token);
+            token.ThrowIfCancellationRequested();
             stream.Validate(page, redeemed);
             witnesses.ChargeRows(page.Entries.Count);
             foreach (ShardEntry entry in page.Entries)
             {
+                token.ThrowIfCancellationRequested();
                 foreach (string literal in IncludeReferenceExtractor.Extract(entry, expression))
                 {
                     if (_classifier.Classify(entry.Key.Shard, literal) is { Kind: ReferenceKind.Relative or ReferenceKind.KnownAbsolute, Target: { } key }

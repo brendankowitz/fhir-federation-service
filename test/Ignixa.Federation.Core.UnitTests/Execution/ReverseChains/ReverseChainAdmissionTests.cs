@@ -16,6 +16,17 @@ public sealed class ReverseChainAdmissionTests
     private readonly ReverseChainFixture _f = new();
 
     [Fact]
+    public async Task AlreadyCancelledCallerGetsNoNativePrimaryTargets()
+    {
+        using var caller = new CancellationTokenSource();
+        await caller.CancelAsync();
+        var exception = await Should.ThrowAsync<OperationCanceledException>(
+            () => _f.Resolver().ResolveAsync(_f.Plan(native: true), AllTypes, 0, caller.Token));
+        exception.CancellationToken.ShouldBe(caller.Token);
+        _f.Client.Calls.ShouldBeEmpty();
+    }
+
+    [Fact]
     public async Task DistributedForwardRewriteIsRejectedAtAdmission()
     {
         QueryPlan plan = TestSearch.PlanOk("Observation", "subject:Patient.name=Sarah");
