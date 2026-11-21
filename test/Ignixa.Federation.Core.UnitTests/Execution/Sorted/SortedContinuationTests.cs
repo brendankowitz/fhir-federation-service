@@ -1,3 +1,4 @@
+using System.Reflection;
 using Ignixa.Federation.Core.Execution;
 using Ignixa.Federation.Core.Execution.Sorted;
 using Ignixa.Federation.Core.Identity;
@@ -99,4 +100,97 @@ public sealed class SortedContinuationTests
         (end.Shard, end.Search, end.Cursor, end.IsExhausted, end.LastEmitted, end.CycleState, end.PreviousPageLastUpdated)
             .ShouldBe((Fixture.Shard(0), (ShardSearchRequest?)null, (ShardCursor?)null, true, (SortedAnchor?)null, CursorCycleState.Initial, (DateTimeOffset?)null));
     }
+
+    [Fact]
+    public void Aggregate_RequiresTypeAndStreams()
+    {
+        Should.Throw<ArgumentNullException>(() => new SortedContinuation(null!, LastUpdatedSort.Ascending, 2, [Search(0)]))
+            .ParamName.ShouldBe("type");
+        Should.Throw<ArgumentNullException>(() => new SortedContinuation(Fixture.Patient, LastUpdatedSort.Ascending, 2, null!))
+            .ParamName.ShouldBe("streams");
+    }
+
+    [Fact]
+    public void Aggregate_RejectsAnUndefinedDirectionOrANonpositivePageSize()
+    {
+        Should.Throw<ArgumentOutOfRangeException>(() => new SortedContinuation(Fixture.Patient, (LastUpdatedSort)7, 2, [Search(0)]))
+            .ParamName.ShouldBe("direction");
+        Should.Throw<ArgumentOutOfRangeException>(() => new SortedContinuation(Fixture.Patient, LastUpdatedSort.Ascending, 0, [Search(0)]))
+            .ParamName.ShouldBe("pageSize");
+    }
+
+    public static TheoryData<string, SortedStreamContinuation?[]> MalformedStreams => new()
+    {
+        { "empty", [] },
+        { "null member", [Search(0), null] },
+        { "duplicate owner", [Search(0), SortedStreamContinuation.AtEnd(Fixture.Shard(0), null)] },
+        { "all ended", [SortedStreamContinuation.AtEnd(Fixture.Shard(0), null), SortedStreamContinuation.AtEnd(Fixture.Shard(1), null)] },
+        { "foreign search type", [Search(0), SortedStreamContinuation.AtSearch(SortedFixture.Stream(1, type: Fixture.Observation), null)] },
+        { "foreign cursor type", [Search(0), SortedStreamContinuation.AtCursor(Fixture.Cursor(1, "p1", type: Fixture.Observation), null, AfterOneCursor, null)] },
+        { "foreign ended anchor type", [Search(0), SortedStreamContinuation.AtEnd(Fixture.Shard(1), SortedFixture.Anchor(1, "a", 1, Fixture.Observation))] },
+        { "preceding instant after its anchor", [Search(0), SortedStreamContinuation.AtCursor(Fixture.Cursor(1, "p1"), SortedFixture.Anchor(1, "b", 2), AfterOneCursor, SortedFixture.At(3))] },
+    };
+
+    [Theory]
+    [MemberData(nameof(MalformedStreams))]
+    public void Aggregate_RejectsMalformedStreams(string because, SortedStreamContinuation?[] streams)
+    {
+        Should.Throw<ArgumentException>(() => new SortedContinuation(Fixture.Patient, LastUpdatedSort.Ascending, 2, streams!), because)
+            .ParamName.ShouldBe("streams", because);
+    }
+
+    [Fact]
+    public void Aggregate_OrdersAPrecedingInstantByTheSortDirection()
+    {
+        SortedStreamContinuation[] behindInDescending =
+            [SortedStreamContinuation.AtCursor(Fixture.Cursor(0, "p1"), SortedFixture.Anchor(0, "b", 2), AfterOneCursor, SortedFixture.At(1))];
+        SortedStreamContinuation[] equal =
+            [SortedStreamContinuation.AtCursor(Fixture.Cursor(0, "p1"), SortedFixture.Anchor(0, "b", 2), AfterOneCursor, SortedFixture.At(2))];
+
+        Should.Throw<ArgumentException>(() => new SortedContinuation(Fixture.Patient, LastUpdatedSort.Descending, 2, behindInDescending))
+            .ParamName.ShouldBe("streams");
+        new SortedContinuation(Fixture.Patient, LastUpdatedSort.Ascending, 2, behindInDescending).Streams.Count.ShouldBe(1);
+        new SortedContinuation(Fixture.Patient, LastUpdatedSort.Ascending, 2, equal).Streams.Count.ShouldBe(1);
+        new SortedContinuation(Fixture.Patient, LastUpdatedSort.Descending, 2, equal).Streams.Count.ShouldBe(1);
+    }
+
+    [Fact]
+    public void Aggregate_IsAnImmutableSnapshotOfItsList()
+    {
+        SortedStreamContinuation first = Search(0);
+        List<SortedStreamContinuation> streams = [first, SortedStreamContinuation.AtEnd(Fixture.Shard(1), null)];
+
+        var continuation = new SortedContinuation(Fixture.Patient, LastUpdatedSort.Ascending, 2, streams);
+        streams[0] = Search(2);
+        streams.Add(Search(3));
+
+        continuation.Streams.Select(s => s.Shard.ToString()).ShouldBe(["s0", "s1"]);
+        continuation.Streams[0].ShouldBeSameAs(first);
+        IList<SortedStreamContinuation> downcast = continuation.Streams.ShouldBeAssignableTo<IList<SortedStreamContinuation>>();
+        Should.Throw<NotSupportedException>(() => downcast[0] = Search(2));
+        Should.Throw<NotSupportedException>(() => downcast.Clear());
+    }
+
+    [Fact]
+    public void Snapshot_HoldsOnlyMetadata_NoEntriesPagesBytesOrDeferredWork()
+    {
+        Type[] forbidden = [typeof(ShardEntry), typeof(ShardPage), typeof(byte[]), typeof(ReadOnlyMemory<byte>), typeof(Task), typeof(Delegate)];
+        Type[] state = [typeof(SortedContinuation), typeof(SortedStreamContinuation), typeof(SortedAnchor)];
+
+        foreach (Type owner in state)
+        {
+            foreach (FieldInfo field in owner.GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic))
+            {
+                forbidden.ShouldNotContain(
+                    f => f.IsAssignableFrom(field.FieldType) || field.FieldType.IsAssignableTo(f) || ElementOf(field.FieldType) == f,
+                    $"{owner.Name}.{field.Name}");
+            }
+        }
+    }
+
+    private static Type? ElementOf(Type type) =>
+        type.IsArray ? type.GetElementType() : type.IsGenericType ? type.GetGenericArguments().FirstOrDefault() : null;
+
+    private static SortedStreamContinuation Search(int ordinal) =>
+        SortedStreamContinuation.AtSearch(SortedFixture.Stream(ordinal, pageSize: 2), null);
 }
