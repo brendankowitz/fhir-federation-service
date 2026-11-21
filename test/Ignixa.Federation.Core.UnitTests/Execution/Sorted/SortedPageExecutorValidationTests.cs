@@ -59,6 +59,42 @@ public sealed class SortedPageExecutorValidationTests
     }
 
     [Theory]
+    [InlineData(LastUpdatedSort.Ascending, "search")]
+    [InlineData(LastUpdatedSort.Descending, "search")]
+    [InlineData(LastUpdatedSort.Ascending, "cursor")]
+    [InlineData(LastUpdatedSort.Descending, "cursor")]
+    public async Task ReversalBeforeTheReplayedAnchor_IsAContractViolation_ThoughAnchorAndSuffixAreValid(
+        LastUpdatedSort direction,
+        string input)
+    {
+        int sign = direction == LastUpdatedSort.Ascending ? 1 : -1;
+        ShardCursor p1 = Fixture.Cursor(0, "p1");
+        SortedAnchor anchor = SortedFixture.Anchor(0, "c", sign * 3);
+        var client = new FakeShardClient();
+
+        // A search reverses inside its skipped prefix; a cursor's first entry falls behind its saved preceding instant.
+        client.OnSearch(0, Fixture.Page(
+            null,
+            SortedFixture.Entry(0, "a", sign * 2),
+            SortedFixture.Entry(0, "b", sign * 1),
+            SortedFixture.Entry(0, "c", sign * 3),
+            SortedFixture.Entry(0, "d", sign * 4)));
+        client.OnContinue(p1, Fixture.Page(
+            null,
+            SortedFixture.Entry(0, "b", sign * 1),
+            SortedFixture.Entry(0, "c", sign * 3),
+            SortedFixture.Entry(0, "d", sign * 4)));
+        SortedStreamContinuation start = input == "search"
+            ? SortedStreamContinuation.AtSearch(SortedFixture.Stream(0, direction, pageSize: 4), anchor)
+            : SortedStreamContinuation.AtCursor(p1, anchor, new CursorCycleState(1UL, 2, 0), SortedFixture.At(sign * 2));
+
+        ShardFailureException failure = await Should.ThrowAsync<ShardFailureException>(() => client.Resume(direction, 2, start));
+
+        failure.Shard.ShouldBe(Fixture.Shard(0));
+        failure.Reason.ShouldBe(ShardFailureReason.ContractViolation);
+    }
+
+    [Theory]
     [InlineData(0)]
     [InlineData(2)]
     public async Task NullLastUpdatedOnANeededPage_IsAContractViolationBeforeAnyEmission(int nullPosition)

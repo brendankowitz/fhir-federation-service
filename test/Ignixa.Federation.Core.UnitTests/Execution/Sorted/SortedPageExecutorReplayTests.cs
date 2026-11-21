@@ -120,7 +120,7 @@ public sealed class SortedPageExecutorReplayTests
         client.OnContinue(p2, Fixture.Page(null, SortedFixture.Entry(0, "a", 1), SortedFixture.Entry(0, "c", 3)));
 
         ContinuationAnchorMissingException missing = await Should.ThrowAsync<ContinuationAnchorMissingException>(
-            () => Resume(client, 2, start, SortedStreamContinuation.AtSearch(SortedFixture.Stream(1, pageSize: 2), null)));
+            () => client.Resume(LastUpdatedSort.Ascending, 2, start, SortedStreamContinuation.AtSearch(SortedFixture.Stream(1, pageSize: 2), null)));
 
         missing.Shard.ShouldBe(Fixture.Shard(0));
         client.Calls.Select(c => c.Shard).ShouldBe([Fixture.Shard(0)]);
@@ -141,7 +141,7 @@ public sealed class SortedPageExecutorReplayTests
         client.OnSearch(0, Fixture.Page(null, replayed));
 
         ContinuationAnchorMissingException missing = await Should.ThrowAsync<ContinuationAnchorMissingException>(
-            () => Resume(client, 2, SortedStreamContinuation.AtSearch(SortedFixture.Stream(0, pageSize: 3), SortedFixture.Anchor(0, "b", 2))),
+            () => client.Resume(LastUpdatedSort.Ascending, 2, SortedStreamContinuation.AtSearch(SortedFixture.Stream(0, pageSize: 3), SortedFixture.Anchor(0, "b", 2))),
             because);
 
         missing.Shard.ShouldBe(Fixture.Shard(0));
@@ -156,7 +156,7 @@ public sealed class SortedPageExecutorReplayTests
         client.OnContinue(p1, Fixture.Page(null, SortedFixture.Entry(0, "b", 6)));
 
         await Should.ThrowAsync<ContinuationAnchorMissingException>(
-            () => Resume(client, 2, SortedStreamContinuation.AtSearch(SortedFixture.Stream(0, pageSize: 2), SortedFixture.Anchor(0, "b", 2))));
+            () => client.Resume(LastUpdatedSort.Ascending, 2, SortedStreamContinuation.AtSearch(SortedFixture.Stream(0, pageSize: 2), SortedFixture.Anchor(0, "b", 2))));
 
         client.Calls.Select(c => c.ToString()).ShouldBe(["search s0 count=2"]);
     }
@@ -168,19 +168,10 @@ public sealed class SortedPageExecutorReplayTests
         DateTimeOffset sameInstant = SortedFixture.At(2).ToOffset(TimeSpan.FromHours(5));
         client.OnSearch(0, Fixture.Page(null, SortedFixture.Entry(0, "a", 1), SortedFixture.Entry(0, "b", sameInstant), SortedFixture.Entry(0, "c", 3)));
 
-        SortedPage page = await Resume(client, 2, SortedStreamContinuation.AtSearch(SortedFixture.Stream(0, pageSize: 3), SortedFixture.Anchor(0, "b", 2)));
+        SortedPage page = await client.Resume(LastUpdatedSort.Ascending, 2, SortedStreamContinuation.AtSearch(SortedFixture.Stream(0, pageSize: 3), SortedFixture.Anchor(0, "b", 2)));
 
         page.Ids().ShouldBe(["s0/c"]);
         page.Next.ShouldBeNull();
-    }
-
-    /// <summary>Redeems a hand-built ascending snapshot whose owners are shards s0, s1, … in order.</summary>
-    private static Task<SortedPage> Resume(FakeShardClient client, int pageSize, params SortedStreamContinuation[] owners)
-    {
-        int[] ordinals = [.. Enumerable.Range(0, owners.Length)];
-        var resumeFrom = new SortedContinuation(Fixture.Patient, LastUpdatedSort.Ascending, pageSize, owners);
-        return SortedFixture.Executor(client, Fixture.Registry(owners.Length))
-            .ExecuteAsync(SortedFixture.Streams(LastUpdatedSort.Ascending, ordinals), LastUpdatedSort.Ascending, pageSize, resumeFrom, 10, Token);
     }
 
     [Fact]

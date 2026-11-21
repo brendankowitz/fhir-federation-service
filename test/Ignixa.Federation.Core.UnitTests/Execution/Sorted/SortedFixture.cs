@@ -58,6 +58,22 @@ internal static class SortedFixture
         new(client, registry, maxParallelFetches);
 
     /// <summary>
+    /// Redeems a hand-built snapshot whose owners are shards s0, s1, … in registry order, on a fresh executor with a budget
+    /// of 10.
+    /// </summary>
+    public static Task<SortedPage> Resume(
+        this FakeShardClient client,
+        LastUpdatedSort direction,
+        int pageSize,
+        params SortedStreamContinuation[] owners)
+    {
+        int[] ordinals = [.. Enumerable.Range(0, owners.Length)];
+        var resumeFrom = new SortedContinuation(Fixture.Patient, direction, pageSize, owners);
+        return Executor(client, Fixture.Registry(owners.Length))
+            .ExecuteAsync(Streams(direction, ordinals), direction, pageSize, resumeFrom, 10, TestContext.Current.CancellationToken);
+    }
+
+    /// <summary>
     /// Scripts a chain of backend pages for one shard: its first search returns <paramref name="pages"/>[0], and each page
     /// links to the next with a cursor; the last page has no <c>next</c>.
     /// </summary>
