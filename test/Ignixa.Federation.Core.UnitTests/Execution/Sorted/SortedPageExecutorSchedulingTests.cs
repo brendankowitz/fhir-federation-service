@@ -325,5 +325,31 @@ public sealed class SortedPageExecutorSchedulingTests
         client.Calls.Select(c => c.ToString()).ShouldBe(["search s0 count=3", "search s1 count=3", "continue s0"]);
     }
 
+    /// <summary>
+    /// A client that reports cancellation while the caller is live has timed out; the caller did not cancel, so neither
+    /// the execution nor a sibling sees cancellation.
+    /// </summary>
+    [Fact]
+    public async Task ClientCancellationWhileTheCallerIsLive_IsATimeout()
+    {
+        var client = new FakeShardClient();
+        using var expired = new CancellationTokenSource();
+        await expired.CancelAsync();
+        var timedOut = new OperationCanceledException(expired.Token);
+        client.OnSearchThrows(1, timedOut);
+        CancellationToken s0Token = default;
+        client.OnSearch(Fixture.Shard(0), (_, token) =>
+        {
+            s0Token = token;
+            return Task.FromResult(Fixture.Page(null, SortedFixture.Entry(0, "a", 1)));
+        });
+
+        ShardFailureException failure = await Should.ThrowAsync<ShardFailureException>(SortedFixture.Executor(client, Fixture.Registry(2), 2)
+            .ExecuteAsync(SortedFixture.Streams(Ascending, 0, 1), Ascending, 2, null, 10, Token));
+
+        (failure.Shard, failure.Reason, failure.InnerException).ShouldBe((Fixture.Shard(1), ShardFailureReason.Timeout, timedOut));
+        s0Token.IsCancellationRequested.ShouldBeFalse();
+    }
+
     private static TaskCompletionSource Gate() => new(TaskCreationOptions.RunContinuationsAsynchronously);
 }
