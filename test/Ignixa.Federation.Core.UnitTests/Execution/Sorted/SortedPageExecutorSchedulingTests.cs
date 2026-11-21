@@ -402,6 +402,25 @@ public sealed class SortedPageExecutorSchedulingTests
         client.Calls.Select(c => c.ToString()).ShouldBe(["search s0 count=3", "search s1 count=3"]);
     }
 
+    /// <summary>
+    /// s0 fails in the first batch of two: its batch-mate s1 still runs to completion, but the batch holding s2 never
+    /// starts.
+    /// </summary>
+    [Fact]
+    public async Task FailedBatch_StartsNoLaterBatch()
+    {
+        var client = new FakeShardClient();
+        client.OnSearchThrows(0, new InvalidOperationException("s0 failed"));
+        client.OnSearch(1, Fixture.Page(null, SortedFixture.Entry(1, "b", 2)));
+        client.OnSearch(2, Fixture.Page(null, SortedFixture.Entry(2, "c", 3)));
+
+        ShardFailureException failure = await Should.ThrowAsync<ShardFailureException>(SortedFixture.Executor(client, Fixture.Registry(3), 2)
+            .ExecuteAsync(SortedFixture.Streams(Ascending, 0, 1, 2), Ascending, 2, null, 10, Token));
+
+        failure.Shard.ShouldBe(Fixture.Shard(0));
+        client.Calls.Select(c => c.ToString()).ShouldBe(["search s0 count=2", "search s1 count=2"]);
+    }
+
     /// <summary>s0: [a@1] → p1 [c@3] → p2 [e@5]; s1: [b@2, d@4]. A page of 3 needs s0's p1 but not its p2.</summary>
     private static FakeShardClient RefillNeededForTheThirdMatch()
     {
