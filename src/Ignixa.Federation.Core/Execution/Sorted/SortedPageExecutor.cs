@@ -60,7 +60,8 @@ public sealed class SortedPageExecutor
     /// </exception>
     /// <exception cref="ShardFailureException">
     /// A shard the page needs failed, timed out or broke the shard contract: a foreign or repeated key, a missing or
-    /// out-of-order <c>_lastUpdated</c>, or a foreign, repeated or cyclic <c>next</c> link. No match is returned.
+    /// out-of-order <c>_lastUpdated</c>, a foreign, repeated or cyclic <c>next</c> link, or a head that precedes the last
+    /// match <paramref name="resumeFrom"/> emitted. No match is returned.
     /// </exception>
     /// <exception cref="ContinuationAnchorMissingException">
     /// A stream's replayed input no longer holds the exact match <paramref name="resumeFrom"/> emitted last from it, at its
