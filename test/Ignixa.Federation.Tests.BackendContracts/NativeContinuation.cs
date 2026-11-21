@@ -26,11 +26,25 @@ internal sealed class NativeContinuation
         }
 
         string query = url[prefix.Length..];
-        if (query.Length == 0 || query.Any(c => c is < '\u0021' or > '\u007E' or '#' or '\\'))
+        if (query.Length == 0 || query.Any(c => c is < '\u0021' or > '\u007E' or '#' or '\\') || HasMalformedEscape(query))
         {
             throw SearchsetJson.Incomplete("a next link has no query or one that is not plain encoded text");
         }
 
         return new NativeContinuation(query);
+    }
+
+    /// <summary>Whether a <c>%</c> is not followed by two hex digits. Escapes are never decoded; this only keeps broken ones off the wire.</summary>
+    private static bool HasMalformedEscape(string query)
+    {
+        for (int i = query.IndexOf('%', StringComparison.Ordinal); i >= 0; i = query.IndexOf('%', i + 1, StringComparison.Ordinal))
+        {
+            if (i + 2 >= query.Length || !char.IsAsciiHexDigit(query[i + 1]) || !char.IsAsciiHexDigit(query[i + 2]))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 }

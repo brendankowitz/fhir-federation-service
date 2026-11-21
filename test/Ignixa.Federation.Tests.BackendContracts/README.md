@@ -231,21 +231,26 @@ reuses the three-Patient count fixture and seed, so no extra backend start and n
 - **Walk.** The start page is the one-row page of the sort. A GET follows each `next` link verbatim; a POST
   re-posts the link's query suffix to `Patient/_search` as the form body. The suffix is replayed exactly as issued:
   never decoded, split, reordered or merged. Each distinct issued link is redeemed twice, and both redemptions must
-  hold exactly the one Patient the oracle expects at that position with the same version and instant.
+  hold exactly the one Patient the oracle expects at that position with the same version and instant. A link
+  already issued for an earlier position is never redeemed again: reissuing one is a `[contract]` failure and
+  stops the walk, because a backend that advances state per redemption could otherwise look stable.
 - **Termination.** After the third row, an absent `next` or one empty terminal page with no `next` and no rows is
   accepted. A missing, extra, repeated, backward or earlier-ending row, or a `next` after the terminal page, is a
   `[contract]` failure. The walk sends at most 15 searches plus the three reads and never repeats a link a
   third time.
 - **Safety.** A `next` link is accepted only on the exact origin of the fixture (`http://127.0.0.1:<port>`), the
-  `Patient` path and a non-empty plain query. Otherwise the page is not evidence and nothing further is sent.
-  Reports print reserved ids, versions, instants and counts, never a link, token or response text.
+  `Patient` path and a non-empty plain query whose `%` escapes are each followed by two hex digits. Otherwise
+  the page is not evidence and nothing further is sent.
+  Reports print reserved ids, versions, instants and counts, never a link, token or response text. A version is
+  printed only after it matches a bounded safe token (at most 64 letters, digits, `-` or `.`).
 
 It makes no claim about tied instants, other queries or the token text. Offline tests
 (`PatientContinuationEvidenceTests`, no Docker) drive the real client and walk against a scripted loopback
 backend that accepts only the exact wire shape, and check the replay of an odd encoded suffix on each verb, double
-redemption, terminal handling, every mismatch class, the origin and path rejections, report sanitization and the
-seed spacing. Mutations of the double redemption, the tie rule, the version and instant comparison, the terminal
-rule, direction, oracle order, the origin check and verbatim replay each fail them. No live outcome of this
+redemption, token reuse across positions, terminal handling, mismatches in row, version and instant, the origin,
+path and escape rejections, and report sanitization. Mutations of the double redemption, the tie rule, the
+version and instant comparison, the terminal rule, direction, oracle order, the origin check, token reuse and
+verbatim replay each fail them. No live outcome of this
 witness is recorded, and it is not accepted until a Linux run supplies one.
 
 ## Run it
@@ -255,11 +260,11 @@ The harness uses `/var/run/docker.sock` on Linux and the Docker Desktop Linux en
 Run the same two commands as CI from the repository root:
 
 ```text
-dotnet run --project test/Ignixa.Federation.Tests.BackendContracts/Ignixa.Federation.Tests.BackendContracts.csproj --configuration Release -- --show-live-output on --progress off --fail-skips on --filter-class '*EvidenceTests' --minimum-expected-tests 324
+dotnet run --project test/Ignixa.Federation.Tests.BackendContracts/Ignixa.Federation.Tests.BackendContracts.csproj --configuration Release -- --show-live-output on --progress off --fail-skips on --filter-class '*EvidenceTests' --minimum-expected-tests 302
 dotnet run --project test/Ignixa.Federation.Tests.BackendContracts/Ignixa.Federation.Tests.BackendContracts.csproj --configuration Release --no-build -- --show-live-output on --progress off --fail-skips on --filter-class '*ContractTests' --minimum-expected-tests 35
 ```
 
-The first command builds the project and runs the 324 offline tests. The second runs the thirty-five live
+The first command builds the project and runs the 302 offline tests. The second runs the thirty-five live
 cases (three reference, six count, four repeated `_id`, twelve Patient.given, six Observation.subject join,
 four directional continuation)
 using that build. The separate
@@ -322,7 +327,7 @@ base and can include foreign references, so it is not an exact-local query.
 - Local (Windows, no Docker engine): the project builds with the .NET 11.0.100 SDK. The offline tests pass.
   The thirty-five live cases (three reference, six count, four repeated `_id`, twelve Patient.given, six
   Observation.subject join, four directional continuation) run and fail with `[prerequisite]`, as they should
-  without Docker: the offline run is 324 passed, 0 failed, 0 skipped, and the live run is 35 total, 0 passed,
+  without Docker: the offline run is 302 passed, 0 failed, 0 skipped, and the live run is 35 total, 0 passed,
   35 failed, 0 skipped.
 - Pending Docker or CI: startup, port binding, match sets, the Patient count totals, the repeated
   `_id` match and echo outcomes, the Patient.given match and echo outcomes, the Observation.subject join

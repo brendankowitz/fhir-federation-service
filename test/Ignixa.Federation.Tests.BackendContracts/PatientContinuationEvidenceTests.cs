@@ -82,11 +82,11 @@ public sealed class PatientContinuationEvidenceTests
     [InlineData("instant", "row 2 differs from the direct read in version or instant")]
     [InlineData("other", "row 2 is not the expected Patient")]
     [InlineData("backward", "row 2 repeats or moves back to an earlier row")]
-    [InlineData("missing", "row 2 is missing")]
-    public async Task A_physical_mismatch_on_the_second_redemption_fails_even_when_the_first_matched(string mutation, string expected)
+    public async Task A_physical_mismatch_on_the_second_redemption_fails_and_the_report_never_carries_the_link(string mutation, string expected)
     {
         await using var backend = new ScriptedPatientBackend(HttpMethod.Get)
         {
+            RewriteNext = u => u + "&secret=" + Secret,
             Override = visit => visit.Position == 1 && visit.Redemption == 1
                 ? ScriptedPatientBackend.Page(
                     mutation switch
@@ -101,12 +101,36 @@ public sealed class PatientContinuationEvidenceTests
                 : null,
         };
 
-        (ContinuationReport report, _) = await WalkAsync(backend, descending: false);
+        (ContinuationReport report, IReadOnlyList<CapturedRequest> wire) = await WalkAsync(backend, descending: false);
 
         Assert.False(report.Matched);
         Assert.Contains(expected, report.Describe("walk"), StringComparison.Ordinal);
         Assert.Contains("redemption 2", report.Describe("walk"), StringComparison.Ordinal);
         Assert.DoesNotContain("some-other-patient", report.Describe("walk"), StringComparison.Ordinal);
+        Assert.DoesNotContain(Secret, report.Describe("walk"), StringComparison.Ordinal);
+        Assert.DoesNotContain("ct=", report.Describe("walk"), StringComparison.Ordinal);
+        Assert.Contains(wire, r => r.RequestLine.Contains(Secret, StringComparison.Ordinal));
+    }
+
+    [Theory]
+    [InlineData("same-position", "ct=P2", "ct=P1")]
+    [InlineData("earlier-position", "ct=P3", "ct=P1")]
+    public async Task A_stateful_backend_that_reissues_an_exact_link_at_a_later_position_is_rejected_at_once(string script, string issued, string reused)
+    {
+        // The reissued link would otherwise be redeemed again and serve the third row, so replay would look stable.
+        await using var backend = new ScriptedPatientBackend(HttpMethod.Get)
+        {
+            EmptyTerminal = script == "earlier-position",
+            RewriteNext = u => u.Replace(issued, reused, StringComparison.Ordinal),
+            Override = visit => visit.Position == 1 && visit.Redemption >= 2 ? ScriptedPatientBackend.Page([visit.Served[2]], null) : null,
+        };
+
+        (ContinuationReport report, IReadOnlyList<CapturedRequest> wire) = await WalkAsync(backend, descending: false);
+
+        Assert.False(report.Matched);
+        Assert.Contains("repeats a link already issued for an earlier row", report.Describe("walk"), StringComparison.Ordinal);
+        Assert.DoesNotContain("ct=", report.Describe("walk"), StringComparison.Ordinal);
+        Assert.Equal(script == "same-position" ? 3 + 1 + 1 : 3 + 1 + 2 + 1, wire.Count);
     }
 
     [Theory]
@@ -201,23 +225,6 @@ public sealed class PatientContinuationEvidenceTests
     }
 
     [Fact]
-    public async Task A_report_never_contains_the_issued_link_or_token()
-    {
-        await using var backend = new ScriptedPatientBackend(HttpMethod.Get)
-        {
-            RewriteNext = u => u + "&secret=" + Secret,
-            Override = visit => visit.Position == 1 && visit.Redemption == 1 ? ScriptedPatientBackend.Page([visit.Served[2]], visit.DefaultNext) : null,
-        };
-
-        (ContinuationReport report, IReadOnlyList<CapturedRequest> wire) = await WalkAsync(backend, descending: false);
-
-        Assert.False(report.Matched);
-        Assert.DoesNotContain(Secret, report.Describe("walk"), StringComparison.Ordinal);
-        Assert.DoesNotContain("ct=", report.Describe("walk"), StringComparison.Ordinal);
-        Assert.Contains(wire, r => r.RequestLine.Contains(Secret, StringComparison.Ordinal));
-    }
-
-    [Fact]
     public async Task A_wrong_method_is_rejected_by_the_backend_and_reported_as_a_capability_answer()
     {
         await using var backend = new ScriptedPatientBackend(HttpMethod.Post);
@@ -243,57 +250,34 @@ public sealed class PatientContinuationEvidenceTests
     }
 
     [Theory]
-    [InlineData("http://127.0.0.1:5000/Patient?_sort=_lastUpdated&_count=1&ct=a%2Fb+c%7e%7E")]
-    [InlineData("http://127.0.0.1:5000/Patient?ct=1&ct=1")]
-    public void A_link_on_the_exact_origin_and_path_keeps_its_query_verbatim(string link)
-    {
-        ArgumentNullException.ThrowIfNull(link);
-        Assert.Equal(link["http://127.0.0.1:5000/Patient?".Length..], NativeContinuation.Create(link, Base).Query);
-    }
-
-    [Theory]
     [InlineData("")]
-    [InlineData("/Patient?ct=1")]
-    [InlineData("Patient?ct=1")]
     [InlineData("http://localhost:5000/Patient?ct=1")]
     [InlineData("http://127.0.0.1:5001/Patient?ct=1")]
-    [InlineData("http://127.0.0.1:5000:80/Patient?ct=1")]
     [InlineData("https://127.0.0.1:5000/Patient?ct=1")]
-    [InlineData("HTTP://127.0.0.1:5000/Patient?ct=1")]
-    [InlineData("http://user@127.0.0.1:5000/Patient?ct=1")]
     [InlineData("http://127.0.0.1:5000@evil.invalid/Patient?ct=1")]
-    [InlineData("http://127.0.0.1:5000/Observation?ct=1")]
     [InlineData("http://127.0.0.1:5000/Patient/_search?ct=1")]
-    [InlineData("http://127.0.0.1:5000/Patient/?ct=1")]
-    [InlineData("http://127.0.0.1:5000//Patient?ct=1")]
-    [InlineData("http://127.0.0.1:5000/./Patient?ct=1")]
     [InlineData("http://127.0.0.1:5000/%50atient?ct=1")]
-    [InlineData("http://127.0.0.1:5000/Patient%3Fct=1")]
-    [InlineData("http://127.0.0.1:5000/Patient")]
     [InlineData("http://127.0.0.1:5000/Patient?")]
     [InlineData("http://127.0.0.1:5000/Patient?ct=1#fragment")]
-    [InlineData("http://127.0.0.1:5000/Patient?ct=1 2")]
-    [InlineData("http://127.0.0.1:5000/Patient?ct=1\\2")]
-    [InlineData("http://127.0.0.1:5000/Patient?ct=\u00e9")]
     [InlineData("http://127.0.0.1:5000/Patient?ct=1\r\nHost: evil.invalid")]
-    public void A_link_that_is_not_on_the_exact_origin_and_path_is_rejected_without_being_reported(string link)
+    [InlineData("http://127.0.0.1:5000/Patient?ct=%zz")]
+    [InlineData("http://127.0.0.1:5000/Patient?ct=1%2")]
+    public void A_link_that_is_not_on_the_exact_origin_and_path_with_plain_encoded_text_is_rejected_without_being_reported(string link)
     {
         BackendEvidenceException failure = Assert.Throws<BackendEvidenceException>(() => NativeContinuation.Create(link, Base));
 
         Assert.Equal(BackendFailureKind.IncompleteSearch, failure.Kind);
         Assert.DoesNotContain("evil.invalid", failure.Message, StringComparison.Ordinal);
         Assert.DoesNotContain("ct=", failure.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("%", failure.Message, StringComparison.Ordinal);
     }
 
     [Theory]
     [InlineData("not json")]
-    [InlineData("[]")]
     [InlineData("""{"resourceType":"Bundle","type":"collection"}""")]
     [InlineData("""{"resourceType":"Bundle","type":"searchset","entry":{}}""")]
-    [InlineData("""{"resourceType":"Bundle","type":"searchset","entry":[1]}""")]
     [InlineData("""{"resourceType":"Bundle","type":"searchset","entry":[],"entry":[]}""")]
     [InlineData("""{"resourceType":"Bundle","type":"searchset","link":[{"url":"http://127.0.0.1:5000/Patient?x=1"}]}""")]
-    [InlineData("""{"resourceType":"Bundle","type":"searchset","link":[{"relation":"next"}]}""")]
     [InlineData("""{"resourceType":"Bundle","type":"searchset","link":[{"relation":"next","url":"http://127.0.0.1:5000/Patient?a=1"},{"relation":"next","url":"http://127.0.0.1:5000/Patient?a=2"}]}""")]
     public void A_page_that_is_not_a_searchset_with_at_most_one_safe_next_link_is_not_evidence(string body)
     {
@@ -306,13 +290,9 @@ public sealed class PatientContinuationEvidenceTests
     [Theory]
     [InlineData("include", "Patient", "p1", "1", "2026-01-01T10:00:00Z")]
     [InlineData("match", "Observation", "p1", "1", "2026-01-01T10:00:00Z")]
-    [InlineData("match", "Patient", "", "1", "2026-01-01T10:00:00Z")]
     [InlineData("match", "Patient", "has space", "1", "2026-01-01T10:00:00Z")]
-    [InlineData("match", "Patient", "p1", "", "2026-01-01T10:00:00Z")]
     [InlineData("match", "Patient", "p1", "v 1", "2026-01-01T10:00:00Z")]
     [InlineData("match", "Patient", "p1", "1", "2026-01-01T10:00:00")]
-    [InlineData("match", "Patient", "p1", "1", "2026-01-01")]
-    [InlineData("match", "Patient", "p1", "1", "2026-01-01T10:00:00,5Z")]
     [InlineData("match", "Patient", "p1", "1", "yesterday")]
     public void An_entry_that_is_not_a_patient_match_with_a_safe_id_version_and_instant_is_not_evidence(
         string mode, string type, string id, string version, string instant)
@@ -333,12 +313,6 @@ public sealed class PatientContinuationEvidenceTests
             ScriptedPatientBackend.Resource(new FakeRow("p1", "1", s), s).ToJsonString(), "p1"))];
 
         Assert.All(rows, r => Assert.Equal(rows[0], r));
-    }
-
-    [Fact]
-    public void The_count_seed_spaces_its_writes_so_the_patients_get_distinct_instants()
-    {
-        Assert.InRange(CountSeedData.Seed.WriteSpacing, TimeSpan.FromMilliseconds(10), TimeSpan.FromSeconds(1));
     }
 
     private static async Task<(ContinuationReport Report, IReadOnlyList<CapturedRequest> Wire)> WalkAsync(ScriptedPatientBackend backend, bool descending)

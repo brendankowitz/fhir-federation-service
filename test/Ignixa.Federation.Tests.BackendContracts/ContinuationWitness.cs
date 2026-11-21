@@ -18,8 +18,9 @@ internal static class ContinuationWitness
 
     /// <summary>
     /// Sends one start search, then at most two redemptions of each distinct link per page level, which is
-    /// 15 searches for three Patients, after one direct read per reserved Patient. A mismatch is a failed
-    /// <see cref="ContinuationReport"/>; a response that cannot be accounted for, a tie between oracle
+    /// 15 searches for three Patients, after one direct read per reserved Patient. A mismatch, or a next link
+    /// reissued for an earlier position, is a failed <see cref="ContinuationReport"/> and stops further requests;
+    /// a response that cannot be accounted for, a tie between oracle
     /// instants, or an exhausted time budget is a <see cref="BackendEvidenceException"/>.
     /// </summary>
     /// <exception cref="BackendEvidenceException">The walk could not produce trustworthy evidence.</exception>
@@ -73,6 +74,7 @@ internal static class ContinuationWitness
         }
 
         List<NativeContinuation> links = start.Next is { } first ? [first] : [];
+        var issued = new HashSet<string>(links.Select(link => link.Query), StringComparer.Ordinal);
         for (int position = 1; position <= expected.Length && links.Count > 0; position++)
         {
             List<NativeContinuation> successors = [];
@@ -80,15 +82,24 @@ internal static class ContinuationWitness
             {
                 for (int redemption = 1; redemption <= RedemptionsPerLink; redemption++)
                 {
+                    string label = $"continuation redemption {redemption} of the link after row {position}";
                     ContinuationPage page = await client.RedeemAsync(method, link, cancellationToken);
                     searches++;
-                    if (Check(page, position, $"continuation redemption {redemption} of the link after row {position}", expected) is { } failure)
+                    if (Check(page, position, label, expected) is { } failure)
                     {
                         return new ContinuationReport(false, $"{oracleText} {failure}.");
                     }
 
+                    // The same link may come back from the redemptions of one frontier, but a link issued for an
+                    // earlier position would be redeemed past its two replays, and a backend that advances state
+                    // per redemption could then pass as a stable cursor.
                     if (page.Next is { } next && !successors.Any(known => string.Equals(known.Query, next.Query, StringComparison.Ordinal)))
                     {
+                        if (!issued.Add(next.Query))
+                        {
+                            return new ContinuationReport(false, $"{oracleText} {label}: the next link repeats a link already issued for an earlier row.");
+                        }
+
                         successors.Add(next);
                     }
                 }
