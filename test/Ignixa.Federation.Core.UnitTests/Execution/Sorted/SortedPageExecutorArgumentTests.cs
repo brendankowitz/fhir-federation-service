@@ -108,13 +108,9 @@ public sealed class SortedPageExecutorArgumentTests
     {
         var client = new FakeShardClient();
         SortedPageExecutor executor = SortedFixture.Executor(client, Fixture.Registry(4, 2));
-        ShardSearchRequest[] streams =
-            [SortedFixture.Stream(0), SortedFixture.Stream(1), SortedFixture.Stream(2, method: ShardSearchMethod.PostSearch)];
-        SortedStreamContinuation s0 = SortedStreamContinuation.AtSearch(SortedFixture.Stream(0, pageSize: 13), SortedFixture.Anchor(0, "a", 1));
-        SortedStreamContinuation s1 = SortedStreamContinuation.AtCursor(
-            Fixture.Cursor(1, "p1"), SortedFixture.Anchor(1, "b", 2), new CursorCycleState(1UL, 2, 0), null);
-        SortedStreamContinuation s2 = SortedStreamContinuation.AtCursor(
-            Fixture.Cursor(2, "p1", NextLinkRedemption.RepostToSearch), null, new CursorCycleState(1UL, 2, 0), null);
+        ShardSearchRequest[] streams = PlanStreams();
+        SortedStreamContinuation[] owners = PlanOwners();
+        (SortedStreamContinuation s0, SortedStreamContinuation s1, SortedStreamContinuation s2) = (owners[0], owners[1], owners[2]);
         SortedContinuation resumeFrom = foreign switch
         {
             "type" => new(Fixture.Observation, LastUpdatedSort.Ascending, 5, [
@@ -154,4 +150,33 @@ public sealed class SortedPageExecutorArgumentTests
         error.ParamName.ShouldBe("resumeFrom");
         client.Calls.ShouldBeEmpty();
     }
+
+    [Fact]
+    public async Task ExecuteAsync_AcceptsASnapshotOfItsOwnPlan_FromStructurallyEqualRequests()
+    {
+        var client = new FakeShardClient();
+        client.OnSearch(0, Fixture.Page(null, SortedFixture.Entry(0, "a", 1), SortedFixture.Entry(0, "c", 3)));
+        client.OnContinue(Fixture.Cursor(1, "p1"), Fixture.Page(null, SortedFixture.Entry(1, "b", 2), SortedFixture.Entry(1, "d", 4)));
+        client.OnContinue(Fixture.Cursor(2, "p1", NextLinkRedemption.RepostToSearch), Fixture.Page(null, SortedFixture.Entry(2, "e", 5)));
+        SortedPageExecutor executor = SortedFixture.Executor(client, Fixture.Registry(4, 2));
+
+        SortedPage page = await executor.ExecuteAsync(
+            PlanStreams(), LastUpdatedSort.Ascending, 5, new SortedContinuation(Fixture.Patient, LastUpdatedSort.Ascending, 5, PlanOwners()), 10, Token);
+
+        page.Ids().ShouldBe(["s0/c", "s1/d", "s2/e"]);
+        client.Calls.Select(c => c.ToString()).ShouldBe(["search s0 count=13", "continue s1", "continue s2"]);
+    }
+
+    /// <summary>The plan the snapshot tests redeem against: s2 is posted and accepts at most 2 entries a page.</summary>
+    private static ShardSearchRequest[] PlanStreams() =>
+        [SortedFixture.Stream(0), SortedFixture.Stream(1), SortedFixture.Stream(2, method: ShardSearchMethod.PostSearch)];
+
+    /// <summary>A well-formed checkpoint of every <see cref="PlanStreams"/> owner, each built apart from the plan.</summary>
+    private static SortedStreamContinuation[] PlanOwners() =>
+    [
+        SortedStreamContinuation.AtSearch(SortedFixture.Stream(0, pageSize: 13), SortedFixture.Anchor(0, "a", 1)),
+        SortedStreamContinuation.AtCursor(Fixture.Cursor(1, "p1"), SortedFixture.Anchor(1, "b", 2), new CursorCycleState(1UL, 2, 0), null),
+        SortedStreamContinuation.AtCursor(
+            Fixture.Cursor(2, "p1", NextLinkRedemption.RepostToSearch), null, new CursorCycleState(1UL, 2, 0), null),
+    ];
 }

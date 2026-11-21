@@ -330,6 +330,61 @@ public sealed class SortedPageExecutorReplayTests
     }
 
     [Fact]
+    public async Task Redeem_ASnapshotRebuiltFromItsPublicFields_OnAFreshExecutor_ContinuesIdentically()
+    {
+        ShardSearchRequest[] streams = SortedFixture.Streams(LastUpdatedSort.Ascending, 1, 2, 0);
+        List<SortedPage> pages = await SortedFixture.Executor(Scripted(), Fixture.Registry(3)).ReadAllAsync(streams, LastUpdatedSort.Ascending, 2);
+
+        for (int i = 0; i + 1 < pages.Count; i++)
+        {
+            SortedPage rebuilt = await SortedFixture.Executor(Scripted(), Fixture.Registry(3))
+                .ExecuteAsync(streams, LastUpdatedSort.Ascending, 2, Rebuild(pages[i].Next!), 10, Token);
+
+            rebuilt.Ids().ShouldBe(pages[i + 1].Ids());
+            (rebuilt.Next?.Describe()).ShouldBe(pages[i + 1].Next?.Describe());
+        }
+
+        string[] shapes = [.. pages.SkipLast(1).SelectMany(p => p.Next!.Describe()).Select(d => d.Split(' ')[1]).Distinct()];
+        shapes.ShouldBe(["cursor", "search", "end"], ignoreOrder: true);
+
+        static FakeShardClient Scripted()
+        {
+            var client = new FakeShardClient();
+            client.Chain(0, [], [SortedFixture.Entry(0, "a", 1), SortedFixture.Entry(0, "b", 4)], [SortedFixture.Entry(0, "c", 7)]);
+            client.Chain(1, [SortedFixture.Entry(1, "d", 2)], [SortedFixture.Entry(1, "e", 4), SortedFixture.Entry(1, "f", 9)]);
+            client.Chain(2, [SortedFixture.Entry(2, "g", 3), SortedFixture.Entry(2, "h", 5), SortedFixture.Entry(2, "i", 6)]);
+            return client;
+        }
+    }
+
+    /// <summary>Rebuilds a snapshot as a token codec would: new instances of every listed field, nothing else.</summary>
+    private static SortedContinuation Rebuild(SortedContinuation saved) =>
+        new(saved.Type, saved.Direction, saved.PageSize, [.. saved.Streams.Select(Rebuild)]);
+
+    private static SortedStreamContinuation Rebuild(SortedStreamContinuation saved)
+    {
+        SortedAnchor? anchor = saved.LastEmitted is { } emitted ? new SortedAnchor(emitted.LastUpdated, emitted.Key) : null;
+        if (saved.IsExhausted)
+        {
+            return SortedStreamContinuation.AtEnd(saved.Shard, anchor);
+        }
+
+        if (saved.Search is { } search)
+        {
+            return SortedStreamContinuation.AtSearch(
+                new ShardSearchRequest(search.Shard, search.Type, [.. search.Parameters], search.PageSize, search.Method), anchor);
+        }
+
+        ShardCursor cursor = saved.Cursor!;
+        CursorCycleState cycle = saved.CycleState;
+        return SortedStreamContinuation.AtCursor(
+            new ShardCursor(cursor.Shard, cursor.Type, cursor.Target, cursor.Redemption),
+            anchor,
+            new CursorCycleState(cycle.SavedFingerprint, cycle.Power, cycle.Steps),
+            saved.PreviousPageLastUpdated);
+    }
+
+    [Fact]
     public async Task FetchedButUnemittedSuccessor_LeavesTheCursorCheckpointAtItsInputCycleState()
     {
         var client = new FakeShardClient();
