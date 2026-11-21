@@ -1,5 +1,6 @@
 using System.Collections.Frozen;
 using System.Diagnostics.CodeAnalysis;
+using System.Net;
 using System.Security.Claims;
 using System.Text;
 using Ignixa.Federation.Api.Authentication;
@@ -10,6 +11,7 @@ using Ignixa.Federation.Api.Responses;
 using Ignixa.Federation.Core.Configuration;
 using Ignixa.Federation.Core.Execution;
 using Ignixa.Federation.Core.Execution.Counts;
+using Ignixa.Federation.Core.Execution.ReverseChains;
 using Ignixa.Federation.Core.Identity;
 using Ignixa.Federation.Core.Search;
 using Ignixa.Federation.Core.Shards;
@@ -27,9 +29,9 @@ namespace Ignixa.Federation.Api.Search;
 /// </summary>
 /// <remarks>
 /// <para>
-/// <b>Scope.</b> Only plain predicates over every shard, unsorted: a page without a total, or a count-only search
-/// with exact shape proof and an explicit dialect for each shard. Admitted chains, includes, sort and paged totals
-/// are not executed.
+/// <b>Scope.</b> Unsorted pages without a total support ordinary predicates and certified distributed reverse chains.
+/// Ordinary count-only searches require exact shape proof and an explicit dialect for each shard. Other chains,
+/// includes, sort and paged totals are not executed.
 /// </para>
 /// <para>
 /// <b>Continuations.</b> A token carries the stored original raw query and the executor's snapshot. Redemption
@@ -38,7 +40,9 @@ namespace Ignixa.Federation.Api.Search;
 /// bytes or an inconsistent dependency manifest are 400, all before any shard call. An anchor found missing during
 /// replay is 410 only while the request budget is live. Each admitted predicate pins its resolved definition's revision
 /// (<see cref="ResolvedDefinitionRevisions.GetResolvedDefinitionRevision"/>), independent of the discovery projection;
-/// only those definitions are compared. A staged page with an already expired next link is 410 with no Bundle.
+/// only those definitions are compared. Reverse-chain continuations also pin the witness definitions and all discovery
+/// shards, recheck source-type permission, and replay frozen owner streams without repeating witness discovery.
+/// A staged page with an already expired next link is 410 with no Bundle.
 /// A next link that would not fit this server's own query or request-line
 /// limits, or an inline token, is 503, never a truncated or partial page.
 /// </para>
@@ -281,7 +285,7 @@ internal sealed class PrimarySearch
             return query.Occurrences.Count > 1 ? SearchOutcome.Invalid("A continuation token must be the only parameter.")
                 : ct.Value.Length == 0 ? SearchOutcome.Invalid("The continuation is not valid.")
                 : post ? SearchOutcome.Invalid("A continuation is followed with GET, not POST.")
-                : await ContinueAsync(type, binding, ct.Raw.Value, budget);
+                : await ContinueAsync(type, access, binding, ct.Raw.Value, budget);
         }
 
         SearchPlanResult planned = _planner.Plan(type, query);
@@ -292,18 +296,31 @@ internal sealed class PrimarySearch
 
         // Without a ct occurrence the planner always returns a plan.
         QueryPlan plan = planned.Plan!;
+        ResourceType[] sources = ReverseSources(plan);
+        if (!sources.All(access.CanRead))
+        {
+            return ReverseDenied();
+        }
+
         if (plan.CountOnly && plan.Occurrences.All(o => (o.Kind, o.Action) is
             (OccurrenceKind.Control, OccurrenceAction.Remove) or (OccurrenceKind.Predicate, OccurrenceAction.Keep)))
         {
             return await ExecuteCountAsync(plan, post, raw, budget);
         }
 
-        if (!TryPrepare(type, post, raw, plan, out PreparedSearch? prepared))
+        if (!TryPrepare(post, raw, plan, sources.Length != 0, out PreparedSearch? prepared))
         {
-            return SearchOutcome.NotSupported(StatusCodes.Status501NotImplemented, "The search is valid but this host does not yet execute it.");
+            return UnsupportedShape();
         }
 
-        return await ExecuteAsync(type, binding, prepared, predecessor: null, resumeFrom: null, budget);
+        if (sources.Length == 0)
+        {
+            return await ExecuteAsync(type, binding, prepared, predecessor: null, resumeFrom: null, budget);
+        }
+
+        return _countDialects is { } dialects
+            ? await ExecuteReverseAsync(plan, sources, binding, prepared, dialects, budget)
+            : UnsupportedShape();
     }
 
     private static IResult Rejected(SearchFailure failure) =>
@@ -363,7 +380,48 @@ internal sealed class PrimarySearch
         return SearchsetResponse.Create(_registry, SelfLink(plan.Type, raw), [], [], [], total: total);
     }
 
-    private async Task<IResult> ContinueAsync(ResourceType type, ContinuationBinding binding, string token, RequestBudget budget)
+    private async Task<IResult> ExecuteReverseAsync(QueryPlan plan, ResourceType[] sources, ContinuationBinding binding,
+        PreparedSearch search, FrozenDictionary<ShardId, CountDialect> dialects, RequestBudget budget)
+    {
+        budget.Checkpoint();
+        IShardClient client = _clients.CreateClient(_capabilities, budget);
+        var counts = new FederatedCountExecutor(client, _capabilities, dialects, _limits.MaxParallelBackendCalls);
+        var resolver = new ReverseChainResolver(client, _capabilities, counts, _clients.FitsSearchRequest,
+            _limits.MaxChainKeys, _limits.MaxChainSourceRows, _limits.MaxParallelBackendCalls, _timeouts.ChainSubquery);
+        var authorizedTypes = new HashSet<ResourceType>(sources) { plan.Type };
+        ReverseChainResolution resolved;
+        try
+        {
+            resolved = await resolver.ResolveAsync(plan, authorizedTypes, FetchAllowance, budget.Token);
+        }
+        catch (ReverseChainRefusedException ex)
+        {
+            return ex.Reason switch
+            {
+                ReverseChainRefusal.TooCostly => SearchOutcome.TooCostly(),
+                ReverseChainRefusal.NotCertified => UnsupportedShape(),
+                ReverseChainRefusal.UnauthorizedType => ReverseDenied(),
+                _ => throw new InvalidOperationException("Unhandled reverse-chain refusal."),
+            };
+        }
+        catch (TimeoutException)
+        {
+            return SearchOutcome.TimedOut();
+        }
+
+        budget.Checkpoint();
+        if (resolved.Targets.Count == 0)
+        {
+            return SearchsetResponse.Create(_registry, SelfLink(plan.Type, search.RawQuery), [], [], []);
+        }
+
+        return await ExecuteAsync(plan.Type, binding,
+            search with { Streams = [.. resolved.Targets.Select(t => t.Request(search.PageSize))] },
+            predecessor: null, resumeFrom: null, budget, client,
+            (int)Math.Max(0, FetchAllowance - Math.Max(budget.BackendCalls, resolved.Calls)));
+    }
+
+    private async Task<IResult> ContinueAsync(ResourceType type, CallerAccess access, ContinuationBinding binding, string token, RequestBudget budget)
     {
         // Only expiry, relevant registry or plan drift, and a missing anchor are 410; authentic bytes this host cannot
         // read (malformed, or another frame or snapshot version) are 400, per the snapshot codec's outcomes.
@@ -406,10 +464,40 @@ internal sealed class PrimarySearch
         // Replan the stored query on this host's view: it must admit exactly the saved shard requests. A stored query
         // is never itself a continuation, so anything but a plan is drift.
         if (!TryParse(frame.Post, frame.RawQuery, out SearchQuery? stored, out _)
-            || _planner.Plan(type, stored).Plan is not { } plan
-            || !TryPrepare(type, frame.Post, frame.RawQuery, plan, out PreparedSearch? prepared)
-            || prepared.PageSize != snapshot.PageSize
-            || !prepared.Streams.SequenceEqual(snapshot.Streams, SameRequest.Instance))
+            || _planner.Plan(type, stored).Plan is not { } plan)
+        {
+            return SearchOutcome.Gone();
+        }
+
+        ResourceType[] sources = ReverseSources(plan);
+        if (!sources.All(access.CanRead))
+        {
+            return ReverseDenied();
+        }
+
+        bool reverse = sources.Length != 0;
+        if (!TryPrepare(frame.Post, frame.RawQuery, plan, reverse, out PreparedSearch? prepared)
+            || prepared.PageSize != snapshot.PageSize)
+        {
+            return SearchOutcome.Gone();
+        }
+
+        if (reverse)
+        {
+            if (_countDialects is null)
+            {
+                return UnsupportedShape();
+            }
+
+            if (!ReverseChainReplay.TryRebuild(_registry, plan, snapshot, _limits.MaxChainKeys, out ShardSearchRequest[]? rebuilt))
+            {
+                return SearchOutcome.Gone();
+            }
+
+            prepared = prepared with { Streams = rebuilt };
+        }
+
+        if (!prepared.Streams.SequenceEqual(snapshot.Streams, SameRequest.Instance))
         {
             return SearchOutcome.Gone();
         }
@@ -432,12 +520,14 @@ internal sealed class PrimarySearch
         PreparedSearch search,
         RedeemedContinuation? predecessor,
         UnsortedContinuation? resumeFrom,
-        RequestBudget budget)
+        RequestBudget budget,
+        IShardClient? client = null,
+        int? remainingFetches = null)
     {
         // A request whose deadline passed while its body was read or planned never reaches a shard.
         budget.Checkpoint();
-        var executor = new UnsortedPageExecutor(_clients.CreateClient(_capabilities, budget), _registry, _limits.MaxParallelBackendCalls);
-        UnsortedPage page = await executor.ExecuteAsync(search.Streams, search.PageSize, resumeFrom, FetchAllowance, budget.Token);
+        var executor = new UnsortedPageExecutor(client ?? _clients.CreateClient(_capabilities, budget), _registry, _limits.MaxParallelBackendCalls);
+        UnsortedPage page = await executor.ExecuteAsync(search.Streams, search.PageSize, resumeFrom, remainingFetches ?? FetchAllowance, budget.Token);
 
         // A page that exceeded the cost budget is too costly, not a page with an unlinkable successor.
         budget.Checkpoint();
@@ -630,7 +720,7 @@ internal sealed class PrimarySearch
     }
 
     /// <summary>Accepts only what this host executes faithfully, and builds its shard requests.</summary>
-    private bool TryPrepare(ResourceType type, bool post, string raw, QueryPlan plan, [NotNullWhen(true)] out PreparedSearch? prepared)
+    private bool TryPrepare(bool post, string raw, QueryPlan plan, bool reverse, [NotNullWhen(true)] out PreparedSearch? prepared)
     {
         prepared = null;
         if (plan.PageSize is not { } pageSize || plan.IncludeTotal || plan.Sort is not null)
@@ -646,33 +736,58 @@ internal sealed class PrimarySearch
                 case (OccurrenceKind.Control, OccurrenceAction.Remove):
                     break;
                 case (OccurrenceKind.Predicate, OccurrenceAction.Keep):
-                    // Pin the definition the planner resolved; one this view cannot pin could not be checked on redemption.
-                    string code = occurrence.Occurrence.Key.Split(':', 2)[0];
-                    if (_capabilities.GetResolvedDefinitionRevision(type, code) is not { } revision)
+                    if (!Pin(plan.Type, occurrence.Occurrence.Key))
                     {
                         return false;
                     }
 
-                    revisions[DefinitionKey(type, code)] = revision;
+                    break;
+                case (OccurrenceKind.ReverseChain, OccurrenceAction.Replace):
+                    ReferenceHop hop = occurrence.Hop!;
+                    if (!Pin(hop.Path.Source, hop.Path.Code)
+                        || !Pin(hop.Path.Source, WebUtility.UrlDecode(hop.Terminal!.Key))
+                        || !Pin(plan.Type, "_id"))
+                    {
+                        return false;
+                    }
+
                     break;
                 default:
                     return false;
             }
         }
 
-        IReadOnlyList<ParameterOccurrence> parameters = plan.BuildBackendParameters(NoReplacements);
-        ShardSearchRequest[] streams =
-        [
-            .. _registry.Shards.Select(s => new ShardSearchRequest(
-                s.Id,
-                type,
-                parameters,
-                pageSize,
-                SearchMethod(post, s))),
-        ];
+        ShardSearchRequest[] streams = [];
+        if (!reverse)
+        {
+            IReadOnlyList<ParameterOccurrence> parameters = plan.BuildBackendParameters(NoReplacements);
+            streams = [.. _registry.Shards.Select(s => new ShardSearchRequest(s.Id, plan.Type, parameters, pageSize, SearchMethod(post, s)))];
+        }
+
         prepared = new PreparedSearch(post, raw, streams, pageSize, revisions);
         return true;
+
+        bool Pin(ResourceType type, string key)
+        {
+            string code = key.Split(':', 2)[0];
+            if (_capabilities.GetResolvedDefinitionRevision(type, code) is not { } revision)
+            {
+                return false;
+            }
+
+            revisions[DefinitionKey(type, code)] = revision;
+            return true;
+        }
     }
+
+    private static ResourceType[] ReverseSources(QueryPlan plan) =>
+        [.. plan.Occurrences.Where(o => o.Kind == OccurrenceKind.ReverseChain).Select(o => o.Hop!.Path.Source).Distinct()];
+
+    private static IResult ReverseDenied() =>
+        SearchOutcome.Error(StatusCodes.Status403Forbidden, "forbidden", "The caller may not search a resource type on the reverse-chain path.");
+
+    private static IResult UnsupportedShape() =>
+        SearchOutcome.NotSupported(StatusCodes.Status501NotImplemented, "The search is valid but this host does not yet execute it.");
 
     private int FetchAllowance => (int)Math.Min((long)_limits.BackendCallsPerShard * _registry.Shards.Count, int.MaxValue);
 
@@ -683,9 +798,8 @@ internal sealed class PrimarySearch
         new($"{_settings.PublicBase}/{type.Value}" + (raw.Length == 0 ? string.Empty : "?" + raw));
 
     private ContinuationDependencySet Dependencies(PreparedSearch search) =>
-        ContinuationDependencySet.Create(
-            search.Streams.Select(s => KeyValuePair.Create(s.Shard.Value, _shardRevisions[s.Shard.Value])),
-            search.DefinitionRevisions);
+        // Even shards without a primary stream contributed to reverse-chain discovery.
+        ContinuationDependencySet.Create(_shardRevisions, search.DefinitionRevisions);
 
     /// <summary>Whether two dependency sets are the same canonical set, compared by their canonical encodings.</summary>
     /// <remarks>Lengths are compared first, so the buffers are allocated only at the size of the carried, token-bounded set.</remarks>

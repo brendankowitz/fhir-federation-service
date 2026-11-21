@@ -76,12 +76,14 @@ internal static class SearchWorld
     /// </param>
     /// <param name="patient">Whether <c>Patient</c> is searchable at all.</param>
     /// <param name="withoutExactCountProof">The shard with no exact-count proof, if any.</param>
+    /// <param name="reverseChain">Whether to certify the fixture's Observation subject path.</param>
     public static SearchCapabilities Capabilities(
         bool patientName = true,
         IEnumerable<string>? exactCountShapes = null,
         bool organizationMissing = false,
         bool patient = true,
-        string? withoutExactCountProof = null)
+        string? withoutExactCountProof = null,
+        bool reverseChain = false)
     {
         List<SearchParameterSupport> patientParameters =
         [
@@ -98,9 +100,19 @@ internal static class SearchWorld
             patientParameters.Add(new("organization", SearchParamType.Reference, null));
         }
 
+        List<SearchParameterSupport> observationParameters = [new("_id", SearchParamType.Token, null), new("code", SearchParamType.Token, null)];
+        List<ReferencePathCertification> paths = [];
+        if (reverseChain)
+        {
+            observationParameters.Add(new("subject", SearchParamType.Reference, null));
+            paths.Add(new(new ReferencePath(ResourceType.Parse("Observation"), "subject", ResourceType.Parse("Patient")),
+                ReferencePathOperations.DistributedReverse | ReferencePathOperations.NativeReverse,
+                ReferenceSearchForms.None, ReferenceSearchForms.None));
+        }
+
         List<ResourceSearchSupport> resources =
         [
-            new(ResourceType.Parse("Observation"), [new("_id", SearchParamType.Token, null), new("code", SearchParamType.Token, null)], [], []),
+            new(ResourceType.Parse("Observation"), observationParameters, [], []),
         ];
         if (patient)
         {
@@ -111,7 +123,7 @@ internal static class SearchWorld
             [SearchParamType.String, SearchParamType.Token],
             [SearchParamType.String, SearchParamType.Token],
             countShapes,
-            []);
+            paths);
 
         return new SearchCapabilities(
             Registry,

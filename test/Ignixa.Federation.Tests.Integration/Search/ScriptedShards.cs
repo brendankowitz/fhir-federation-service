@@ -9,8 +9,8 @@ using Ignixa.Federation.Core.Shards;
 namespace Ignixa.Federation.Tests.Integration.Search;
 
 /// <summary>
-/// A scripted shard transport over the collision corpus. Each shard returns every seed resource of the searched type in
-/// file order, <c>_count</c> at a time, with opaque <c>FollowGet</c> cursors. Like a real transport it charges the
+/// A scripted shard transport over the collision corpus. Each shard returns the selected seeds in file order,
+/// <c>_count</c> at a time, with opaque <c>FollowGet</c> cursors. Like a real transport it charges the
 /// request budget before every send and for every body chunk it reads, and it records what it was asked.
 /// </summary>
 internal sealed class ScriptedShards : IShardClientFactory
@@ -59,6 +59,14 @@ internal sealed class ScriptedShards : IShardClientFactory
     /// <summary>Supplies a backend response for a count-only search, when scripted.</summary>
     public Func<ShardSearchRequest, ShardPage>? CountAnswer { get; set; }
 
+    public bool FilterGeneratedIds { get; set; }
+
+    public IReadOnlyDictionary<string, IReadOnlyList<SearchWorld.SeedResource>> Resources { get; set; } = SearchWorld.Resources;
+
+    public Func<ShardSearchRequest, bool>? RequestFits { get; set; }
+
+    public bool FitsSearchRequest(ShardSearchRequest request) => RequestFits?.Invoke(request) ?? true;
+
     public IShardClient CreateClient(SearchCapabilities view, RequestBudget budget)
     {
         Views.Enqueue(view);
@@ -83,6 +91,7 @@ internal sealed class ScriptedShards : IShardClientFactory
 
             ShardDescriptor shard = Shard(request.Shard);
             return Answered(Answer(shard, request.Type, 0, Math.Min(request.PageSize, script.PageSizeLimit),
+                script.FilterGeneratedIds ? request.Parameters.FirstOrDefault(p => p.Key == "_id")?.Value : null,
                 target => ShardCursor.Next(request, shard.Profile, target)));
         }
 
@@ -95,7 +104,8 @@ internal sealed class ScriptedShards : IShardClientFactory
                 .ToDictionary(p => p[0], p => p[1], StringComparer.Ordinal);
             int offset = int.Parse(query["_offset"], CultureInfo.InvariantCulture);
             int count = int.Parse(query["_count"], CultureInfo.InvariantCulture);
-            return Answered(Answer(Shard(cursor.Shard), cursor.Type, offset, count, target => new ShardCursor(cursor.Shard, cursor.Type, target, cursor.Redemption)));
+            return Answered(Answer(Shard(cursor.Shard), cursor.Type, offset, count, query.GetValueOrDefault("_id"),
+                target => new ShardCursor(cursor.Shard, cursor.Type, target, cursor.Redemption)));
         }
 
         private ShardPage Answered(ShardPage page)
@@ -136,9 +146,11 @@ internal sealed class ScriptedShards : IShardClientFactory
             }
         }
 
-        private ShardPage Answer(ShardDescriptor shard, ResourceType type, int offset, int count, Func<string, ShardCursor> cursor)
+        private ShardPage Answer(ShardDescriptor shard, ResourceType type, int offset, int count, string? ids, Func<string, ShardCursor> cursor)
         {
-            SearchWorld.SeedResource[] all = [.. SearchWorld.Resources[shard.Id.Value].Where(r => r.Type == type.Value)];
+            string[]? selected = ids is null ? null : Uri.UnescapeDataString(ids).Split(',');
+            SearchWorld.SeedResource[] all = [.. script.Resources[shard.Id.Value]
+                .Where(r => r.Type == type.Value && (selected is null || selected.Contains(r.Id, StringComparer.Ordinal)))];
             var entries = new List<ShardEntry>();
             foreach (SearchWorld.SeedResource resource in all.Skip(offset).Take(count))
             {
@@ -150,7 +162,8 @@ internal sealed class ScriptedShards : IShardClientFactory
 
             int end = offset + count;
             ShardCursor? next = end < all.Length
-                ? cursor($"{shard.BaseUrl}{type.Value}?_getpages=opaque-{shard.Id.Value}&_offset={end}&_count={count}")
+                ? cursor($"{shard.BaseUrl}{type.Value}?_getpages=opaque-{shard.Id.Value}&_offset={end}&_count={count}"
+                    + (ids is null ? string.Empty : $"&_id={ids}"))
                 : null;
             return new ShardPage(entries, next, null);
         }

@@ -24,6 +24,9 @@ namespace Ignixa.Federation.Api.Search;
 /// </remarks>
 internal interface IShardClientFactory
 {
+    /// <summary>Checks whether the request fits its shard and method's transport limits, without I/O or budget charges.</summary>
+    bool FitsSearchRequest(ShardSearchRequest request);
+
     /// <summary>Creates the client for one request.</summary>
     /// <param name="view">The capabilities, and so the registry, the request was planned against.</param>
     /// <param name="budget">The request's budget; its token is also passed to every call.</param>
