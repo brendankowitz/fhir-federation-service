@@ -325,6 +325,37 @@ public sealed class PrimarySearchReverseCountTests
         await host.Shards.ObservedCancellation.Task.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
     }
 
+    [Fact]
+    public async Task CallerCancellationPropagatesToTheOwnerCountCalls()
+    {
+        // Discovery answers; only the owner count calls are parked, so cancellation can only reach the count phase's calls.
+        using SearchHost host = Start(configure: s => s.Shards.ParkCounts = true);
+        using var caller = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        caller.CancelAfter(TimeSpan.FromSeconds(30));
+        try
+        {
+            Task<SearchResult> search = host.GetCancellableAsync("/Patient?" + Has + "&_count=0", host.Token(), caller.Token);
+            await AssertSignalledAsync(host.Shards.Hanging.Task, "an owner count call never parked");
+            host.Shards.Calls.Count(c => c.Parameters == "code=oracle-code").ShouldBe(2);
+            host.Shards.Calls.Count(c => c.Method is not null && c.PageSize == 0).ShouldBeGreaterThan(0);
+            await caller.CancelAsync();
+
+            // Observe the shard first, on a bounded wait: the in-memory client answers only once the server has finished.
+            await AssertSignalledAsync(host.Shards.ObservedCancellation.Task, "caller cancellation never reached an owner count call");
+            await Should.ThrowAsync<OperationCanceledException>(search);
+        }
+        finally
+        {
+            host.Shards.ReleaseParked();
+        }
+    }
+
+    private static async Task AssertSignalledAsync(Task signal, string because)
+    {
+        Task first = await Task.WhenAny(signal, Task.Delay(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken));
+        first.ShouldBeSameAs(signal, because);
+    }
+
     private static void AssertCount(SearchResult result, int total)
     {
         result.StatusCode.ShouldBe(HttpStatusCode.OK);

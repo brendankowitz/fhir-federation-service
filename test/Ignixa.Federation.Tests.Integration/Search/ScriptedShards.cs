@@ -16,6 +16,7 @@ namespace Ignixa.Federation.Tests.Integration.Search;
 internal sealed class ScriptedShards : IShardClientFactory
 {
     private readonly ConcurrentQueue<ShardCall> _calls = new();
+    private readonly TaskCompletionSource _released = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     /// <summary>Gets every call that reached the transport, in arrival order.</summary>
     public IReadOnlyList<ShardCall> Calls => [.. _calls];
@@ -43,6 +44,15 @@ internal sealed class ScriptedShards : IShardClientFactory
 
     /// <summary>Gets or sets a value indicating whether calls wait for cancellation instead of answering.</summary>
     public bool Hang { get; set; }
+
+    /// <summary>
+    /// Gets or sets a value indicating whether count-only searches (a search with page size zero, not a cursor follow) wait after
+    /// being charged, until cancelled or <see cref="ReleaseParked"/>. Every other call, such as discovery, answers normally.
+    /// </summary>
+    public bool ParkCounts { get; set; }
+
+    /// <summary>Lets every parked count call continue, so a test can always tear its host down. Safe to call more than once.</summary>
+    public void ReleaseParked() => _released.TrySetResult();
 
     /// <summary>Gets a signal set when a hanging call has started waiting.</summary>
     public TaskCompletionSource Hanging { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -83,7 +93,7 @@ internal sealed class ScriptedShards : IShardClientFactory
                 string.Join('&', request.Parameters.Select(p => $"{p.Key}={p.Value}")),
                 request.PageSize,
                 Target: null));
-            await SendAsync(request.Shard, cancellationToken);
+            await SendAsync(request.Shard, cancellationToken, parkable: request.PageSize == 0);
             if (request.PageSize == 0 && script.CountAnswer is { } count)
             {
                 return Answered(count(request));
@@ -117,7 +127,7 @@ internal sealed class ScriptedShards : IShardClientFactory
         private ShardDescriptor Shard(ShardId id) =>
             registry.TryGetById(id, out ShardDescriptor? shard) ? shard : throw new InvalidOperationException("Unknown shard.");
 
-        private async Task SendAsync(ShardId shard, CancellationToken cancellationToken)
+        private async Task SendAsync(ShardId shard, CancellationToken cancellationToken, bool parkable = false)
         {
             for (int i = 0; i < script.SendsPerCall; i++)
             {
@@ -125,12 +135,12 @@ internal sealed class ScriptedShards : IShardClientFactory
             }
 
             script.DuringCall?.Invoke();
-            if (script.Hang)
+            if (script.Hang || (parkable && script.ParkCounts))
             {
                 script.Hanging.TrySetResult();
                 try
                 {
-                    await Task.Delay(Timeout.Infinite, cancellationToken);
+                    await (script.Hang ? Task.Delay(Timeout.Infinite, cancellationToken) : script._released.Task.WaitAsync(cancellationToken));
                 }
                 catch (OperationCanceledException)
                 {
