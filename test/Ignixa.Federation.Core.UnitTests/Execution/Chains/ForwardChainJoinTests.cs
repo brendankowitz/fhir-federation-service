@@ -181,6 +181,34 @@ public sealed class ForwardChainJoinTests
         ready.Streams.ShouldAllBe(s => s.Parameters.Take(2).SequenceEqual(new[] { new ParameterOccurrence("code", first), new ParameterOccurrence("code", second) }));
     }
 
+    // Form decoding reads '+' as a space and '%2B' as a literal plus, in one pass. The stored codes differ only there.
+    [Theory]
+    [InlineData("a+b", "a%20b", "east/o1")]
+    [InlineData("a%20b", "a+b", "east/o1")]
+    [InlineData("a%2Bb", "a%2Bb", "east/o2")]
+    public async Task EqualFormDecodedCodes_ReachTheBackendAsWritten_AndMatchOnlyTheirDecodedValue(string first, string second, string expectedId)
+    {
+        ShardRegistry registry = Registry();
+        var backend = new ChainBackend(registry)
+            .Patient(East, "orchid", "Orchid")
+            .Observation(East, "o1", "Patient/orchid", code: "a b")
+            .Observation(East, "o2", "Patient/orchid", code: "a+b");
+
+        var ready = (ForwardChainReady)await Resolver(backend.Client, registry)
+            .ResolveAsync(Plan(registry, $"code={first}&{OrchidChain}&code={second}"), Token);
+        (await ready.ExecuteAsync(backend.Client, registry, Token)).Ids().ShouldBe([expectedId]);
+
+        ShardSearchRequest primary = backend.Client.Calls.Select(c => c.Search).OfType<ShardSearchRequest>()
+            .Single(s => s.Type == Observation && s.Shard == East);
+        primary.Method.ShouldBe(ShardSearchMethod.Get);
+        primary.Parameters.ShouldBe(
+        [
+            new ParameterOccurrence("code", first),
+            new ParameterOccurrence("subject", "Patient%2Forchid"),
+            new ParameterOccurrence("code", second),
+        ]);
+    }
+
     [Fact]
     public async Task PassthroughChain_IsSentRawWithoutWitnessSearches()
     {

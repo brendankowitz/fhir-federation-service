@@ -1,6 +1,7 @@
 using Ignixa.Federation.Core.Identity;
 using Ignixa.Federation.Core.Search;
 using Ignixa.Federation.Core.Shards;
+using System.Net;
 
 namespace Ignixa.Federation.Core.UnitTests.Execution.Chains;
 
@@ -72,8 +73,9 @@ internal sealed class ChainBackend
         IEnumerable<Stored> matches = _stored.Where(s => s.Key.Shard == request.Shard && s.Key.Type == request.Type);
         foreach (ParameterOccurrence parameter in request.Parameters)
         {
-            string key = Uri.UnescapeDataString(parameter.Key);
-            string value = Uri.UnescapeDataString(parameter.Value);
+            // One form decode, as a backend reads a query: '+' is a space and '%2B' a literal plus.
+            string key = WebUtility.UrlDecode(parameter.Key);
+            string value = WebUtility.UrlDecode(parameter.Value);
             matches = key switch
             {
                 "_elements" when value == "id" => matches,
