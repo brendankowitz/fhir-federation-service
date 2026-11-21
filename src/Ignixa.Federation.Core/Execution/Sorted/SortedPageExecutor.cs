@@ -1,3 +1,4 @@
+using Ignixa.Federation.Core.Identity;
 using Ignixa.Federation.Core.Search;
 using Ignixa.Federation.Core.Shards;
 
@@ -49,7 +50,9 @@ public sealed class SortedPageExecutor
     /// <exception cref="ArgumentNullException"><paramref name="streams"/> is <see langword="null"/>.</exception>
     /// <exception cref="ArgumentException">
     /// <paramref name="streams"/> is empty, holds <see langword="null"/>, a shard the registry does not know, a shard twice
-    /// or more than one resource type.
+    /// or more than one resource type; or <paramref name="resumeFrom"/> belongs to another search: another type,
+    /// direction, page size, owner list or order, a saved request that is not the owner's request at a count it accepts,
+    /// or a saved cursor redeemed another way.
     /// </exception>
     /// <exception cref="NotSupportedException"><paramref name="resumeFrom"/> is set; resuming is not implemented yet.</exception>
     /// <exception cref="ArgumentOutOfRangeException">
@@ -78,6 +81,11 @@ public sealed class SortedPageExecutor
 
         ArgumentOutOfRangeException.ThrowIfLessThan(pageSize, 1);
         ArgumentOutOfRangeException.ThrowIfNegative(fetchBudget);
+        if (resumeFrom is not null)
+        {
+            CheckPlan(resumeFrom, ordered, streams[0].Type, direction, pageSize);
+        }
+
         cancellationToken.ThrowIfCancellationRequested();
         if (resumeFrom is not null)
         {
@@ -171,6 +179,53 @@ public sealed class SortedPageExecutor
             int byInstant = sign * left.Instant.CompareTo(right.Instant);
             return byInstant != 0 ? byInstant : left.Ordinal.CompareTo(right.Ordinal);
         });
+    }
+
+    /// <summary>
+    /// Rejects a well-formed snapshot of another plan (design Q8): every owner, exhausted ones included, must be the
+    /// ordered plan's at the same index, a saved search must be this plan's request at a count the owner accepts, and a
+    /// saved cursor must be redeemed the way this plan's stream redeems one.
+    /// </summary>
+    private static void CheckPlan(
+        SortedContinuation resumeFrom,
+        ShardStream[] ordered,
+        ResourceType type,
+        LastUpdatedSort direction,
+        int pageSize)
+    {
+        if (resumeFrom.Type != type || resumeFrom.Direction != direction || resumeFrom.PageSize != pageSize
+            || resumeFrom.Streams.Count != ordered.Length)
+        {
+            throw new ArgumentException("The continuation belongs to another search.", nameof(resumeFrom));
+        }
+
+        for (int i = 0; i < ordered.Length; i++)
+        {
+            ShardStream stream = ordered[i];
+            SortedStreamContinuation saved = resumeFrom.Streams[i];
+            bool matches = saved.Shard == stream.Shard
+                && (saved.Search is not { } search || IsRequestOf(search, stream))
+                && (saved.Cursor is not { } cursor || cursor.Redemption == stream.Redemption);
+            if (!matches)
+            {
+                throw new ArgumentException("The continuation belongs to another search.", nameof(resumeFrom));
+            }
+        }
+    }
+
+    /// <summary>
+    /// Gets whether <paramref name="search"/> is <paramref name="stream"/>'s request at a count from 1 to the owner's
+    /// limit. The stream's first page at an unbounded count is its template clamped to that limit.
+    /// </summary>
+    private static bool IsRequestOf(ShardSearchRequest search, ShardStream stream)
+    {
+        ShardSearchRequest widest = stream.FirstPage(int.MaxValue);
+        return search.Shard == widest.Shard
+            && search.Type == widest.Type
+            && search.Method == widest.Method
+            && search.Parameters.SequenceEqual(widest.Parameters)
+            && search.PageSize >= 1
+            && search.PageSize <= widest.PageSize;
     }
 
     private ShardStream[] Order(IReadOnlyList<ShardSearchRequest> streams)

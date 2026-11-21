@@ -1,3 +1,4 @@
+using Ignixa.Federation.Core.Execution;
 using Ignixa.Federation.Core.Execution.Sorted;
 using Ignixa.Federation.Core.Search;
 using Ignixa.Federation.Core.Shards;
@@ -110,6 +111,65 @@ public sealed class SortedPageExecutorArgumentTests
         await Should.ThrowAsync<NotSupportedException>(
             () => executor.ExecuteAsync(streams, LastUpdatedSort.Ascending, 5, resumeFrom, 10, Token));
 
+        client.Calls.ShouldBeEmpty();
+    }
+
+    public static TheoryData<string> ForeignSnapshots =>
+    [
+        "type", "direction", "page size", "missing owner", "extra owner", "owner order", "search method",
+        "search parameter value", "search parameter order", "search count above the owner limit", "cursor redemption",
+    ];
+
+    [Theory]
+    [MemberData(nameof(ForeignSnapshots))]
+    public async Task ExecuteAsync_RejectsASnapshotOfAnotherPlan_BeforeAnyCall(string foreign)
+    {
+        var client = new FakeShardClient();
+        SortedPageExecutor executor = SortedFixture.Executor(client, Fixture.Registry(4, 2));
+        ShardSearchRequest[] streams =
+            [SortedFixture.Stream(0), SortedFixture.Stream(1), SortedFixture.Stream(2, method: ShardSearchMethod.PostSearch)];
+        SortedStreamContinuation s0 = SortedStreamContinuation.AtSearch(SortedFixture.Stream(0, pageSize: 13), SortedFixture.Anchor(0, "a", 1));
+        SortedStreamContinuation s1 = SortedStreamContinuation.AtCursor(
+            Fixture.Cursor(1, "p1"), SortedFixture.Anchor(1, "b", 2), new CursorCycleState(1UL, 2, 0), null);
+        SortedStreamContinuation s2 = SortedStreamContinuation.AtCursor(
+            Fixture.Cursor(2, "p1", NextLinkRedemption.RepostToSearch), null, new CursorCycleState(1UL, 2, 0), null);
+        SortedContinuation resumeFrom = foreign switch
+        {
+            "type" => new(Fixture.Observation, LastUpdatedSort.Ascending, 5, [
+                SortedStreamContinuation.AtSearch(SortedFixture.Stream(0, type: Fixture.Observation), null),
+                SortedStreamContinuation.AtEnd(Fixture.Shard(1), null),
+                SortedStreamContinuation.AtEnd(Fixture.Shard(2), null)]),
+            "direction" => new(Fixture.Patient, LastUpdatedSort.Descending, 5, [s0, s1, s2]),
+            "page size" => new(Fixture.Patient, LastUpdatedSort.Ascending, 6, [s0, s1, s2]),
+            "missing owner" => new(Fixture.Patient, LastUpdatedSort.Ascending, 5, [s0, s1]),
+            "extra owner" => new(Fixture.Patient, LastUpdatedSort.Ascending, 5, [s0, s1, s2, SortedStreamContinuation.AtEnd(Fixture.Shard(3), null)]),
+            "owner order" => new(Fixture.Patient, LastUpdatedSort.Ascending, 5, [s1, s0, s2]),
+            "search method" => new(Fixture.Patient, LastUpdatedSort.Ascending, 5, [
+                SortedStreamContinuation.AtSearch(SortedFixture.Stream(0, method: ShardSearchMethod.PostSearch), null), s1, s2]),
+            "search parameter value" => new(Fixture.Patient, LastUpdatedSort.Ascending, 5, [
+                SortedStreamContinuation.AtSearch(SortedFixture.Stream(0, LastUpdatedSort.Descending), null), s1, s2]),
+            "search parameter order" => new(Fixture.Patient, LastUpdatedSort.Ascending, 5, [
+                SortedStreamContinuation.AtSearch(
+                    new ShardSearchRequest(
+                        Fixture.Shard(0),
+                        Fixture.Patient,
+                        [SortedFixture.SortOccurrence(LastUpdatedSort.Ascending), new ParameterOccurrence("name", Fixture.SecretValue)],
+                        13,
+                        ShardSearchMethod.Get),
+                    null),
+                s1,
+                s2]),
+            "search count above the owner limit" => new(Fixture.Patient, LastUpdatedSort.Ascending, 5, [
+                s0, s1, SortedStreamContinuation.AtSearch(SortedFixture.Stream(2, method: ShardSearchMethod.PostSearch, pageSize: 3), null)]),
+            _ => new(Fixture.Patient, LastUpdatedSort.Ascending, 5, [
+                s0, s1, SortedStreamContinuation.AtCursor(Fixture.Cursor(2, "p1"), null, new CursorCycleState(1UL, 2, 0), null)]),
+        };
+
+        ArgumentException error = await Should.ThrowAsync<ArgumentException>(
+            () => executor.ExecuteAsync(streams, LastUpdatedSort.Ascending, 5, resumeFrom, 10, Token));
+
+        error.GetType().ShouldBe(typeof(ArgumentException));
+        error.ParamName.ShouldBe("resumeFrom");
         client.Calls.ShouldBeEmpty();
     }
 }
