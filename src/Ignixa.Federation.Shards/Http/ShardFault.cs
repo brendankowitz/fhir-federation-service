@@ -10,7 +10,7 @@ internal enum ShardFault
     /// <summary>
     /// Nothing is known about the backend: the exception was not made by <see cref="HttpShardClient"/> (a meter's or
     /// credential provider's own <see cref="ShardCallException"/>, say), or it was made before anything reached the backend
-    /// (a metadata exchange whose credential was unavailable). Never retried and never counted against the
+    /// (a startup probe whose credential was unavailable, for example). Never retried and never counted against the
     /// backend, but it is not proof of life either, so it cannot close the circuit from half open.
     /// </summary>
     None,

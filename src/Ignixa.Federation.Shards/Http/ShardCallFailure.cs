@@ -63,9 +63,9 @@ public enum ShardCallFailure
     RequestTooLarge,
 
     /// <summary>
-    /// The shard's credential could not be acquired, so the metadata request was never sent. Set only by
-    /// <see cref="HttpShardClient.GetCapabilitiesAsync"/>, where it keeps an operational credential outage local to one
-    /// shard's refresh. It is not a statement about the backend, and says nothing about why the credential was unavailable.
+    /// The shard's credential could not be acquired, so the request was never sent. Classified by metadata fetches and
+    /// startup probes so an operational outage stays local to the refresh or probe step. It says nothing about the backend
+    /// or why the credential was unavailable.
     /// </summary>
     CredentialUnavailable,
 }
