@@ -80,9 +80,72 @@ public sealed class SortedPageExecutor
             // silently restart the search from the first page.
             throw new NotSupportedException("Resuming a sorted search is not supported yet.");
         }
-        _ = (_client, _maxParallelFetches, ordered);
-        await Task.CompletedTask;
-        throw new NotImplementedException();
+
+        SortedStream[] owners = [.. ordered.Select(stream => new SortedStream(stream, stream.FirstPage(pageSize)))];
+        var matches = new List<ShardEntry>(pageSize);
+        var scheduler = new FetchScheduler(_client, fetchBudget, _maxParallelFetches, cancellationToken);
+        await using (scheduler)
+        {
+            await MergeAsync(owners, direction, pageSize, matches, scheduler);
+        }
+
+        SortedContinuation? next = owners.All(owner => owner.IsExhausted)
+            ? null
+            : new SortedContinuation(streams[0].Type, direction, pageSize, [.. owners.Select(owner => owner.Snapshot())]);
+        return new SortedPage(matches, next, scheduler.Started);
+    }
+
+    /// <summary>
+    /// Gives every owner a head or exhaustion proof, then repeatedly emits the head first in the total order and refills
+    /// only that owner, until the page is full or every owner is exhausted.
+    /// </summary>
+    private static async Task MergeAsync(
+        SortedStream[] owners,
+        LastUpdatedSort direction,
+        int pageSize,
+        List<ShardEntry> matches,
+        FetchScheduler scheduler)
+    {
+        foreach (SortedStream owner in owners)
+        {
+            await owner.FetchAsync(scheduler);
+        }
+
+        var heads = new PriorityQueue<SortedStream, (DateTimeOffset Instant, int Ordinal)>(EmissionOrder(direction));
+        foreach (SortedStream owner in owners)
+        {
+            Enqueue(heads, owner);
+        }
+
+        while (heads.TryDequeue(out SortedStream? winner, out _))
+        {
+            matches.Add(winner.Emit());
+            if (matches.Count == pageSize)
+            {
+                return;
+            }
+
+            Enqueue(heads, winner);
+        }
+    }
+
+    private static void Enqueue(PriorityQueue<SortedStream, (DateTimeOffset Instant, int Ordinal)> heads, SortedStream owner)
+    {
+        if (owner.Head is { } head)
+        {
+            heads.Enqueue(owner, (head.LastUpdated!.Value, owner.Ordinal));
+        }
+    }
+
+    /// <summary>Orders heads by instant in <paramref name="direction"/>, then ascending registry ordinal (design Q6).</summary>
+    private static Comparer<(DateTimeOffset Instant, int Ordinal)> EmissionOrder(LastUpdatedSort direction)
+    {
+        int sign = direction == LastUpdatedSort.Ascending ? 1 : -1;
+        return Comparer<(DateTimeOffset Instant, int Ordinal)>.Create((left, right) =>
+        {
+            int byInstant = sign * left.Instant.CompareTo(right.Instant);
+            return byInstant != 0 ? byInstant : left.Ordinal.CompareTo(right.Ordinal);
+        });
     }
 
     private ShardStream[] Order(IReadOnlyList<ShardSearchRequest> streams)

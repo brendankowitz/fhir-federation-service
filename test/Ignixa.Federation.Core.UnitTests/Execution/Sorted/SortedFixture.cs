@@ -1,4 +1,7 @@
+using System.Globalization;
 using System.Text;
+using System.Text.RegularExpressions;
+using Ignixa.Federation.Core.Execution;
 using Ignixa.Federation.Core.Execution.Sorted;
 using Ignixa.Federation.Core.Identity;
 using Ignixa.Federation.Core.Search;
@@ -69,4 +72,32 @@ internal static class SortedFixture
 
     /// <summary>Renders the page's matches as <c>shard/id</c>, in emission order.</summary>
     public static string[] Ids(this SortedPage page) => [.. page.Matches.Select(m => $"{m.Key.Shard}/{m.Key.Id}")];
+
+    /// <summary>
+    /// Projects a checkpoint as text: <c>s0 search count=3 a@1</c>, <c>s0 cursor p1 b@3 power=2 steps=0 preceding=1</c> or
+    /// <c>s1 end d@2</c>, where <c>id@n</c> is the anchor at <see cref="At"/>(n) and <c>-</c> means none.
+    /// </summary>
+    public static string Describe(this SortedStreamContinuation stream)
+    {
+        string anchor = stream.LastEmitted is { } emitted ? $"{emitted.Key.Id}@{Seconds(emitted.LastUpdated)}" : "-";
+        if (stream.IsExhausted)
+        {
+            return $"{stream.Shard} end {anchor}";
+        }
+
+        if (stream.Search is { } search)
+        {
+            return $"{stream.Shard} search count={search.PageSize} {anchor}";
+        }
+
+        string target = Regex.Match(stream.Cursor!.Target, "ct=([^&]+)").Groups[1].Value;
+        string preceding = stream.PreviousPageLastUpdated is { } instant ? Seconds(instant) : "-";
+        CursorCycleState cycle = stream.CycleState;
+        return $"{stream.Shard} cursor {target} {anchor} power={cycle.Power} steps={cycle.Steps} preceding={preceding}";
+    }
+
+    public static string[] Describe(this SortedContinuation continuation) => [.. continuation.Streams.Select(Describe)];
+
+    private static string Seconds(DateTimeOffset instant) =>
+        (instant - Epoch).TotalSeconds.ToString(CultureInfo.InvariantCulture);
 }
