@@ -74,6 +74,35 @@ internal static class SortedFixture
     }
 
     /// <summary>
+    /// Reads federation pages from the first, redeeming each <c>Next</c> with a budget of 10, until a page has none.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">More than <paramref name="maxPages"/> pages would be read.</exception>
+    public static async Task<List<SortedPage>> ReadAllAsync(
+        this SortedPageExecutor executor,
+        ShardSearchRequest[] streams,
+        LastUpdatedSort direction,
+        int pageSize,
+        int maxPages = 50)
+    {
+        var pages = new List<SortedPage>();
+        SortedContinuation? next = null;
+        do
+        {
+            if (pages.Count == maxPages)
+            {
+                throw new InvalidOperationException($"The chain did not end within {maxPages} pages.");
+            }
+
+            SortedPage page = await executor.ExecuteAsync(streams, direction, pageSize, next, 10, TestContext.Current.CancellationToken);
+            pages.Add(page);
+            next = page.Next;
+        }
+        while (next is not null);
+
+        return pages;
+    }
+
+    /// <summary>
     /// Scripts a chain of backend pages for one shard: its first search returns <paramref name="pages"/>[0], and each page
     /// links to the next with a cursor; the last page has no <c>next</c>.
     /// </summary>

@@ -175,6 +175,54 @@ public sealed class SortedPageExecutorReplayTests
     }
 
     [Fact]
+    public async Task Redeem_UnanchoredCursorAfterLeadingEmpties_ReplaysFromEntryZero_AndAnEndOwnerIsNotReplayed()
+    {
+        var client = new FakeShardClient();
+        client.Chain(0, [], [SortedFixture.Entry(0, "x", 5), SortedFixture.Entry(0, "y", 6)]);
+        client.Chain(1, [SortedFixture.Entry(1, "a", 1), SortedFixture.Entry(1, "b", 2), SortedFixture.Entry(1, "c", 3)]);
+        SortedPageExecutor executor = SortedFixture.Executor(client, Fixture.Registry(2));
+
+        List<SortedPage> pages = await executor.ReadAllAsync(SortedFixture.Streams(LastUpdatedSort.Ascending, 0, 1), LastUpdatedSort.Ascending, 2);
+
+        pages.Select(p => p.Ids()).ShouldBe([["s1/a", "s1/b"], ["s1/c", "s0/x"], ["s0/y"]]);
+        pages[0].Next.ShouldNotBeNull().Describe().ShouldBe(["s0 cursor p1 - power=2 steps=0 preceding=-", "s1 search count=2 b@2"]);
+        pages[1].Next.ShouldNotBeNull().Describe().ShouldBe(["s0 cursor p1 x@5 power=2 steps=0 preceding=-", "s1 end c@3"]);
+        client.Calls.Skip(3).Select(c => c.ToString()).ShouldBe(["continue s0", "search s1 count=2", "continue s0"]);
+    }
+
+    [Fact]
+    public async Task Redeem_ExactFillOnAPagesLastEntry_ReplaysTheAnchorHoldingInput_ThenFollowsItsSuccessor()
+    {
+        var client = new FakeShardClient();
+        client.Chain(0, [SortedFixture.Entry(0, "a", 1), SortedFixture.Entry(0, "b", 2)], [SortedFixture.Entry(0, "c", 3)]);
+        client.Chain(1, [SortedFixture.Entry(1, "z", 9)]);
+        SortedPageExecutor executor = SortedFixture.Executor(client, Fixture.Registry(2));
+
+        List<SortedPage> pages = await executor.ReadAllAsync(SortedFixture.Streams(LastUpdatedSort.Ascending, 0, 1), LastUpdatedSort.Ascending, 2);
+
+        pages.Select(p => p.Ids()).ShouldBe([["s0/a", "s0/b"], ["s0/c", "s1/z"]]);
+        pages[0].Next.ShouldNotBeNull().Describe().ShouldBe(["s0 search count=2 b@2", "s1 search count=2 -"]);
+        client.Calls.Select(c => c.ToString()).ShouldBe(
+            ["search s0 count=2", "search s1 count=2", "search s0 count=2", "search s1 count=2", "continue s0"]);
+    }
+
+    [Fact]
+    public async Task Redeem_WhenEveryOwnerEndsOnItsReplay_IsAnEmptyLastPage()
+    {
+        var client = new FakeShardClient();
+        client.Chain(0, [SortedFixture.Entry(0, "b", 2)], []);
+        client.Chain(1, [SortedFixture.Entry(1, "a", 1)]);
+        SortedPageExecutor executor = SortedFixture.Executor(client, Fixture.Registry(2));
+
+        List<SortedPage> pages = await executor.ReadAllAsync(SortedFixture.Streams(LastUpdatedSort.Ascending, 0, 1), LastUpdatedSort.Ascending, 2);
+
+        pages.Select(p => p.Ids()).ShouldBe([["s1/a", "s0/b"], []]);
+        pages[0].Next.ShouldNotBeNull().Describe().ShouldBe(["s0 search count=2 b@2", "s1 end a@1"]);
+        client.Calls.Skip(2).Select(c => c.ToString()).ShouldBe(["search s0 count=2", "continue s0"]);
+        pages[1].Fetches.ShouldBe(2);
+    }
+
+    [Fact]
     public async Task FetchedButUnemittedSuccessor_LeavesTheCursorCheckpointAtItsInputCycleState()
     {
         var client = new FakeShardClient();
