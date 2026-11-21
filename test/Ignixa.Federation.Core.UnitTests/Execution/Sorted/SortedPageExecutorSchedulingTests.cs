@@ -61,5 +61,89 @@ public sealed class SortedPageExecutorSchedulingTests
         page.Fetches.ShouldBe(4);
     }
 
+    /// <summary>
+    /// One batch holds s0, whose call goes wrong in the given way, s1, whose client fails, and s2, which the budget denies.
+    /// s0's error is the one thrown, whichever of s0 and s1 completes first, and only once every started call has finished;
+    /// s1's call is never cancelled because s0 went wrong.
+    /// </summary>
+    [Theory]
+    [InlineData("malformed", true)]
+    [InlineData("malformed", false)]
+    [InlineData("anchor missing", true)]
+    [InlineData("anchor missing", false)]
+    [InlineData("failed", true)]
+    [InlineData("failed", false)]
+    [InlineData("timeout", true)]
+    [InlineData("timeout", false)]
+    public async Task FirstUnsuccessfulSlotByOrdinal_IsThrown_AfterTheBatchIsJoined(string kind, bool s0CompletesFirst)
+    {
+        var client = new FakeShardClient();
+        TaskCompletionSource s0Gate = Gate(), s1Gate = Gate();
+        Exception clientError = kind == "timeout" ? new OperationCanceledException() : new InvalidOperationException("s0 failed");
+        client.OnSearch(Fixture.Shard(0), async (_, token) =>
+        {
+            await s0Gate.Task.WaitAsync(token);
+            return kind switch
+            {
+                "malformed" => Fixture.Page(null, SortedFixture.Entry(0, "b", 2), SortedFixture.Entry(0, "a", 1)),
+                "anchor missing" => Fixture.Page(null, SortedFixture.Entry(0, "b", 2)),
+                _ => throw clientError,
+            };
+        });
+        CancellationToken s1Token = default;
+        client.OnSearch(Fixture.Shard(1), async (_, token) =>
+        {
+            s1Token = token;
+            await s1Gate.Task.WaitAsync(token);
+            throw new InvalidOperationException("s1 failed");
+        });
+        SortedContinuation? resumeFrom = kind != "anchor missing" ? null : new SortedContinuation(
+            Fixture.Patient,
+            Ascending,
+            2,
+            [
+                SortedStreamContinuation.AtSearch(SortedFixture.Stream(0, pageSize: 2), SortedFixture.Anchor(0, "a", 1)),
+                SortedStreamContinuation.AtSearch(SortedFixture.Stream(1, pageSize: 2), null),
+                SortedStreamContinuation.AtSearch(SortedFixture.Stream(2, pageSize: 2), null),
+            ]);
+
+        Task<SortedPage> running = SortedFixture.Executor(client, Fixture.Registry(3), 3)
+            .ExecuteAsync(SortedFixture.Streams(Ascending, 0, 1, 2), Ascending, 2, resumeFrom, 2, Token);
+        await client.WhenStarted(2).WaitAsync(Guard, Token);
+        foreach (int slot in s0CompletesFirst ? [0, 1] : new[] { 1, 0 })
+        {
+            running.IsCompleted.ShouldBeFalse("the batch is joined before any outcome is chosen");
+            (slot == 0 ? s0Gate : s1Gate).SetResult();
+            await client.Calls[slot].Finished.WaitAsync(Token);
+        }
+
+        Exception thrown = await Should.ThrowAsync<Exception>(running);
+
+        switch (kind)
+        {
+            case "anchor missing":
+                thrown.ShouldBeOfType<ContinuationAnchorMissingException>().Shard.ShouldBe(Fixture.Shard(0));
+                break;
+            default:
+                var failure = thrown.ShouldBeOfType<ShardFailureException>();
+                (failure.Shard, failure.Reason).ShouldBe((Fixture.Shard(0), kind switch
+                {
+                    "malformed" => ShardFailureReason.ContractViolation,
+                    "failed" => ShardFailureReason.Failed,
+                    _ => ShardFailureReason.Timeout,
+                }));
+                if (kind != "malformed")
+                {
+                    failure.InnerException.ShouldBeSameAs(clientError);
+                }
+
+                break;
+        }
+
+        client.Calls.Select(c => c.ToString()).ShouldBe(["search s0 count=2", "search s1 count=2"]);
+        client.InFlight.ShouldBe(0);
+        s1Token.IsCancellationRequested.ShouldBeFalse();
+    }
+
     private static TaskCompletionSource Gate() => new(TaskCreationOptions.RunContinuationsAsynchronously);
 }

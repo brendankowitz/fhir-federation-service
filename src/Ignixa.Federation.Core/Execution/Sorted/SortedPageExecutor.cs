@@ -164,16 +164,23 @@ public sealed class SortedPageExecutor
     }
 
     /// <summary>
-    /// Starts one call per owner of <paramref name="batch"/> in ordinal order without awaiting between starts, joins them,
-    /// then hands each owner its page.
+    /// Starts one call per owner of <paramref name="batch"/> in ordinal order without awaiting between starts, joins them
+    /// all, then hands each owner its page in ordinal order. The first owner whose call failed or whose page is invalid
+    /// throws, so which error wins never depends on which call finished first.
     /// </summary>
     private static async Task FetchAsync(SortedStream[] batch, FetchScheduler scheduler)
     {
         Task<ShardPage>[] calls = [.. batch.Select(owner => owner.RequestAsync(scheduler))];
-        ShardPage[] pages = await Task.WhenAll(calls);
+        Task joined = Task.WhenAll(calls);
+        await joined.ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
+        foreach (Task<ShardPage> call in calls)
+        {
+            _ = call.Exception;
+        }
+
         for (int i = 0; i < batch.Length; i++)
         {
-            batch[i].Accept(pages[i]);
+            batch[i].Accept(await calls[i]);
         }
     }
 
