@@ -1,5 +1,6 @@
 using System.Net;
 using System.Text;
+using System.Text.Json;
 using Ignixa.Federation.Core.Execution.Counts;
 using Ignixa.Federation.Core.Identity;
 using Ignixa.Federation.Core.Search;
@@ -49,8 +50,46 @@ public sealed class PrimarySearchReverseCountTests
 
         AssertCount(result, 2);
         ShardCall count = host.Shards.Calls.Where(c => c.PageSize == 0).ShouldHaveSingleItem();
-        count.Shard.ShouldBe("east");
-        count.Parameters.ShouldNotBeNull().ShouldStartWith("_id=dup");
+        (count.Shard, count.Method, count.Parameters).ShouldBe(("east", ShardSearchMethod.PostSearch, "_id=dup%2Ceast-only&_summary=count"));
+    }
+
+    [Fact]
+    public async Task EqualIdsWitnessedOnDifferentOwnersAcrossClausesAreNotTheSameResource()
+    {
+        using SearchHost host = Start(shapes: ["Patient?_id=,&_id=,"], configure: s => s.Shards.Resources = DisjointOwnerWitnessCorpus());
+
+        SearchResult result = await SendAsync(host, false,
+            "_has:Observation:subject:_id=east-witness&_has:Observation:subject:_id=west-witness&_count=0");
+
+        // Each clause names Patient/dup, but on a different shard: no physical owner satisfies both, so there is nothing to count.
+        AssertCount(result, 0);
+        host.Shards.Calls.Where(c => c.PageSize == 0).ShouldBeEmpty();
+        host.Shards.Calls.Select(c => c.Parameters).ShouldAllBe(p => p == "_id=east-witness" || p == "_id=west-witness");
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task OwnerCountSizeIsMeasuredOnTheExactGeneratedRequestAndNoCountIsSent(bool post)
+    {
+        using SearchHost host = Start();
+        var measured = new List<ShardSearchRequest>();
+        host.Shards.RequestFits = request =>
+        {
+            measured.Add(request);
+            return request.Shard.Value != "west";
+        };
+
+        SearchResult result = await SendAsync(host, post, Has + "&_count=0");
+
+        AssertFailure(result, HttpStatusCode.BadRequest, "too-costly");
+        // East's dialect is POST with _summary=count, west's is GET: each is measured in its own verb before any count is sent.
+        measured.Select(r => (r.Shard.Value, r.Method, r.PageSize, string.Join('&', r.Parameters.Select(p => $"{p.Key}={p.Value}")))).ShouldBe(
+        [
+            ("east", ShardSearchMethod.PostSearch, 0, "_id=dup&_summary=count"),
+            ("west", ShardSearchMethod.Get, 0, "_id=dup"),
+        ]);
+        host.Shards.Calls.ShouldAllBe(c => c.Parameters == "code=oracle-code");
     }
 
     [Fact]
@@ -82,20 +121,21 @@ public sealed class PrimarySearchReverseCountTests
     public async Task KeptAndRepeatedPredicatesAreCountedAsTheyWereGeneratedForEachOwner(bool post)
     {
         using SearchHost host = Start(shapes: [RepeatedShape]);
-        string query = Has + "&_has:Observation:subject:_id=obs-dup&name=%4Frchid&_count=0";
+        string query = Has + "&_has:Observation:subject:_id=obs-dup&name=%45li&_count=0";
 
         SearchResult result = await SendAsync(host, post, query);
 
-        AssertCount(result, 2);
-        // A GET goes through the client's URI normalisation, which decodes the unreserved %4F before it arrives; a form body is verbatim.
+        // Both shards hold Patient/dup, but only east's is named Eli: the kept name predicate is what makes the total 1, not 2.
+        AssertCount(result, 1);
+        // A GET goes through the client's URI normalisation, which decodes the unreserved %45 before it arrives; a form body is verbatim.
         // Whatever arrived is echoed in the self link and kept as is on the wire.
-        string arrived = post ? "%4F" : "O";
-        result.Link("self").ShouldBe($"{SearchWorld.PublicBase}/Patient?{query.Replace("%4F", arrived, StringComparison.Ordinal)}");
+        string arrived = post ? "%45" : "E";
+        result.Link("self").ShouldBe($"{SearchWorld.PublicBase}/Patient?{query.Replace("%45", arrived, StringComparison.Ordinal)}");
         ShardCall[] counts = [.. host.Shards.Calls.Where(c => c.PageSize == 0)];
         ShardCall east = counts.Single(c => c.Shard == "east");
-        (east.Method, east.Parameters).ShouldBe((ShardSearchMethod.Get, $"_id=dup&_id=dup&name={arrived}rchid&_summary=count"));
+        (east.Method, east.Parameters).ShouldBe((ShardSearchMethod.Get, $"_id=dup&_id=dup&name={arrived}li&_summary=count"));
         ShardCall west = counts.Single(c => c.Shard == "west");
-        (west.Method, west.Parameters).ShouldBe((ShardSearchMethod.Get, $"_id=dup&_id=dup&name={arrived}rchid"));
+        (west.Method, west.Parameters).ShouldBe((ShardSearchMethod.Get, $"_id=dup&_id=dup&name={arrived}li"));
     }
 
     [Theory]
@@ -320,6 +360,16 @@ public sealed class PrimarySearchReverseCountTests
         return resources;
     }
 
+    private static Dictionary<string, IReadOnlyList<SearchWorld.SeedResource>> DisjointOwnerWitnessCorpus()
+    {
+        var resources = SearchWorld.Resources.ToDictionary(StringComparer.Ordinal);
+        static SearchWorld.SeedResource Witness(string id) => new("Observation", id, Encoding.UTF8.GetBytes(
+            $$$"""{"resourceType":"Observation","id":"{{{id}}}","subject":{"reference":"Patient/dup"}}"""));
+        resources["east"] = [.. resources["east"], Witness("east-witness")];
+        resources["west"] = [.. resources["west"], Witness("west-witness")];
+        return resources;
+    }
+
     private static Dictionary<string, IReadOnlyList<SearchWorld.SeedResource>> DanglingWitnessCorpus()
     {
         var resources = SearchWorld.Resources.ToDictionary(StringComparer.Ordinal);
@@ -342,7 +392,8 @@ public sealed class PrimarySearchReverseCountTests
             setup.Shards.FilterGeneratedIds = true;
             setup.Shards.CountAnswer = request => new ShardPage([], null, setup.Shards.Resources[request.Shard.Value].Count(patient =>
                 patient.Type == "Patient"
-                && request.Parameters.Where(p => p.Key == "_id").All(p => Uri.UnescapeDataString(p.Value).Split(',').Contains(patient.Id))));
+                && request.Parameters.Where(p => p.Key == "_id").All(p => Uri.UnescapeDataString(p.Value).Split(',').Contains(patient.Id))
+                && request.Parameters.Where(p => p.Key == "name").All(p => HasName(patient, Uri.UnescapeDataString(p.Value)))));
             configure?.Invoke(setup);
             if (dialects)
             {
@@ -355,6 +406,16 @@ public sealed class PrimarySearchReverseCountTests
                 setup.ConfigureServices = services => services.AddSingleton<IReadOnlyDictionary<ShardId, CountDialect>>(map);
             }
         });
+
+    /// <summary>Evaluates the string-search <c>name</c> predicate: a given or family name starting with the value, ignoring case.</summary>
+    private static bool HasName(SearchWorld.SeedResource patient, string value)
+    {
+        using JsonDocument document = JsonDocument.Parse(patient.Json);
+        return document.RootElement.GetProperty("name").EnumerateArray()
+            .SelectMany(name => name.EnumerateObject().Where(p => p.Name is "family" or "given"))
+            .SelectMany(part => part.Value.ValueKind == JsonValueKind.Array ? part.Value.EnumerateArray().ToArray() : [part.Value])
+            .Any(text => text.GetString()!.StartsWith(value, StringComparison.OrdinalIgnoreCase));
+    }
 
     private static SearchCapabilities Capabilities(IEnumerable<string>? shapes = null, string? withoutProof = null) =>
         SearchWorld.Capabilities(exactCountShapes: ["Patient?_id=,", .. shapes ?? []], reverseChain: true, withoutExactCountProof: withoutProof);

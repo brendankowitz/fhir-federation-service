@@ -30,8 +30,9 @@ namespace Ignixa.Federation.Api.Search;
 /// <remarks>
 /// <para>
 /// <b>Scope.</b> Unsorted pages without a total support ordinary predicates and certified distributed reverse chains.
-/// Ordinary count-only searches require exact shape proof and an explicit dialect for each shard. Other chains,
-/// includes, sort and paged totals are not executed.
+/// Ordinary count-only searches require exact shape proof and an explicit dialect for each shard. Count-only searches
+/// with admitted distributed reverse chains resolve witnesses and then count every owner's generated request through the
+/// same exact executor, within the remaining physical allowance. Other chains, includes, sort and paged totals are not executed.
 /// </para>
 /// <para>
 /// <b>Continuations.</b> A token carries the stored original raw query and the executor's snapshot. Redemption
@@ -118,7 +119,8 @@ internal sealed class PrimarySearch
     /// <remarks>
     /// To enable count-only searches, register an <see cref="IReadOnlyDictionary{TKey,TValue}"/> from <see cref="ShardId"/>
     /// to <see cref="CountDialect"/> for that view. A missing or invalid map disables count execution, including distributed
-    /// reverse-chain counts, and also gates paged reverse-chain entry and continuation redemption, which count through the same map.
+    /// reverse-chain counts. It also gates paged reverse-chain entry and continuation redemption: those paths only need the
+    /// executor's explicit dialect map wired, to measure generated requests, and never execute counts.
     /// </remarks>
     /// <param name="services">The application services.</param>
     /// <param name="settings">The validated host settings.</param>
