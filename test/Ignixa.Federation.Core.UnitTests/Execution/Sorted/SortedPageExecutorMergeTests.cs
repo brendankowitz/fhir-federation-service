@@ -139,33 +139,57 @@ public sealed class SortedPageExecutorMergeTests
     [InlineData(LastUpdatedSort.Descending, 4)]
     public async Task MultiPageStreamsWithDelayedFirstHead_MergeIntoTheOracleOrder(LastUpdatedSort direction, int pageSize)
     {
-        bool ascending = direction == LastUpdatedSort.Ascending;
-        ShardEntry a = SortedFixture.Entry(0, "a", 1), b = SortedFixture.Entry(0, "b", 4), c = SortedFixture.Entry(0, "c", 7);
-        ShardEntry d = SortedFixture.Entry(1, "d", 2), e = SortedFixture.Entry(1, "e", 4), f = SortedFixture.Entry(1, "f", 9);
-        ShardEntry g = SortedFixture.Entry(2, "g", 3), h = SortedFixture.Entry(2, "h", 5), i = SortedFixture.Entry(2, "i", 6);
         var client = new FakeShardClient();
-        if (ascending)
-        {
-            client.Chain(0, [], [a, b], [c]);
-            client.Chain(1, [d], [e, f]);
-            client.Chain(2, [g, h, i]);
-        }
-        else
-        {
-            client.Chain(0, [], [c, b], [a]);
-            client.Chain(1, [f, e], [d]);
-            client.Chain(2, [i, h, g]);
-        }
-
+        string[] oracle = ScriptDelayedOverlap(client, direction);
         SortedPageExecutor executor = SortedFixture.Executor(client, Fixture.Registry(3));
 
         SortedPage page = await executor.ExecuteAsync(SortedFixture.Streams(direction, 1, 2, 0), direction, pageSize, null, 20, Token);
 
-        string[] oracle = ascending
-            ? ["s0/a", "s1/d", "s2/g", "s0/b", "s1/e", "s2/h", "s2/i", "s0/c", "s1/f"]
-            : ["s1/f", "s0/c", "s2/i", "s2/h", "s0/b", "s1/e", "s2/g", "s1/d", "s0/a"];
         page.Ids().ShouldBe(oracle.Take(pageSize));
         (page.Next is null).ShouldBe(pageSize >= oracle.Length);
+    }
+
+    [Theory]
+    [InlineData(LastUpdatedSort.Ascending, 1)]
+    [InlineData(LastUpdatedSort.Ascending, 2)]
+    [InlineData(LastUpdatedSort.Ascending, 4)]
+    [InlineData(LastUpdatedSort.Descending, 1)]
+    [InlineData(LastUpdatedSort.Descending, 3)]
+    [InlineData(LastUpdatedSort.Descending, 4)]
+    public async Task PagesConcatenatedAcrossContinuations_EqualTheOracleOrder(LastUpdatedSort direction, int pageSize)
+    {
+        var client = new FakeShardClient();
+        string[] oracle = ScriptDelayedOverlap(client, direction);
+        SortedPageExecutor executor = SortedFixture.Executor(client, Fixture.Registry(3));
+
+        List<SortedPage> pages = await executor.ReadAllAsync(SortedFixture.Streams(direction, 1, 2, 0), direction, pageSize);
+
+        pages.SelectMany(p => p.Ids()).ShouldBe(oracle);
+        pages.SkipLast(1).ShouldAllBe(p => p.Matches.Count == pageSize);
+    }
+
+    /// <summary>
+    /// Scripts three overlapping multi-page streams, s0 with a leading empty page and a tie with s1 at instant 4, in
+    /// <paramref name="direction"/>.
+    /// </summary>
+    /// <returns>The hand-ordered emission order of every match.</returns>
+    private static string[] ScriptDelayedOverlap(FakeShardClient client, LastUpdatedSort direction)
+    {
+        ShardEntry a = SortedFixture.Entry(0, "a", 1), b = SortedFixture.Entry(0, "b", 4), c = SortedFixture.Entry(0, "c", 7);
+        ShardEntry d = SortedFixture.Entry(1, "d", 2), e = SortedFixture.Entry(1, "e", 4), f = SortedFixture.Entry(1, "f", 9);
+        ShardEntry g = SortedFixture.Entry(2, "g", 3), h = SortedFixture.Entry(2, "h", 5), i = SortedFixture.Entry(2, "i", 6);
+        if (direction == LastUpdatedSort.Ascending)
+        {
+            client.Chain(0, [], [a, b], [c]);
+            client.Chain(1, [d], [e, f]);
+            client.Chain(2, [g, h, i]);
+            return ["s0/a", "s1/d", "s2/g", "s0/b", "s1/e", "s2/h", "s2/i", "s0/c", "s1/f"];
+        }
+
+        client.Chain(0, [], [c, b], [a]);
+        client.Chain(1, [f, e], [d]);
+        client.Chain(2, [i, h, g]);
+        return ["s1/f", "s0/c", "s2/i", "s2/h", "s0/b", "s1/e", "s2/g", "s1/d", "s0/a"];
     }
 
     [Theory]
