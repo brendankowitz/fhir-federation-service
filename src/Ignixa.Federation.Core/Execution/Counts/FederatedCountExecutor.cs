@@ -174,16 +174,29 @@ public sealed class FederatedCountExecutor
                 continue;
             }
 
-            IReadOnlyList<ParameterOccurrence> parameters = plan.BuildBackendParameters(replacements);
-            if (_dialects[shard.Id] == CountDialect.CountZeroWithSummaryCount)
-            {
-                parameters = [.. parameters, SummaryCount];
-            }
-
-            requests.Add(new ShardSearchRequest(shard.Id, plan.Type, parameters, 0, target.Method));
+            requests.Add(CountRequest(plan, shard.Id, replacements, target.Method));
         }
 
         return [.. requests];
+    }
+
+    /// <summary>Builds the exact count request this executor sends one registered shard, in that shard's dialect.</summary>
+    /// <remarks>Pure: it neither admits the plan nor calls the shard, so a caller can measure the request before sending.</remarks>
+    /// <exception cref="ArgumentException"><paramref name="shard"/> is not registered.</exception>
+    internal ShardSearchRequest CountRequest(QueryPlan plan, ShardId shard, IReadOnlyDictionary<int, string> replacements, ShardSearchMethod method)
+    {
+        if (!_dialects.TryGetValue(shard, out CountDialect dialect))
+        {
+            throw new ArgumentException($"Shard '{shard.Value}' is not registered.", nameof(shard));
+        }
+
+        IReadOnlyList<ParameterOccurrence> parameters = plan.BuildBackendParameters(replacements);
+        if (dialect == CountDialect.CountZeroWithSummaryCount)
+        {
+            parameters = [.. parameters, SummaryCount];
+        }
+
+        return new ShardSearchRequest(shard, plan.Type, parameters, 0, method);
     }
 
     /// <summary>
