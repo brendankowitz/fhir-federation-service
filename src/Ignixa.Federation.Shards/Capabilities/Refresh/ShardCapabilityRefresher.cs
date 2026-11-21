@@ -41,6 +41,7 @@ public sealed class ShardCapabilityRefresher
         _fetch = fetch;
         _timeProvider = timeProvider;
         _current = new ShardCapabilitySnapshot(
+            registry,
             registry.Shards.ToImmutableDictionary(s => s.Id, _ => new ShardCapabilityEntry(evidence: null, failure: null)));
     }
 
