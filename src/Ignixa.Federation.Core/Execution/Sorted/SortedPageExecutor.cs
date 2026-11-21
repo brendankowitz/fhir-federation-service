@@ -54,7 +54,6 @@ public sealed class SortedPageExecutor
     /// direction, page size, owner list or order, a saved request that is not the owner's request at a count it accepts,
     /// or a saved cursor redeemed another way.
     /// </exception>
-    /// <exception cref="NotSupportedException"><paramref name="resumeFrom"/> is set; resuming is not implemented yet.</exception>
     /// <exception cref="ArgumentOutOfRangeException">
     /// <paramref name="direction"/> is not defined, <paramref name="pageSize"/> is less than 1 or <paramref name="fetchBudget"/>
     /// is negative.
@@ -62,6 +61,10 @@ public sealed class SortedPageExecutor
     /// <exception cref="ShardFailureException">
     /// A shard the page needs failed, timed out or broke the shard contract: a foreign or repeated key, a missing or
     /// out-of-order <c>_lastUpdated</c>, or a foreign, repeated or cyclic <c>next</c> link. No match is returned.
+    /// </exception>
+    /// <exception cref="ContinuationAnchorMissingException">
+    /// A stream's replayed input no longer holds the exact match <paramref name="resumeFrom"/> emitted last from it, at its
+    /// saved instant, so the page cannot resume without a skip or a duplicate.
     /// </exception>
     /// <exception cref="FetchBudgetExhaustedException">The page needs a shard call beyond <paramref name="fetchBudget"/>.</exception>
     /// <exception cref="OperationCanceledException"><paramref name="cancellationToken"/> was cancelled.</exception>
@@ -87,15 +90,14 @@ public sealed class SortedPageExecutor
         }
 
         cancellationToken.ThrowIfCancellationRequested();
-        if (resumeFrom is not null)
-        {
-            // Resume replays each owner's saved input and skips through its anchor; until that lands, refuse rather than
-            // silently restart the search from the first page.
-            throw new NotSupportedException("Resuming a sorted search is not supported yet.");
-        }
-
         int requestCount = FirstRequestCount(pageSize, ordered.Length);
-        SortedStream[] owners = [.. ordered.Select(stream => new SortedStream(stream, stream.FirstPage(requestCount), direction))];
+        SortedStream[] owners =
+        [
+            .. ordered.Select((stream, i) => new SortedStream(
+                stream,
+                resumeFrom?.Streams[i] ?? SortedStreamContinuation.AtSearch(stream.FirstPage(requestCount), null),
+                direction)),
+        ];
         var matches = new List<ShardEntry>();
         var scheduler = new FetchScheduler(_client, fetchBudget, _maxParallelFetches, cancellationToken);
         await using (scheduler)

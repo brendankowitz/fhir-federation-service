@@ -14,7 +14,7 @@ namespace Ignixa.Federation.Core.Execution.Sorted;
 internal sealed class SortedStream
 {
     private readonly ShardStream _stream;
-    private readonly ShardSearchRequest _search;
+    private readonly ShardSearchRequest? _search;
     private readonly int _sign;
     private readonly HashSet<ShardCursor> _redeemed = [];
     private Input _input = new(null, CursorCycleState.Initial, null);
@@ -22,12 +22,20 @@ internal sealed class SortedStream
     private ShardPage? _page;
     private int _index;
     private SortedAnchor? _lastEmitted;
+    private SortedAnchor? _replayedAnchor;
 
-    public SortedStream(ShardStream stream, ShardSearchRequest search, LastUpdatedSort direction)
+    /// <summary>Starts the stream at <paramref name="start"/>: a fresh first search, or a saved checkpoint to replay.</summary>
+    public SortedStream(ShardStream stream, SortedStreamContinuation start, LastUpdatedSort direction)
     {
         _stream = stream;
-        _search = search;
         _sign = direction == LastUpdatedSort.Ascending ? 1 : -1;
+
+        // A stream redeemed from a cursor never returns to its first search, so it has none.
+        _search = start.Search;
+        _input = new Input(start.Cursor, start.CycleState, start.PreviousPageLastUpdated);
+        _lastEmitted = start.LastEmitted;
+        _replayedAnchor = start.LastEmitted;
+        _emittedFrom = start.LastEmitted is null ? null : _input;
     }
 
     public int Ordinal => _stream.Ordinal;
@@ -55,11 +63,30 @@ internal sealed class SortedStream
             _input = new Input(next, cycle, preceding);
         }
 
-        ShardPage page = _input.Cursor is { } cursor ? await scheduler.ContinueAsync(cursor) : await scheduler.SearchAsync(_search);
+        ShardPage page = _input.Cursor is { } cursor ? await scheduler.ContinueAsync(cursor) : await scheduler.SearchAsync(_search!);
         _stream.Validate(page, _redeemed);
         CheckOrder(page);
         _page = page;
-        _index = 0;
+        _index = _replayedAnchor is { } anchor ? IndexAfter(anchor, page) : 0;
+        _replayedAnchor = null;
+    }
+
+    /// <summary>
+    /// Finds where a replayed page continues: just after the exact pair the previous page emitted last. Only the replayed
+    /// input is searched; an anchor that moved to a later page is as missing as a deleted one (design Q3).
+    /// </summary>
+    private int IndexAfter(SortedAnchor anchor, ShardPage page)
+    {
+        for (int i = 0; i < page.Entries.Count; i++)
+        {
+            ShardEntry entry = page.Entries[i];
+            if (entry.Key == anchor.Key && entry.LastUpdated == anchor.LastUpdated)
+            {
+                return i + 1;
+            }
+        }
+
+        throw new ContinuationAnchorMissingException(_stream.Shard);
     }
 
     /// <summary>
@@ -102,7 +129,7 @@ internal sealed class SortedStream
         Input at = _emittedFrom ?? _input;
         return at.Cursor is { } cursor
             ? SortedStreamContinuation.AtCursor(cursor, _lastEmitted, at.Cycle, at.Preceding)
-            : SortedStreamContinuation.AtSearch(_search, _lastEmitted);
+            : SortedStreamContinuation.AtSearch(_search!, _lastEmitted);
     }
 
     /// <summary>

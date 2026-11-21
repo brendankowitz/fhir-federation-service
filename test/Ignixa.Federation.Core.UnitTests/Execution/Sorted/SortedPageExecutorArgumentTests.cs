@@ -96,24 +96,6 @@ public sealed class SortedPageExecutorArgumentTests
         client.Calls.ShouldBeEmpty();
     }
 
-    [Fact]
-    public async Task ExecuteAsync_ResumeIsNotYetSupported_AndFailsBeforeAnyCall()
-    {
-        var client = new FakeShardClient();
-        SortedPageExecutor executor = SortedFixture.Executor(client, Fixture.Registry(2));
-        ShardSearchRequest[] streams = SortedFixture.Streams(LastUpdatedSort.Ascending, 0, 1);
-        var resumeFrom = new SortedContinuation(
-            Fixture.Patient,
-            LastUpdatedSort.Ascending,
-            5,
-            [SortedStreamContinuation.AtSearch(streams[0], null), SortedStreamContinuation.AtSearch(streams[1], null)]);
-
-        await Should.ThrowAsync<NotSupportedException>(
-            () => executor.ExecuteAsync(streams, LastUpdatedSort.Ascending, 5, resumeFrom, 10, Token));
-
-        client.Calls.ShouldBeEmpty();
-    }
-
     public static TheoryData<string> ForeignSnapshots =>
     [
         "type", "direction", "page size", "missing owner", "extra owner", "owner order", "search method",

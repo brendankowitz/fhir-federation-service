@@ -14,6 +14,28 @@ public sealed class SortedPageExecutorReplayTests
     private static CancellationToken Token => TestContext.Current.CancellationToken;
 
     [Fact]
+    public async Task Redeem_ReplaysEachSavedSearchVerbatim_AndContinuesAfterItsAnchor()
+    {
+        var client = new FakeShardClient();
+        client.Chain(0, [SortedFixture.Entry(0, "a", 1), SortedFixture.Entry(0, "c", 3), SortedFixture.Entry(0, "e", 5)]);
+        client.Chain(1, [SortedFixture.Entry(1, "b", 2), SortedFixture.Entry(1, "d", 4), SortedFixture.Entry(1, "f", 6)]);
+        SortedPageExecutor executor = SortedFixture.Executor(client, Fixture.Registry(2));
+        ShardSearchRequest[] streams = SortedFixture.Streams(LastUpdatedSort.Ascending, 0, 1);
+
+        SortedPage first = await executor.ExecuteAsync(streams, LastUpdatedSort.Ascending, 2, null, 10, Token);
+        SortedPage second = await executor.ExecuteAsync(streams, LastUpdatedSort.Ascending, 2, first.Next, 10, Token);
+        SortedPage third = await executor.ExecuteAsync(streams, LastUpdatedSort.Ascending, 2, second.Next, 10, Token);
+
+        first.Ids().ShouldBe(["s0/a", "s1/b"]);
+        second.Ids().ShouldBe(["s0/c", "s1/d"]);
+        third.Ids().ShouldBe(["s0/e", "s1/f"]);
+        second.Next.ShouldNotBeNull().Describe().ShouldBe(["s0 search count=2 c@3", "s1 search count=2 d@4"]);
+        third.Next.ShouldBeNull();
+        client.Calls.Skip(2).Select(c => c.Search).ShouldBe([.. first.Next!.Streams.Select(s => s.Search), .. second.Next.Streams.Select(s => s.Search)]);
+        (second.Fetches, third.Fetches).ShouldBe((2, 2));
+    }
+
+    [Fact]
     public async Task FetchedButUnemittedSuccessor_LeavesTheCursorCheckpointAtItsInputCycleState()
     {
         var client = new FakeShardClient();
