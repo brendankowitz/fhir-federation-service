@@ -118,4 +118,55 @@ public sealed class SortedPageExecutorValidationTests
         failure.Shard.ShouldBe(Fixture.Shard(0));
         failure.Reason.ShouldBe(ShardFailureReason.ContractViolation);
     }
+
+    [Theory]
+    [InlineData("foreign shard")]
+    [InlineData("foreign type")]
+    [InlineData("wrong redemption")]
+    [InlineData("self link")]
+    [InlineData("repeated cursor")]
+    public async Task BadNextOnThePageThatExactlyFillsThePage_IsAContractViolation(string defect)
+    {
+        var client = new FakeShardClient();
+        ShardEntry[] last;
+        ShardCursor bad;
+        int pagesNeeded;
+        switch (defect)
+        {
+            case "self link":
+                ShardCursor[] self = client.Chain(0, [SortedFixture.Entry(0, "a", 1)], []);
+                last = [SortedFixture.Entry(0, "b", 2), SortedFixture.Entry(0, "c", 3)];
+                bad = self[0];
+                pagesNeeded = 2;
+                client.OnContinue(self[0], Fixture.Page(bad, last));
+                break;
+            case "repeated cursor":
+                ShardCursor[] chain = client.Chain(0, [SortedFixture.Entry(0, "a", 1)], [SortedFixture.Entry(0, "b", 2)], []);
+                last = [SortedFixture.Entry(0, "c", 3)];
+                bad = chain[0];
+                pagesNeeded = 3;
+                client.OnContinue(chain[1], Fixture.Page(bad, last));
+                break;
+            default:
+                last = [SortedFixture.Entry(0, "a", 1), SortedFixture.Entry(0, "b", 2), SortedFixture.Entry(0, "c", 3)];
+                bad = defect switch
+                {
+                    "foreign shard" => Fixture.Cursor(1, "p1"),
+                    "foreign type" => Fixture.Cursor(0, "p1", type: Fixture.Observation),
+                    _ => Fixture.Cursor(0, "p1", NextLinkRedemption.RepostToSearch),
+                };
+                client.OnSearch(0, Fixture.Page(bad, last));
+                pagesNeeded = 1;
+                break;
+        }
+
+        SortedPageExecutor executor = SortedFixture.Executor(client, Fixture.Registry(1));
+
+        ShardFailureException failure = await Should.ThrowAsync<ShardFailureException>(() => executor.ExecuteAsync(
+            SortedFixture.Streams(LastUpdatedSort.Ascending, 0), LastUpdatedSort.Ascending, 3, null, 10, Token));
+
+        failure.Shard.ShouldBe(Fixture.Shard(0));
+        failure.Reason.ShouldBe(ShardFailureReason.ContractViolation);
+        client.Calls.Count.ShouldBe(pagesNeeded, "the bad link is never redeemed");
+    }
 }

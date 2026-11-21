@@ -50,6 +50,7 @@ internal sealed class SortedStream
         if (_page is { Next: { } next })
         {
             CursorCycleState cycle = _stream.Follow(_input.Cycle, next);
+            _redeemed.Add(next);
             DateTimeOffset? preceding = _page.Entries.Count > 0 ? _page.Entries[^1].LastUpdated : _input.Preceding;
             _input = new Input(next, cycle, preceding);
         }
