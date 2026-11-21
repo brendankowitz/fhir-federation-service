@@ -92,6 +92,24 @@ public sealed class SortedPageExecutorMergeTests
     }
 
     [Fact]
+    public async Task Matches_CannotBeMutatedThroughADowncast()
+    {
+        var client = new FakeShardClient();
+        client.Chain(0, [SortedFixture.Entry(0, "a", 1)]);
+        client.Chain(1, [SortedFixture.Entry(1, "b", 2)]);
+        SortedPageExecutor executor = SortedFixture.Executor(client, Fixture.Registry(2));
+
+        SortedPage page = await executor.ExecuteAsync(
+            SortedFixture.Streams(LastUpdatedSort.Ascending, 0, 1), LastUpdatedSort.Ascending, 20, null, 10, Token);
+
+        IList<ShardEntry> downcast = page.Matches.ShouldBeAssignableTo<IList<ShardEntry>>();
+        Should.Throw<NotSupportedException>(() => downcast.Add(SortedFixture.Entry(0, "z", 9)));
+        Should.Throw<NotSupportedException>(() => downcast.Clear());
+        Should.Throw<NotSupportedException>(() => downcast[0] = SortedFixture.Entry(0, "z", 9));
+        page.Ids().ShouldBe(["s0/a", "s1/b"]);
+    }
+
+    [Fact]
     public async Task CutPage_SavesEveryOwnersCheckpointInRegistryOrder()
     {
         var client = new FakeShardClient();

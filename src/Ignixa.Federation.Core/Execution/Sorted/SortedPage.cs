@@ -9,7 +9,7 @@ public sealed class SortedPage
 {
     internal SortedPage(IReadOnlyList<ShardEntry> matches, SortedContinuation? next, int fetches)
     {
-        Matches = matches;
+        Matches = Array.AsReadOnly<ShardEntry>([.. matches]);
         Next = next;
         Fetches = fetches;
     }
@@ -17,6 +17,7 @@ public sealed class SortedPage
     /// <summary>
     /// Gets the page's matches, at most the requested page size, in emission order: by <c>_lastUpdated</c> in the requested
     /// direction, then registry ordinal, then the shard's own order. Each is the shard's entry as returned, bytes unchanged.
+    /// The list is a read-only snapshot.
     /// </summary>
     public IReadOnlyList<ShardEntry> Matches { get; }
 
