@@ -117,7 +117,8 @@ internal sealed class PrimarySearch
     /// <summary>Builds the search from the registered view, transport and the <c>Federation</c> configuration.</summary>
     /// <remarks>
     /// To enable count-only searches, register an <see cref="IReadOnlyDictionary{TKey,TValue}"/> from <see cref="ShardId"/>
-    /// to <see cref="CountDialect"/> for that view. A missing or invalid map disables only count execution.
+    /// to <see cref="CountDialect"/> for that view. A missing or invalid map disables count execution, including distributed
+    /// reverse-chain counts, and also gates paged reverse-chain entry and continuation redemption, which count through the same map.
     /// </remarks>
     /// <param name="services">The application services.</param>
     /// <param name="settings">The validated host settings.</param>
@@ -303,9 +304,10 @@ internal sealed class PrimarySearch
         }
 
         if (plan.CountOnly && plan.Occurrences.All(o => (o.Kind, o.Action) is
-            (OccurrenceKind.Control, OccurrenceAction.Remove) or (OccurrenceKind.Predicate, OccurrenceAction.Keep)))
+            (OccurrenceKind.Control, OccurrenceAction.Remove) or (OccurrenceKind.Predicate, OccurrenceAction.Keep)
+            or (OccurrenceKind.ReverseChain, OccurrenceAction.Replace)))
         {
-            return await ExecuteCountAsync(plan, post, raw, budget);
+            return await ExecuteCountAsync(plan, sources, post, raw, budget);
         }
 
         if (!TryPrepare(post, raw, plan, sources.Length != 0, out PreparedSearch? prepared))
@@ -351,24 +353,45 @@ internal sealed class PrimarySearch
         return copy.Count == registry.Shards.Count ? copy.ToFrozenDictionary() : null;
     }
 
-    private async Task<IResult> ExecuteCountAsync(QueryPlan plan, bool post, string raw, RequestBudget budget)
+    private async Task<IResult> ExecuteCountAsync(QueryPlan plan, ResourceType[] sources, bool post, string raw, RequestBudget budget)
     {
-        if (_countDialects is null)
+        if (_countDialects is not { } dialects)
         {
             return SearchOutcome.NotSupported(StatusCodes.Status400BadRequest, "An exact count is not configured on every shard.");
         }
 
-        ShardCountTarget[] targets =
-        [
-            .. _registry.Shards.Select(s => ShardCountTarget.Search(s.Id, SearchMethod(post, s), NoReplacements)),
-        ];
         budget.Checkpoint();
-        var executor = new FederatedCountExecutor(
-            _clients.CreateClient(_capabilities, budget), _capabilities, _countDialects, _limits.MaxParallelBackendCalls);
+        IShardClient client = _clients.CreateClient(_capabilities, budget);
+        var executor = new FederatedCountExecutor(client, _capabilities, dialects, _limits.MaxParallelBackendCalls);
+        ShardCountTarget[] targets;
+        int allowance = FetchAllowance;
+        if (sources.Length == 0)
+        {
+            targets = [.. _registry.Shards.Select(s => ShardCountTarget.Search(s.Id, SearchMethod(post, s), NoReplacements))];
+        }
+        else
+        {
+            (ReverseChainResolution? resolved, IResult? refused) = await ResolveReverseAsync(plan, sources, executor, client, budget);
+            if (resolved is null)
+            {
+                return refused!;
+            }
+
+            // Every shard is a target: the shards the resolver found no candidate on are proven empty, never skipped.
+            budget.Checkpoint();
+            targets =
+            [
+                .. _registry.Shards.Select(s => resolved.Targets.FirstOrDefault(t => t.Shard == s.Id) is { } t
+                    ? ShardCountTarget.Search(s.Id, t.Method, t.Replacements)
+                    : ShardCountTarget.ProvenEmpty(s.Id)),
+            ];
+            allowance = (int)Math.Max(0, FetchAllowance - Math.Max(budget.BackendCalls, resolved.Calls));
+        }
+
         int total;
         try
         {
-            total = await executor.ExecuteAsync(plan, targets, FetchAllowance, budget.Token)
+            total = await executor.ExecuteAsync(plan, targets, allowance, budget.Token)
                 ?? throw new InvalidOperationException("The count-only plan returned no total.");
         }
         catch (ExactCountNotCertifiedException)
@@ -380,33 +403,42 @@ internal sealed class PrimarySearch
         return SearchsetResponse.Create(_registry, SelfLink(plan.Type, raw), [], [], [], total: total);
     }
 
+    private async Task<(ReverseChainResolution? Resolved, IResult? Refused)> ResolveReverseAsync(
+        QueryPlan plan, ResourceType[] sources, FederatedCountExecutor counts, IShardClient client, RequestBudget budget)
+    {
+        var resolver = new ReverseChainResolver(client, _capabilities, counts, _clients.FitsSearchRequest,
+            _limits.MaxChainKeys, _limits.MaxChainSourceRows, _limits.MaxParallelBackendCalls, _timeouts.ChainSubquery);
+        var authorizedTypes = new HashSet<ResourceType>(sources) { plan.Type };
+        try
+        {
+            return (await resolver.ResolveAsync(plan, authorizedTypes, FetchAllowance, budget.Token), null);
+        }
+        catch (ReverseChainRefusedException ex)
+        {
+            return (null, ex.Reason switch
+            {
+                ReverseChainRefusal.TooCostly => SearchOutcome.TooCostly(),
+                ReverseChainRefusal.NotCertified => UnsupportedShape(),
+                ReverseChainRefusal.UnauthorizedType => ReverseDenied(),
+                _ => throw new InvalidOperationException("Unhandled reverse-chain refusal."),
+            });
+        }
+        catch (TimeoutException)
+        {
+            return (null, SearchOutcome.TimedOut());
+        }
+    }
+
     private async Task<IResult> ExecuteReverseAsync(QueryPlan plan, ResourceType[] sources, ContinuationBinding binding,
         PreparedSearch search, FrozenDictionary<ShardId, CountDialect> dialects, RequestBudget budget)
     {
         budget.Checkpoint();
         IShardClient client = _clients.CreateClient(_capabilities, budget);
         var counts = new FederatedCountExecutor(client, _capabilities, dialects, _limits.MaxParallelBackendCalls);
-        var resolver = new ReverseChainResolver(client, _capabilities, counts, _clients.FitsSearchRequest,
-            _limits.MaxChainKeys, _limits.MaxChainSourceRows, _limits.MaxParallelBackendCalls, _timeouts.ChainSubquery);
-        var authorizedTypes = new HashSet<ResourceType>(sources) { plan.Type };
-        ReverseChainResolution resolved;
-        try
+        (ReverseChainResolution? resolved, IResult? refused) = await ResolveReverseAsync(plan, sources, counts, client, budget);
+        if (resolved is null)
         {
-            resolved = await resolver.ResolveAsync(plan, authorizedTypes, FetchAllowance, budget.Token);
-        }
-        catch (ReverseChainRefusedException ex)
-        {
-            return ex.Reason switch
-            {
-                ReverseChainRefusal.TooCostly => SearchOutcome.TooCostly(),
-                ReverseChainRefusal.NotCertified => UnsupportedShape(),
-                ReverseChainRefusal.UnauthorizedType => ReverseDenied(),
-                _ => throw new InvalidOperationException("Unhandled reverse-chain refusal."),
-            };
-        }
-        catch (TimeoutException)
-        {
-            return SearchOutcome.TimedOut();
+            return refused!;
         }
 
         budget.Checkpoint();

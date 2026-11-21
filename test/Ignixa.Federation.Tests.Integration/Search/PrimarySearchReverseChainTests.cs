@@ -64,8 +64,6 @@ public sealed class PrimarySearchReverseChainTests
     }
 
     [Theory]
-    [InlineData(false, "&_summary=count", true)]
-    [InlineData(true, "&_count=0", true)]
     [InlineData(true, "&_total=accurate", true)]
     [InlineData(false, "", false)]
     public async Task UnsupportedOrUnconfiguredSearchDoesNotEvenCreateTheClient(bool post, string controls, bool dialects)
