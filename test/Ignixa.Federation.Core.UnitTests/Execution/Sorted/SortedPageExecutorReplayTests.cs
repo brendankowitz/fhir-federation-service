@@ -80,6 +80,36 @@ public sealed class SortedPageExecutorReplayTests
         next.Streams[0].LastEmitted.ShouldNotBeNull().Key.ShouldBe(Fixture.Key(0, "a"));
     }
 
+    /// <summary>
+    /// A posted owner on a profile that redeems <c>next</c> by reposting follows its cursor in the merge, saves it when the
+    /// page is cut inside the cursor's page, and replays that same cursor on redemption.
+    /// </summary>
+    [Fact]
+    public async Task PostedOwner_FollowsAndReplaysARepostToSearchCursor()
+    {
+        var client = new FakeShardClient();
+        ShardCursor p1 = Fixture.Cursor(0, "p1", NextLinkRedemption.RepostToSearch);
+        client.OnSearch(0, Fixture.Page(p1, SortedFixture.Entry(0, "a", 1)));
+        client.OnContinue(p1, Fixture.Page(null, SortedFixture.Entry(0, "c", 3), SortedFixture.Entry(0, "e", 5)));
+        client.OnSearch(1, Fixture.Page(null, SortedFixture.Entry(1, "b", 2), SortedFixture.Entry(1, "d", 4), SortedFixture.Entry(1, "f", 6)));
+        SortedPageExecutor executor = SortedFixture.Executor(client, Fixture.Registry(2, 0));
+        ShardSearchRequest[] streams = [SortedFixture.Stream(0, method: ShardSearchMethod.PostSearch), SortedFixture.Stream(1)];
+
+        SortedPage first = await executor.ExecuteAsync(streams, LastUpdatedSort.Ascending, 3, null, 10, Token);
+        SortedPage second = await executor.ExecuteAsync(streams, LastUpdatedSort.Ascending, 3, first.Next, 10, Token);
+
+        first.Ids().ShouldBe(["s0/a", "s1/b", "s0/c"]);
+        second.Ids().ShouldBe(["s1/d", "s0/e", "s1/f"]);
+        first.Next.ShouldNotBeNull().Describe().ShouldBe(["s0 cursor p1 c@3 power=2 steps=0 preceding=1", "s1 search count=3 b@2"]);
+        first.Next.Streams[0].Cursor.ShouldBe(p1);
+        second.Next.ShouldBeNull();
+        client.Calls.Select(c => c.ToString()).ShouldBe(
+            ["search s0 count=2", "search s1 count=3", "continue s0", "continue s0", "search s1 count=3"]);
+        client.Calls[0].Search.ShouldNotBeNull().Method.ShouldBe(ShardSearchMethod.PostSearch);
+        client.Calls.Where(c => c.Cursor is not null).Select(c => c.Cursor).ShouldBe([p1, p1]);
+        (first.Fetches, second.Fetches).ShouldBe((3, 2));
+    }
+
     [Fact]
     public async Task Redeem_ReplaysTheSavedCursorVerbatim_AndCarriesItsCycleStateAndPrecedingInstant()
     {
