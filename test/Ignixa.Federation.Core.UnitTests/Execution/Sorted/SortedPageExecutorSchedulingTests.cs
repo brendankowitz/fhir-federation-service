@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using Ignixa.Federation.Core.Execution;
 using Ignixa.Federation.Core.Execution.Sorted;
 using Ignixa.Federation.Core.Search;
@@ -13,6 +14,8 @@ namespace Ignixa.Federation.Core.UnitTests.Execution.Sorted;
 public sealed class SortedPageExecutorSchedulingTests
 {
     private const LastUpdatedSort Ascending = LastUpdatedSort.Ascending;
+
+    private const string DiscardedFailure = "A failure a lower ordinal's failure outranks.";
 
     /// <summary>Bounds a wait that only an executor admitting the wrong calls would never finish.</summary>
     private static readonly TimeSpan Guard = TimeSpan.FromSeconds(10);
@@ -143,6 +146,60 @@ public sealed class SortedPageExecutorSchedulingTests
         client.Calls.Select(c => c.ToString()).ShouldBe(["search s0 count=2", "search s1 count=2"]);
         client.InFlight.ShouldBe(0);
         s1Token.IsCancellationRequested.ShouldBeFalse();
+    }
+
+    /// <summary>
+    /// When s0's failure wins, s1's failure and s2's budget denial are discarded but still observed, so neither surfaces
+    /// later as an unobserved task exception. The page runs in a helper so nothing the test holds roots the discarded tasks.
+    /// </summary>
+    [Fact]
+    public async Task DiscardedFailuresOfAFailedBatch_AreObserved()
+    {
+        var unobserved = new List<Exception>();
+        void Record(object? sender, UnobservedTaskExceptionEventArgs args)
+        {
+            if (args.Exception.Flatten().InnerExceptions.Any(e => e is FetchBudgetExhaustedException
+                || e.InnerException?.Message == DiscardedFailure))
+            {
+                lock (unobserved)
+                {
+                    unobserved.Add(args.Exception);
+                }
+            }
+        }
+
+        TaskScheduler.UnobservedTaskException += Record;
+        try
+        {
+            ShardId failed = await FailABatchAsync();
+
+            failed.ShouldBe(Fixture.Shard(0));
+            for (int collections = 0; collections < 3; collections++)
+            {
+                GC.Collect();
+                GC.WaitForPendingFinalizers();
+            }
+
+            lock (unobserved)
+            {
+                unobserved.ShouldBeEmpty();
+            }
+        }
+        finally
+        {
+            TaskScheduler.UnobservedTaskException -= Record;
+        }
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static async Task<ShardId> FailABatchAsync()
+    {
+        var client = new FakeShardClient();
+        client.OnSearchThrows(0, new InvalidOperationException("s0 failed"));
+        client.OnSearchThrows(1, new InvalidOperationException(DiscardedFailure));
+        ShardFailureException thrown = await Should.ThrowAsync<ShardFailureException>(
+            SortedFixture.Executor(client, Fixture.Registry(3), 3).ExecuteAsync(SortedFixture.Streams(Ascending, 0, 1, 2), Ascending, 2, null, 2, Token));
+        return thrown.Shard;
     }
 
     private static TaskCompletionSource Gate() => new(TaskCreationOptions.RunContinuationsAsynchronously);

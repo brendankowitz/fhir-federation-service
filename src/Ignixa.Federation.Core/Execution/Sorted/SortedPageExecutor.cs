@@ -171,13 +171,9 @@ public sealed class SortedPageExecutor
     private static async Task FetchAsync(SortedStream[] batch, FetchScheduler scheduler)
     {
         Task<ShardPage>[] calls = [.. batch.Select(owner => owner.RequestAsync(scheduler))];
+        // Joining observes every call's failure, so the ones arbitration discards never surface as unobserved exceptions.
         Task joined = Task.WhenAll(calls);
         await joined.ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
-        foreach (Task<ShardPage> call in calls)
-        {
-            _ = call.Exception;
-        }
-
         for (int i = 0; i < batch.Length; i++)
         {
             batch[i].Accept(await calls[i]);
