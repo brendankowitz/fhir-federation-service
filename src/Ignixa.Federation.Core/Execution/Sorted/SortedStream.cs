@@ -79,9 +79,16 @@ internal sealed class SortedStream
 
         ShardPage page = _input.Cursor is { } cursor ? await scheduler.ContinueAsync(cursor) : await scheduler.SearchAsync(_search!);
         _stream.Validate(page, _redeemed);
+        if (page.Entries.Any(entry => entry.LastUpdated is null))
+        {
+            throw new ShardFailureException(_stream.Shard, ShardFailureReason.ContractViolation, null);
+        }
+
+        // A moved anchor is missing even when its new instant is also out of order (design algorithm step 4).
+        int start = _replayedAnchor is { } anchor ? IndexAfter(anchor, page) : 0;
         CheckOrder(page);
         _page = page;
-        _index = _replayedAnchor is { } anchor ? IndexAfter(anchor, page) : 0;
+        _index = start;
         _replayedAnchor = null;
     }
 
@@ -104,16 +111,17 @@ internal sealed class SortedStream
     }
 
     /// <summary>
-    /// Rejects a page with an entry that has no instant, or that is not monotonic in the sort direction from the
-    /// preceding nonempty page's last instant, including entries this execution will never emit: a backend that returns
-    /// them out of order cannot be trusted to have returned the ones before them in order (design Q5).
+    /// Rejects a page that is not monotonic in the sort direction from the preceding nonempty page's last instant,
+    /// including entries this execution will never emit: a backend that returns them out of order cannot be trusted to
+    /// have returned the ones before them in order (design Q5). Every entry has an instant by now.
     /// </summary>
     private void CheckOrder(ShardPage page)
     {
         DateTimeOffset? previous = _input.Preceding;
         foreach (ShardEntry entry in page.Entries)
         {
-            if (entry.LastUpdated is not { } instant || (previous is { } before && _sign * instant.CompareTo(before) < 0))
+            DateTimeOffset instant = entry.LastUpdated!.Value;
+            if (previous is { } before && _sign * instant.CompareTo(before) < 0)
             {
                 throw new ShardFailureException(_stream.Shard, ShardFailureReason.ContractViolation, null);
             }

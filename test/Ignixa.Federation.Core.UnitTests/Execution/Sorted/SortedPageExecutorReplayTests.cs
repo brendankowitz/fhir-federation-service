@@ -104,6 +104,85 @@ public sealed class SortedPageExecutorReplayTests
         client.Calls.Skip(before).Select(c => c.ToString()).ShouldBe(["continue s0"]);
     }
 
+    public static TheoryData<string> ReplayInputs => ["search", "cursor"];
+
+    [Theory]
+    [MemberData(nameof(ReplayInputs))]
+    public async Task Redeem_AnchorAbsentFromItsReplayedInput_IsMissing_EvenWhenASuccessorHoldsIt(string input)
+    {
+        var client = new FakeShardClient();
+        ShardCursor p1 = Fixture.Cursor(0, "p1"), p2 = Fixture.Cursor(0, "p2");
+        SortedStreamContinuation start = input == "search"
+            ? SortedStreamContinuation.AtSearch(SortedFixture.Stream(0, pageSize: 2), SortedFixture.Anchor(0, "a", 1))
+            : SortedStreamContinuation.AtCursor(p1, SortedFixture.Anchor(0, "a", 1), new CursorCycleState(1UL, 2, 0), null);
+        client.OnSearch(0, Fixture.Page(p2, []));
+        client.OnContinue(p1, Fixture.Page(p2, []));
+        client.OnContinue(p2, Fixture.Page(null, SortedFixture.Entry(0, "a", 1), SortedFixture.Entry(0, "c", 3)));
+
+        ContinuationAnchorMissingException missing = await Should.ThrowAsync<ContinuationAnchorMissingException>(
+            () => Resume(client, 2, start, SortedStreamContinuation.AtSearch(SortedFixture.Stream(1, pageSize: 2), null)));
+
+        missing.Shard.ShouldBe(Fixture.Shard(0));
+        client.Calls.Select(c => c.Shard).ShouldBe([Fixture.Shard(0)]);
+    }
+
+    public static TheoryData<string, ShardEntry[]> MovedAnchors => new()
+    {
+        { "later instant", [SortedFixture.Entry(0, "a", 1), SortedFixture.Entry(0, "b", 3), SortedFixture.Entry(0, "c", 4)] },
+        { "later instant, shifted past a neighbour", [SortedFixture.Entry(0, "a", 1), SortedFixture.Entry(0, "c", 3), SortedFixture.Entry(0, "b", 5)] },
+        { "earlier instant, out of order", [SortedFixture.Entry(0, "a", 1), SortedFixture.Entry(0, "b", 0), SortedFixture.Entry(0, "c", 3)] },
+    };
+
+    [Theory]
+    [MemberData(nameof(MovedAnchors))]
+    public async Task Redeem_AnchorKeyAtAnotherInstant_IsMissing(string because, ShardEntry[] replayed)
+    {
+        var client = new FakeShardClient();
+        client.OnSearch(0, Fixture.Page(null, replayed));
+
+        ContinuationAnchorMissingException missing = await Should.ThrowAsync<ContinuationAnchorMissingException>(
+            () => Resume(client, 2, SortedStreamContinuation.AtSearch(SortedFixture.Stream(0, pageSize: 3), SortedFixture.Anchor(0, "b", 2))),
+            because);
+
+        missing.Shard.ShouldBe(Fixture.Shard(0));
+    }
+
+    [Fact]
+    public async Task Redeem_AnchorKeyAtAnotherInstant_AsTheLastEntryBeforeASuccessor_IsMissing_WithoutFollowing()
+    {
+        var client = new FakeShardClient();
+        ShardCursor p1 = Fixture.Cursor(0, "p1");
+        client.OnSearch(0, Fixture.Page(p1, SortedFixture.Entry(0, "a", 1), SortedFixture.Entry(0, "b", 5)));
+        client.OnContinue(p1, Fixture.Page(null, SortedFixture.Entry(0, "b", 6)));
+
+        await Should.ThrowAsync<ContinuationAnchorMissingException>(
+            () => Resume(client, 2, SortedStreamContinuation.AtSearch(SortedFixture.Stream(0, pageSize: 2), SortedFixture.Anchor(0, "b", 2))));
+
+        client.Calls.Select(c => c.ToString()).ShouldBe(["search s0 count=2"]);
+    }
+
+    [Fact]
+    public async Task Redeem_AnchorInstantSpelledWithAnotherOffset_IsTheSameAnchor()
+    {
+        var client = new FakeShardClient();
+        DateTimeOffset sameInstant = SortedFixture.At(2).ToOffset(TimeSpan.FromHours(5));
+        client.OnSearch(0, Fixture.Page(null, SortedFixture.Entry(0, "a", 1), SortedFixture.Entry(0, "b", sameInstant), SortedFixture.Entry(0, "c", 3)));
+
+        SortedPage page = await Resume(client, 2, SortedStreamContinuation.AtSearch(SortedFixture.Stream(0, pageSize: 3), SortedFixture.Anchor(0, "b", 2)));
+
+        page.Ids().ShouldBe(["s0/c"]);
+        page.Next.ShouldBeNull();
+    }
+
+    /// <summary>Redeems a hand-built ascending snapshot whose owners are shards s0, s1, … in order.</summary>
+    private static Task<SortedPage> Resume(FakeShardClient client, int pageSize, params SortedStreamContinuation[] owners)
+    {
+        int[] ordinals = [.. Enumerable.Range(0, owners.Length)];
+        var resumeFrom = new SortedContinuation(Fixture.Patient, LastUpdatedSort.Ascending, pageSize, owners);
+        return SortedFixture.Executor(client, Fixture.Registry(owners.Length))
+            .ExecuteAsync(SortedFixture.Streams(LastUpdatedSort.Ascending, ordinals), LastUpdatedSort.Ascending, pageSize, resumeFrom, 10, Token);
+    }
+
     [Fact]
     public async Task FetchedButUnemittedSuccessor_LeavesTheCursorCheckpointAtItsInputCycleState()
     {
