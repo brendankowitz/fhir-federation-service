@@ -83,7 +83,7 @@ public sealed class SortedPageExecutor
 
         int requestCount = FirstRequestCount(pageSize, ordered.Length);
         SortedStream[] owners = [.. ordered.Select(stream => new SortedStream(stream, stream.FirstPage(requestCount), direction))];
-        var matches = new List<ShardEntry>(pageSize);
+        var matches = new List<ShardEntry>();
         var scheduler = new FetchScheduler(_client, fetchBudget, _maxParallelFetches, cancellationToken);
         await using (scheduler)
         {

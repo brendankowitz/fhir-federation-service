@@ -11,6 +11,21 @@ public sealed class SortedPageExecutorFetchTests
     private static CancellationToken Token => TestContext.Current.CancellationToken;
 
     [Fact]
+    public async Task MaximumPageSize_ReturnsEveryMatchInOrder_WithoutContinuation()
+    {
+        var client = new FakeShardClient();
+        client.Chain(0, [SortedFixture.Entry(0, "a", 1), SortedFixture.Entry(0, "c", 3)]);
+        client.Chain(1, [SortedFixture.Entry(1, "b", 2), SortedFixture.Entry(1, "d", 4)]);
+        SortedPageExecutor executor = SortedFixture.Executor(client, Fixture.Registry(2));
+
+        SortedPage page = await executor.ExecuteAsync(
+            SortedFixture.Streams(LastUpdatedSort.Ascending, 0, 1), LastUpdatedSort.Ascending, int.MaxValue, null, 10, Token);
+
+        page.Ids().ShouldBe(["s0/a", "s1/b", "s0/c", "s1/d"]);
+        page.Next.ShouldBeNull();
+    }
+
+    [Fact]
     public async Task ShortNonterminalPage_IsFollowedWhenDrained_ButNotOnceThePageIsFull()
     {
         var client = new FakeShardClient();
