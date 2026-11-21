@@ -36,7 +36,16 @@ internal sealed class SortedStream
         _lastEmitted = start.LastEmitted;
         _replayedAnchor = start.LastEmitted;
         _emittedFrom = start.LastEmitted is null ? null : _input;
+
+        // An owner the previous page proved exhausted starts drained, so it is never fetched again.
+        if (start.IsExhausted)
+        {
+            _page = Drained;
+            _replayedAnchor = null;
+        }
     }
+
+    private static readonly ShardPage Drained = new([], null, null);
 
     public int Ordinal => _stream.Ordinal;
 

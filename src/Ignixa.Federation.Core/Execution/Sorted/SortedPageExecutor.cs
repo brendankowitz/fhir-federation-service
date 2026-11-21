@@ -123,7 +123,7 @@ public sealed class SortedPageExecutor
         FetchScheduler scheduler)
     {
         // Ordinal rounds: one input per unresolved owner per round, so no owner's leading empties delay another's head.
-        SortedStream[] unresolved = owners;
+        SortedStream[] unresolved = [.. owners.Where(owner => owner.NeedsFetch)];
         while (unresolved.Length > 0)
         {
             foreach (SortedStream owner in unresolved)

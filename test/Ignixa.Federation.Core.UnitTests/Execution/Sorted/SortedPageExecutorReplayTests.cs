@@ -36,6 +36,30 @@ public sealed class SortedPageExecutorReplayTests
     }
 
     [Fact]
+    public async Task Redeem_MixedEndAndStartSnapshot_CallsOnlyLiveOwners_WithTheirSavedCounts()
+    {
+        var client = new FakeShardClient();
+        client.Chain(1, [SortedFixture.Entry(1, "b", 2), SortedFixture.Entry(1, "c", 3)]);
+        client.Chain(2, [SortedFixture.Entry(2, "d", 4), SortedFixture.Entry(2, "e", 5)]);
+        SortedPageExecutor executor = SortedFixture.Executor(client, Fixture.Registry(3, 1));
+        ShardSearchRequest[] streams = SortedFixture.Streams(LastUpdatedSort.Ascending, 2, 0, 1);
+        var resumeFrom = new SortedContinuation(Fixture.Patient, LastUpdatedSort.Ascending, 5,
+        [
+            SortedStreamContinuation.AtEnd(Fixture.Shard(0), SortedFixture.Anchor(0, "a", 1)),
+            SortedStreamContinuation.AtSearch(SortedFixture.Stream(1, pageSize: 2), null),
+            SortedStreamContinuation.AtSearch(SortedFixture.Stream(2, pageSize: 13), null),
+        ]);
+
+        SortedPage page = await executor.ExecuteAsync(streams, LastUpdatedSort.Ascending, 5, resumeFrom, 10, Token);
+
+        page.Ids().ShouldBe(["s1/b", "s1/c", "s2/d", "s2/e"]);
+        client.Calls.Select(c => c.ToString()).ShouldBe(["search s1 count=2", "search s2 count=13"]);
+        client.Calls.Select(c => c.Search).ShouldBe([resumeFrom.Streams[1].Search, resumeFrom.Streams[2].Search]);
+        page.Fetches.ShouldBe(2);
+        page.Next.ShouldBeNull();
+    }
+
+    [Fact]
     public async Task FetchedButUnemittedSuccessor_LeavesTheCursorCheckpointAtItsInputCycleState()
     {
         var client = new FakeShardClient();
