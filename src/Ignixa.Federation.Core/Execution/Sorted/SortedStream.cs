@@ -1,3 +1,4 @@
+using Ignixa.Federation.Core.Search;
 using Ignixa.Federation.Core.Shards;
 
 namespace Ignixa.Federation.Core.Execution.Sorted;
@@ -14,16 +15,18 @@ internal sealed class SortedStream
 {
     private readonly ShardStream _stream;
     private readonly ShardSearchRequest _search;
+    private readonly int _sign;
     private Input _input = new(null, CursorCycleState.Initial, null);
     private Input? _emittedFrom;
     private ShardPage? _page;
     private int _index;
     private SortedAnchor? _lastEmitted;
 
-    public SortedStream(ShardStream stream, ShardSearchRequest search)
+    public SortedStream(ShardStream stream, ShardSearchRequest search, LastUpdatedSort direction)
     {
         _stream = stream;
         _search = search;
+        _sign = direction == LastUpdatedSort.Ascending ? 1 : -1;
     }
 
     public int Ordinal => _stream.Ordinal;
@@ -50,8 +53,29 @@ internal sealed class SortedStream
             _input = new Input(next, cycle, preceding);
         }
 
-        _page = _input.Cursor is { } cursor ? await scheduler.ContinueAsync(cursor) : await scheduler.SearchAsync(_search);
+        ShardPage page = _input.Cursor is { } cursor ? await scheduler.ContinueAsync(cursor) : await scheduler.SearchAsync(_search);
+        CheckOrder(page);
+        _page = page;
         _index = 0;
+    }
+
+    /// <summary>
+    /// Rejects a page with an entry that has no instant, or that is not monotonic in the sort direction from the
+    /// preceding nonempty page's last instant, including entries this execution will never emit: a backend that returns
+    /// them out of order cannot be trusted to have returned the ones before them in order (design Q5).
+    /// </summary>
+    private void CheckOrder(ShardPage page)
+    {
+        DateTimeOffset? previous = _input.Preceding;
+        foreach (ShardEntry entry in page.Entries)
+        {
+            if (entry.LastUpdated is not { } instant || (previous is { } before && _sign * instant.CompareTo(before) < 0))
+            {
+                throw new ShardFailureException(_stream.Shard, ShardFailureReason.ContractViolation, null);
+            }
+
+            previous = instant;
+        }
     }
 
     /// <summary>Emits <see cref="Head"/> and makes its input the stream's checkpoint.</summary>
