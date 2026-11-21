@@ -50,13 +50,13 @@ public sealed class SortedPageExecutorSchedulingTests
             for (int i = started + batch - 1; i >= started; i--)
             {
                 gates[i].SetResult();
-                await client.Calls[i].Finished.WaitAsync(Token);
+                await client.Calls[i].Finished.WaitAsync(Guard, Token);
             }
 
             started += batch;
         }
 
-        SortedPage page = await running;
+        SortedPage page = await running.WaitAsync(Guard, Token);
 
         client.MaxInFlight.ShouldBe(maxParallel);
         client.Calls.Select(c => c.ToString()).ShouldBe(["search s0 count=5", "search s1 count=5", "search s2 count=5", "search s3 count=5"]);
@@ -117,10 +117,10 @@ public sealed class SortedPageExecutorSchedulingTests
         {
             running.IsCompleted.ShouldBeFalse("the batch is joined before any outcome is chosen");
             (slot == 0 ? s0Gate : s1Gate).SetResult();
-            await client.Calls[slot].Finished.WaitAsync(Token);
+            await client.Calls[slot].Finished.WaitAsync(Guard, Token);
         }
 
-        Exception thrown = await Should.ThrowAsync<Exception>(running);
+        Exception thrown = await Should.ThrowAsync<Exception>(running.WaitAsync(Guard, Token));
 
         switch (kind)
         {
@@ -225,7 +225,7 @@ public sealed class SortedPageExecutorSchedulingTests
             catch (OperationCanceledException)
             {
                 s1Cancelled.SetResult();
-                await s1Exit.Task.WaitAsync(Token);
+                await s1Exit.Task.WaitAsync(Guard, Token);
                 throw;
             }
         });
@@ -238,7 +238,7 @@ public sealed class SortedPageExecutorSchedulingTests
         running.IsCompleted.ShouldBeFalse("s1 has not finished");
         s1Exit.SetResult();
 
-        await Should.ThrowAsync<OperationCanceledException>(running);
+        await Should.ThrowAsync<OperationCanceledException>(running.WaitAsync(Guard, Token));
 
         s1Token.ShouldBe(caller.Token);
         client.Calls.Select(c => c.ToString()).ShouldBe(["search s0 count=2", "search s1 count=2"]);
@@ -293,7 +293,7 @@ public sealed class SortedPageExecutorSchedulingTests
         await client.WhenStarted(synchronous ? 1 : 2).WaitAsync(Guard, Token);
         running.IsCompleted.ShouldBeFalse("s1 has not finished");
         s1Gate.SetResult();
-        ShardFailureException failure = await Should.ThrowAsync<ShardFailureException>(running);
+        ShardFailureException failure = await Should.ThrowAsync<ShardFailureException>(running.WaitAsync(Guard, Token));
 
         (failure.Shard, failure.Reason).ShouldBe((Fixture.Shard(0), ShardFailureReason.Failed));
         if (synchronous)
