@@ -351,5 +351,51 @@ public sealed class SortedPageExecutorSchedulingTests
         s0Token.IsCancellationRequested.ShouldBeFalse();
     }
 
+    /// <summary>
+    /// A budget below the three owners' head demand admits only its ordinal prefix in one batch: those calls start and
+    /// finish, the denied owners start nothing, and the page fails. A budget of 0 starts nothing at all.
+    /// </summary>
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
+    [InlineData(2)]
+    public async Task BudgetBelowHeadDemand_AdmitsOnlyItsOrdinalPrefix_AndFails(int budget)
+    {
+        var client = new FakeShardClient();
+        for (int i = 0; i < 3; i++)
+        {
+            client.OnSearch(i, Fixture.Page(null, SortedFixture.Entry(i, "a", i + 1)));
+        }
+
+        await Should.ThrowAsync<FetchBudgetExhaustedException>(SortedFixture.Executor(client, Fixture.Registry(3), 3)
+            .ExecuteAsync(SortedFixture.Streams(Ascending, 0, 1, 2), Ascending, 2, null, budget, Token));
+
+        client.Calls.Select(c => c.ToString()).ShouldBe(Enumerable.Range(0, budget).Select(i => $"search s{i} count=2"));
+        client.InFlight.ShouldBe(0);
+    }
+
+    /// <summary>A budget that covers exactly the calls the page needs, refill included, succeeds and reports them.</summary>
+    [Fact]
+    public async Task ExactBudget_Succeeds_ReportingTheCallsStarted()
+    {
+        FakeShardClient client = RefillNeededForTheThirdMatch();
+
+        SortedPage page = await SortedFixture.Executor(client, Fixture.Registry(2), 2)
+            .ExecuteAsync(SortedFixture.Streams(Ascending, 0, 1), Ascending, 3, null, 3, Token);
+
+        page.Ids().ShouldBe(["s0/a", "s1/b", "s0/c"]);
+        client.Calls.Select(c => c.ToString()).ShouldBe(["search s0 count=3", "search s1 count=3", "continue s0"]);
+        page.Fetches.ShouldBe(3);
+    }
+
+    /// <summary>s0: [a@1] → p1 [c@3] → p2 [e@5]; s1: [b@2, d@4]. A page of 3 needs s0's p1 but not its p2.</summary>
+    private static FakeShardClient RefillNeededForTheThirdMatch()
+    {
+        var client = new FakeShardClient();
+        client.Chain(0, [SortedFixture.Entry(0, "a", 1)], [SortedFixture.Entry(0, "c", 3)], [SortedFixture.Entry(0, "e", 5)]);
+        client.Chain(1, [SortedFixture.Entry(1, "b", 2), SortedFixture.Entry(1, "d", 4)]);
+        return client;
+    }
+
     private static TaskCompletionSource Gate() => new(TaskCreationOptions.RunContinuationsAsynchronously);
 }
