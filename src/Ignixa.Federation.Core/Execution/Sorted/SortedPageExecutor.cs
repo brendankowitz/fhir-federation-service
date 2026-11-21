@@ -91,18 +91,22 @@ public sealed class SortedPageExecutor
 
         cancellationToken.ThrowIfCancellationRequested();
         int requestCount = FirstRequestCount(pageSize, ordered.Length);
+        Comparer<(DateTimeOffset Instant, int Ordinal)> order = EmissionOrder(direction);
+        (DateTimeOffset Instant, int Ordinal)? floor = resumeFrom is null ? null : Boundary(resumeFrom, ordered, order);
         SortedStream[] owners =
         [
             .. ordered.Select((stream, i) => new SortedStream(
                 stream,
                 resumeFrom?.Streams[i] ?? SortedStreamContinuation.AtSearch(stream.FirstPage(requestCount), null),
-                direction)),
+                direction,
+                order,
+                floor)),
         ];
         var matches = new List<ShardEntry>();
         var scheduler = new FetchScheduler(_client, fetchBudget, _maxParallelFetches, cancellationToken);
         await using (scheduler)
         {
-            await MergeAsync(owners, direction, pageSize, matches, scheduler);
+            await MergeAsync(owners, order, pageSize, matches, scheduler);
         }
 
         SortedContinuation? next = owners.All(owner => owner.IsExhausted)
@@ -117,7 +121,7 @@ public sealed class SortedPageExecutor
     /// </summary>
     private static async Task MergeAsync(
         SortedStream[] owners,
-        LastUpdatedSort direction,
+        Comparer<(DateTimeOffset Instant, int Ordinal)> order,
         int pageSize,
         List<ShardEntry> matches,
         FetchScheduler scheduler)
@@ -134,7 +138,7 @@ public sealed class SortedPageExecutor
             unresolved = [.. unresolved.Where(owner => owner.NeedsFetch)];
         }
 
-        var heads = new PriorityQueue<SortedStream, (DateTimeOffset Instant, int Ordinal)>(EmissionOrder(direction));
+        var heads = new PriorityQueue<SortedStream, (DateTimeOffset Instant, int Ordinal)>(order);
         foreach (SortedStream owner in owners)
         {
             Enqueue(heads, owner);
@@ -181,6 +185,28 @@ public sealed class SortedPageExecutor
             int byInstant = sign * left.Instant.CompareTo(right.Instant);
             return byInstant != 0 ? byInstant : left.Ordinal.CompareTo(right.Ordinal);
         });
+    }
+
+    /// <summary>
+    /// Recovers the previous federation page's last match: the furthest in emission order of every owner's last
+    /// emission, exhausted owners included (design Q3). <see langword="null"/> when that page emitted nothing.
+    /// </summary>
+    private static (DateTimeOffset Instant, int Ordinal)? Boundary(
+        SortedContinuation resumeFrom,
+        ShardStream[] ordered,
+        Comparer<(DateTimeOffset Instant, int Ordinal)> order)
+    {
+        (DateTimeOffset Instant, int Ordinal)? furthest = null;
+        for (int i = 0; i < ordered.Length; i++)
+        {
+            if (resumeFrom.Streams[i].LastEmitted is { } emitted
+                && (furthest is not { } current || order.Compare((emitted.LastUpdated, ordered[i].Ordinal), current) > 0))
+            {
+                furthest = (emitted.LastUpdated, ordered[i].Ordinal);
+            }
+        }
+
+        return furthest;
     }
 
     /// <summary>

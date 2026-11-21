@@ -16,6 +16,8 @@ internal sealed class SortedStream
     private readonly ShardStream _stream;
     private readonly ShardSearchRequest? _search;
     private readonly int _sign;
+    private readonly IComparer<(DateTimeOffset Instant, int Ordinal)> _order;
+    private readonly (DateTimeOffset Instant, int Ordinal)? _floor;
     private readonly HashSet<ShardCursor> _redeemed = [];
     private Input _input = new(null, CursorCycleState.Initial, null);
     private Input? _emittedFrom;
@@ -25,10 +27,25 @@ internal sealed class SortedStream
     private SortedAnchor? _replayedAnchor;
 
     /// <summary>Starts the stream at <paramref name="start"/>: a fresh first search, or a saved checkpoint to replay.</summary>
-    public SortedStream(ShardStream stream, SortedStreamContinuation start, LastUpdatedSort direction)
+    /// <param name="stream">The owner's shard stream.</param>
+    /// <param name="start">The input to read first.</param>
+    /// <param name="direction">The sort direction.</param>
+    /// <param name="order">The federation's emission order (design Q6).</param>
+    /// <param name="floor">
+    /// The previous federation page's last match, which no head may precede (design Q3), or <see langword="null"/> on a
+    /// first page or after a page that emitted nothing.
+    /// </param>
+    public SortedStream(
+        ShardStream stream,
+        SortedStreamContinuation start,
+        LastUpdatedSort direction,
+        IComparer<(DateTimeOffset Instant, int Ordinal)> order,
+        (DateTimeOffset Instant, int Ordinal)? floor)
     {
         _stream = stream;
         _sign = direction == LastUpdatedSort.Ascending ? 1 : -1;
+        _order = order;
+        _floor = floor;
 
         // A stream redeemed from a cursor never returns to its first search, so it has none.
         _search = start.Search;
@@ -90,6 +107,13 @@ internal sealed class SortedStream
         _page = page;
         _index = start;
         _replayedAnchor = null;
+
+        // Only eligible entries face the boundary; the replayed prefix legitimately precedes it. Checking every new
+        // head, not just the first, is equivalent: the stream is monotonic and its own ordinal never changes.
+        if (_floor is { } floor && Head is { } head && _order.Compare((head.LastUpdated!.Value, Ordinal), floor) < 0)
+        {
+            throw new ShardFailureException(_stream.Shard, ShardFailureReason.ContractViolation, null);
+        }
     }
 
     /// <summary>

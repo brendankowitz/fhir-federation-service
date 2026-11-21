@@ -95,6 +95,92 @@ public sealed class SortedPageExecutorValidationTests
     }
 
     [Theory]
+    [InlineData(LastUpdatedSort.Ascending, "silent owner behind a live boundary owner", 1)]
+    [InlineData(LastUpdatedSort.Descending, "silent owner behind a live boundary owner", 1)]
+    [InlineData(LastUpdatedSort.Ascending, "silent owner behind an exhausted boundary owner", 1)]
+    [InlineData(LastUpdatedSort.Descending, "silent owner behind an exhausted boundary owner", 1)]
+    [InlineData(LastUpdatedSort.Ascending, "equal instant on a lower ordinal", 0)]
+    [InlineData(LastUpdatedSort.Descending, "equal instant on a lower ordinal", 0)]
+    public async Task HeadBehindThePreviousFederationPagesLastMatch_IsAContractViolation(
+        LastUpdatedSort direction,
+        string scenario,
+        int culprit)
+    {
+        int sign = direction == LastUpdatedSort.Ascending ? 1 : -1;
+        var client = new FakeShardClient();
+        SortedStreamContinuation[] owners = scenario switch
+        {
+            "silent owner behind a live boundary owner" =>
+            [
+                SortedStreamContinuation.AtSearch(SortedFixture.Stream(0, direction, pageSize: 2), SortedFixture.Anchor(0, "a", sign * 5)),
+                SortedStreamContinuation.AtSearch(SortedFixture.Stream(1, direction, pageSize: 2), null),
+            ],
+            "silent owner behind an exhausted boundary owner" =>
+            [
+                SortedStreamContinuation.AtEnd(Fixture.Shard(0), SortedFixture.Anchor(0, "a", sign * 5)),
+                SortedStreamContinuation.AtSearch(SortedFixture.Stream(1, direction, pageSize: 2), null),
+            ],
+            _ =>
+            [
+                SortedStreamContinuation.AtSearch(SortedFixture.Stream(0, direction, pageSize: 2), null),
+                SortedStreamContinuation.AtEnd(Fixture.Shard(1), SortedFixture.Anchor(1, "b", sign * 5)),
+            ],
+        };
+        client.OnSearch(0, Fixture.Page(null, SortedFixture.Entry(0, "a", sign * 5), SortedFixture.Entry(0, "c", sign * 7)));
+        client.OnSearch(1, Fixture.Page(null, SortedFixture.Entry(1, "b", sign * 3)));
+        if (culprit == 0)
+        {
+            client.OnSearch(0, Fixture.Page(null, SortedFixture.Entry(0, "x", sign * 5)));
+        }
+
+        ShardFailureException failure = await Should.ThrowAsync<ShardFailureException>(() => client.Resume(direction, 2, owners), scenario);
+
+        failure.Shard.ShouldBe(Fixture.Shard(culprit));
+        failure.Reason.ShouldBe(ShardFailureReason.ContractViolation);
+    }
+
+    [Theory]
+    [InlineData(LastUpdatedSort.Ascending, "equal instant on a higher ordinal", "s1/b")]
+    [InlineData(LastUpdatedSort.Descending, "equal instant on a higher ordinal", "s1/b")]
+    [InlineData(LastUpdatedSort.Ascending, "equal instant after the boundary owner's anchor", "s0/c")]
+    [InlineData(LastUpdatedSort.Descending, "equal instant after the boundary owner's anchor", "s0/c")]
+    [InlineData(LastUpdatedSort.Ascending, "replayed prefix behind the boundary", "s0/c")]
+    [InlineData(LastUpdatedSort.Descending, "replayed prefix behind the boundary", "s0/c")]
+    public async Task HeadAtOrAfterThePreviousFederationPagesLastMatch_IsEmitted(
+        LastUpdatedSort direction,
+        string scenario,
+        string expected)
+    {
+        int sign = direction == LastUpdatedSort.Ascending ? 1 : -1;
+        var client = new FakeShardClient();
+        SortedStreamContinuation[] owners = scenario switch
+        {
+            "equal instant on a higher ordinal" =>
+            [
+                SortedStreamContinuation.AtEnd(Fixture.Shard(0), SortedFixture.Anchor(0, "a", sign * 5)),
+                SortedStreamContinuation.AtSearch(SortedFixture.Stream(1, direction, pageSize: 2), null),
+            ],
+            "equal instant after the boundary owner's anchor" =>
+            [
+                SortedStreamContinuation.AtSearch(SortedFixture.Stream(0, direction, pageSize: 2), SortedFixture.Anchor(0, "a", sign * 5)),
+                SortedStreamContinuation.AtEnd(Fixture.Shard(1), null),
+            ],
+            _ =>
+            [
+                SortedStreamContinuation.AtSearch(SortedFixture.Stream(0, direction, pageSize: 2), SortedFixture.Anchor(0, "a", sign * 5)),
+                SortedStreamContinuation.AtEnd(Fixture.Shard(1), SortedFixture.Anchor(1, "b", sign * 6)),
+            ],
+        };
+        DateTimeOffset after = SortedFixture.At(sign * (scenario == "replayed prefix behind the boundary" ? 7 : 5));
+        client.OnSearch(0, Fixture.Page(null, SortedFixture.Entry(0, "p", sign * 4), SortedFixture.Entry(0, "a", sign * 5), SortedFixture.Entry(0, "c", after)));
+        client.OnSearch(1, Fixture.Page(null, SortedFixture.Entry(1, "b", sign * 5)));
+
+        SortedPage page = await client.Resume(direction, 2, owners);
+
+        page.Ids().ShouldBe([expected], scenario);
+    }
+
+    [Theory]
     [InlineData(0)]
     [InlineData(2)]
     public async Task NullLastUpdatedOnANeededPage_IsAContractViolationBeforeAnyEmission(int nullPosition)
