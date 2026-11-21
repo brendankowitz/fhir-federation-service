@@ -69,6 +69,9 @@ internal sealed class ScriptedShards : IShardClientFactory
     /// <summary>Supplies a backend response for a count-only search, when scripted.</summary>
     public Func<ShardSearchRequest, ShardPage>? CountAnswer { get; set; }
 
+    /// <summary>Gets or sets the response-body bytes every count-only answer charges to the request budget, like a real count response would.</summary>
+    public long CountResponseBytes { get; set; }
+
     public bool FilterGeneratedIds { get; set; }
 
     public IReadOnlyDictionary<string, IReadOnlyList<SearchWorld.SeedResource>> Resources { get; set; } = SearchWorld.Resources;
@@ -96,6 +99,7 @@ internal sealed class ScriptedShards : IShardClientFactory
             await SendAsync(request.Shard, cancellationToken, parkable: request.PageSize == 0);
             if (request.PageSize == 0 && script.CountAnswer is { } count)
             {
+                budget.OnResponseBytesConsumed(script.CountResponseBytes);
                 return Answered(count(request));
             }
 

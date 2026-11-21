@@ -350,6 +350,35 @@ public sealed class PrimarySearchReverseCountTests
         }
     }
 
+    [Fact]
+    public async Task WitnessAndCountResponseBytesAreOneRequestBudget()
+    {
+        // The scripted shards answer discovery with every Observation they hold, so the witness phase charges exactly these bytes.
+        long witnessBytes = SearchWorld.Resources.Values.SelectMany(r => r).Where(r => r.Type == "Observation").Sum(r => (long)r.Json.Length);
+        // Each of the two owner counts then charges half of that again. Alone the witness phase, one count answer and the whole
+        // count phase fit the cap; only the witness phase plus a count do not.
+        long countBytes = witnessBytes / 2;
+        long cap = witnessBytes + 1;
+        witnessBytes.ShouldBeLessThanOrEqualTo(cap);
+        countBytes.ShouldBeLessThanOrEqualTo(cap);
+        (2 * countBytes).ShouldBeLessThanOrEqualTo(cap);
+        (witnessBytes + countBytes).ShouldBeGreaterThan(cap);
+        using SearchHost host = Start(configure: s =>
+        {
+            s.Settings["Federation:Limits:MaxResponseBytes"] = cap.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            s.Shards.CountResponseBytes = countBytes;
+        });
+
+        SearchResult result = await SendAsync(host, false, Has + "&_count=0");
+
+        // The count phase was reached: both witness scans completed within the cap, then a count call was charged past it.
+        host.Shards.Calls.Count(c => c.Parameters == "code=oracle-code").ShouldBe(2);
+        host.Shards.Calls.Any(c => c.Method is not null && c.PageSize == 0).ShouldBeTrue();
+        AssertFailure(result, HttpStatusCode.BadRequest, "too-costly");
+        result.Json.GetProperty("resourceType").GetString().ShouldBe("OperationOutcome");
+        result.Body.ShouldNotContain("subtotal");
+    }
+
     private static async Task AssertSignalledAsync(Task signal, string because)
     {
         Task first = await Task.WhenAny(signal, Task.Delay(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken));
