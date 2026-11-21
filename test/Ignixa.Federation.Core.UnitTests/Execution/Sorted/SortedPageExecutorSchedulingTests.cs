@@ -202,5 +202,48 @@ public sealed class SortedPageExecutorSchedulingTests
         return thrown.Shard;
     }
 
+    /// <summary>
+    /// The caller cancels while s1 is in flight and s0 has already failed; s2 was denied by the budget. Cancellation wins,
+    /// reaches s1 through the token it was given, and is thrown only once s1, which delays its exit, has finished.
+    /// </summary>
+    [Fact]
+    public async Task CallerCancellationMidBatch_BeatsFailureAndDenial_OnceTheBatchHasFinished()
+    {
+        using var caller = CancellationTokenSource.CreateLinkedTokenSource(Token);
+        var client = new FakeShardClient();
+        TaskCompletionSource s1Cancelled = Gate(), s1Exit = Gate();
+        client.OnSearchThrows(0, new InvalidOperationException("s0 failed"));
+        CancellationToken s1Token = default;
+        client.OnSearch(Fixture.Shard(1), async (_, token) =>
+        {
+            s1Token = token;
+            try
+            {
+                await Task.Delay(Timeout.Infinite, token);
+                throw new InvalidOperationException("Unreachable.");
+            }
+            catch (OperationCanceledException)
+            {
+                s1Cancelled.SetResult();
+                await s1Exit.Task.WaitAsync(Token);
+                throw;
+            }
+        });
+
+        Task<SortedPage> running = SortedFixture.Executor(client, Fixture.Registry(3), 3)
+            .ExecuteAsync(SortedFixture.Streams(Ascending, 0, 1, 2), Ascending, 2, null, 2, caller.Token);
+        await client.WhenStarted(2).WaitAsync(Guard, Token);
+        await caller.CancelAsync();
+        await s1Cancelled.Task.WaitAsync(Guard, Token);
+        running.IsCompleted.ShouldBeFalse("s1 has not finished");
+        s1Exit.SetResult();
+
+        await Should.ThrowAsync<OperationCanceledException>(running);
+
+        s1Token.ShouldBe(caller.Token);
+        client.Calls.Select(c => c.ToString()).ShouldBe(["search s0 count=2", "search s1 count=2"]);
+        client.InFlight.ShouldBe(0);
+    }
+
     private static TaskCompletionSource Gate() => new(TaskCreationOptions.RunContinuationsAsynchronously);
 }

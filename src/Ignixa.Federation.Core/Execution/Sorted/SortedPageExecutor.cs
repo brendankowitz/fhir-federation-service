@@ -107,7 +107,7 @@ public sealed class SortedPageExecutor
         var scheduler = new FetchScheduler(_client, fetchBudget, _maxParallelFetches, cancellationToken);
         await using (scheduler)
         {
-            await MergeAsync(owners, order, pageSize, matches, scheduler);
+            await MergeAsync(owners, order, pageSize, matches, scheduler, cancellationToken);
         }
 
         SortedContinuation? next = owners.All(owner => owner.IsExhausted)
@@ -125,7 +125,8 @@ public sealed class SortedPageExecutor
         Comparer<(DateTimeOffset Instant, int Ordinal)> order,
         int pageSize,
         List<ShardEntry> matches,
-        FetchScheduler scheduler)
+        FetchScheduler scheduler,
+        CancellationToken cancellationToken)
     {
         // Ordinal rounds: one input per unresolved owner per round, so no owner's leading empties delay another's head.
         // Each round runs in fixed ordinal batches, so which calls run together never depends on how fast shards answer.
@@ -134,7 +135,7 @@ public sealed class SortedPageExecutor
         {
             foreach (SortedStream[] batch in unresolved.Chunk(_maxParallelFetches))
             {
-                await FetchAsync(batch, scheduler);
+                await FetchAsync(batch, scheduler, cancellationToken);
             }
 
             unresolved = [.. unresolved.Where(owner => owner.NeedsFetch)];
@@ -156,7 +157,7 @@ public sealed class SortedPageExecutor
 
             while (winner.NeedsFetch)
             {
-                await FetchAsync([winner], scheduler);
+                await FetchAsync([winner], scheduler, cancellationToken);
             }
 
             Enqueue(heads, winner);
@@ -168,12 +169,16 @@ public sealed class SortedPageExecutor
     /// all, then hands each owner its page in ordinal order. The first owner whose call failed or whose page is invalid
     /// throws, so which error wins never depends on which call finished first.
     /// </summary>
-    private static async Task FetchAsync(SortedStream[] batch, FetchScheduler scheduler)
+    private static async Task FetchAsync(SortedStream[] batch, FetchScheduler scheduler, CancellationToken cancellationToken)
     {
         Task<ShardPage>[] calls = [.. batch.Select(owner => owner.RequestAsync(scheduler))];
+
         // Joining observes every call's failure, so the ones arbitration discards never surface as unobserved exceptions.
         Task joined = Task.WhenAll(calls);
         await joined.ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
+
+        // Caller cancellation outranks every slot's outcome, whichever came first.
+        cancellationToken.ThrowIfCancellationRequested();
         for (int i = 0; i < batch.Length; i++)
         {
             batch[i].Accept(await calls[i]);
