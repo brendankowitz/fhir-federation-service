@@ -223,6 +223,70 @@ public sealed class SortedPageExecutorReplayTests
     }
 
     [Fact]
+    public async Task Redeem_TheSameSnapshotTwice_ReproducesTheMatchesTheCallsAndTheSuccessor()
+    {
+        var client = new FakeShardClient();
+        client.Chain(0, [], [SortedFixture.Entry(0, "a", 1), SortedFixture.Entry(0, "b", 4)], [SortedFixture.Entry(0, "c", 7)]);
+        client.Chain(1, [SortedFixture.Entry(1, "d", 2)], [SortedFixture.Entry(1, "e", 4), SortedFixture.Entry(1, "f", 9)]);
+        client.Chain(2, [SortedFixture.Entry(2, "g", 3), SortedFixture.Entry(2, "h", 5), SortedFixture.Entry(2, "i", 6)]);
+        SortedPageExecutor executor = SortedFixture.Executor(client, Fixture.Registry(3));
+        ShardSearchRequest[] streams = SortedFixture.Streams(LastUpdatedSort.Ascending, 2, 0, 1);
+        SortedContinuation snapshot = (await executor.ExecuteAsync(streams, LastUpdatedSort.Ascending, 3, null, 10, Token)).Next!;
+
+        int before = client.Calls.Count;
+        SortedPage once = await executor.ExecuteAsync(streams, LastUpdatedSort.Ascending, 3, snapshot, 10, Token);
+        int between = client.Calls.Count;
+        SortedPage twice = await executor.ExecuteAsync(streams, LastUpdatedSort.Ascending, 3, snapshot, 10, Token);
+
+        once.Ids().ShouldBe(["s0/b", "s1/e", "s2/h"]);
+        twice.Ids().ShouldBe(once.Ids());
+        twice.Matches.Select(m => Convert.ToBase64String(m.Resource.Span)).ShouldBe(once.Matches.Select(m => Convert.ToBase64String(m.Resource.Span)));
+        FakeCall[] onceCalls = [.. client.Calls.Skip(before).Take(between - before)], twiceCalls = [.. client.Calls.Skip(between)];
+        twiceCalls.Select(c => c.ToString()).ShouldBe(onceCalls.Select(c => c.ToString()));
+        for (int i = 0; i < onceCalls.Length; i++)
+        {
+            twiceCalls[i].Search.ShouldBeSameAs(onceCalls[i].Search);
+            twiceCalls[i].Cursor.ShouldBeSameAs(onceCalls[i].Cursor);
+        }
+
+        twice.Fetches.ShouldBe(once.Fetches);
+        SortedContinuation onceNext = once.Next.ShouldNotBeNull(), twiceNext = twice.Next.ShouldNotBeNull();
+        twiceNext.Describe().ShouldBe(onceNext.Describe());
+        for (int i = 0; i < onceNext.Streams.Count; i++)
+        {
+            twiceNext.Streams[i].Search.ShouldBeSameAs(onceNext.Streams[i].Search);
+            twiceNext.Streams[i].Cursor.ShouldBeSameAs(onceNext.Streams[i].Cursor);
+            twiceNext.Streams[i].CycleState.ShouldBe(onceNext.Streams[i].CycleState);
+            (twiceNext.Streams[i].LastEmitted?.Key, twiceNext.Streams[i].LastEmitted?.LastUpdated)
+                .ShouldBe((onceNext.Streams[i].LastEmitted?.Key, onceNext.Streams[i].LastEmitted?.LastUpdated));
+        }
+    }
+
+    [Fact]
+    public async Task Redeem_ACursorReplayedOnEveryPageAcrossTies_RaisesNoFalseCycle()
+    {
+        var client = new FakeShardClient();
+        client.Chain(
+            0, [], [SortedFixture.Entry(0, "a", 5), SortedFixture.Entry(0, "b", 5), SortedFixture.Entry(0, "c", 5), SortedFixture.Entry(0, "d", 5)]);
+        client.Chain(1, [SortedFixture.Entry(1, "z", 9)]);
+        SortedPageExecutor executor = SortedFixture.Executor(client, Fixture.Registry(2));
+        ShardSearchRequest[] streams = SortedFixture.Streams(LastUpdatedSort.Ascending, 0, 1);
+
+        List<SortedPage> pages = await executor.ReadAllAsync(streams, LastUpdatedSort.Ascending, 1);
+        SortedPage again = await executor.ExecuteAsync(streams, LastUpdatedSort.Ascending, 1, pages[1].Next, 10, Token);
+
+        pages.SelectMany(p => p.Ids()).ShouldBe(["s0/a", "s0/b", "s0/c", "s0/d", "s1/z"]);
+        pages.Take(3).Select(p => p.Next!.Describe()[0]).ShouldBe(
+        [
+            "s0 cursor p1 a@5 power=2 steps=0 preceding=-",
+            "s0 cursor p1 b@5 power=2 steps=0 preceding=-",
+            "s0 cursor p1 c@5 power=2 steps=0 preceding=-",
+        ]);
+        again.Ids().ShouldBe(pages[2].Ids());
+        again.Next.ShouldNotBeNull().Describe().ShouldBe(pages[2].Next!.Describe());
+    }
+
+    [Fact]
     public async Task FetchedButUnemittedSuccessor_LeavesTheCursorCheckpointAtItsInputCycleState()
     {
         var client = new FakeShardClient();
