@@ -10,4 +10,8 @@
     <ProjectReference Include="..\..\src\Ignixa.Federation.Api\Ignixa.Federation.Api.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <EmbeddedResource Include="Correlation\d60-vectors-v1.json" LogicalName="d60-vectors-v1.json" />
+  </ItemGroup>
+
 </Project>
