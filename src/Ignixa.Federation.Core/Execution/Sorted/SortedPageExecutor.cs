@@ -17,10 +17,12 @@ namespace Ignixa.Federation.Core.Execution.Sorted;
 /// </para>
 /// <para>
 /// One execution has one coordinator. Priming, for a first page and a redemption alike, runs in ordinal rounds of one
-/// call per stream without a head; each round runs in fixed ordinal batches of at most the configured parallelism, whose
-/// calls start together and are all joined before the next batch starts. After priming only the stream whose head was
-/// emitted is refilled, one call at a time and only while the page needs another match. Which calls run together, the
-/// requests sent and the matches emitted never depend on the order in which shards answer.
+/// call per stream that has neither a head nor proof of exhaustion; each round runs in fixed ordinal batches of at most
+/// the configured parallelism, whose calls start together and are all joined before the next batch starts. After priming
+/// only the stream whose head was emitted is refilled, one call at a time and only while the page needs another match.
+/// Which calls run together, the requests sent and the matches emitted never depend on the order in which shards answer.
+/// The executor bounds the concurrency of these needed calls itself, through the batch size; the fetch scheduler only
+/// charges the budget and maps call failures.
 /// </para>
 /// </remarks>
 public sealed class SortedPageExecutor
