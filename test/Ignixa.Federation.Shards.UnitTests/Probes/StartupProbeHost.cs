@@ -81,6 +81,21 @@ internal sealed class StartupProbeHost : IAsyncDisposable
         return _host;
     }
 
+    /// <summary>
+    /// Builds, without starting, the same host without the capability refresher's worker, so the probes are the only
+    /// caller of the credential provider and the only sender to the backends and their order is deterministic.
+    /// </summary>
+    public IHost BuildProbeOnlyHost(IShardCredentialProvider credentials, Action<HostOptions>? hostOptions = null) =>
+        BuildHost(
+            services =>
+            {
+                ServiceDescriptor refresh = services.Single(d => d.ImplementationType == typeof(ShardCapabilityRefreshWorker));
+                services.Remove(refresh);
+                services.AddShardStartupProbes(PatientForEveryShard());
+            },
+            credentials,
+            hostOptions);
+
     /// <summary>Runs only the startup-probe health check, as the ready endpoint would for it.</summary>
     public async Task<HealthReportEntry> CheckAsync(CancellationToken cancellationToken)
     {

@@ -12,8 +12,9 @@ namespace Ignixa.Federation.Shards.Probes;
 /// </summary>
 /// <remarks>
 /// <para>
-/// It uses the client's ordinary <see cref="HttpShardClient.SearchAsync"/> and <see cref="HttpShardClient.ContinueAsync"/>, so
-/// the credential, deadline, size limits, breaker, retry policy and meter are the client's. The cursor is the one the client
+/// It uses the client's probe search and redemption, which are the ordinary exchanges, so the credential, deadline, size
+/// limits, breaker, retry policy and meter are the client's. They differ in one way: a credential outage while acquiring the
+/// token is a failed read like any other, not an exception. The cursor is the one the client
 /// returned, with the redemption its stream method and profile give it. The probe sends at most three logical exchanges, reads
 /// no further page and writes nothing; a transport retry, if the client makes one, is the client's own.
 /// </para>
@@ -84,7 +85,7 @@ public static class LastUpdatedReplayProbe
 
         // Every sample is one atomic read: a refused or malformed exchange shows nothing, so there is no partial proof.
         ShardPage? start = await ReadAsync(
-            () => client.SearchAsync(new ShardSearchRequest(shard.Id, type, SortParameter, pageSize: 1, method), cancellationToken)).ConfigureAwait(false);
+            () => client.SearchForProbeAsync(new ShardSearchRequest(shard.Id, type, SortParameter, pageSize: 1, method), witness: null, cancellationToken)).ConfigureAwait(false);
         if (start is null)
         {
             return Result(LastUpdatedReplayProbeOutcome.ReadFailed);
@@ -102,7 +103,7 @@ public static class LastUpdatedReplayProbe
             return Result(LastUpdatedReplayProbeOutcome.InstantMissing);
         }
 
-        ShardPage? redeemed = await ReadAsync(() => client.ContinueAsync(cursor, cancellationToken)).ConfigureAwait(false);
+        ShardPage? redeemed = await ReadAsync(() => client.ContinueForProbeAsync(cursor, cancellationToken)).ConfigureAwait(false);
         if (redeemed is null)
         {
             return Result(LastUpdatedReplayProbeOutcome.ReadFailed);
@@ -129,7 +130,7 @@ public static class LastUpdatedReplayProbe
             return Result(LastUpdatedReplayProbeOutcome.OrderNotMonotone);
         }
 
-        ShardPage? replayed = await ReadAsync(() => client.ContinueAsync(cursor, cancellationToken)).ConfigureAwait(false);
+        ShardPage? replayed = await ReadAsync(() => client.ContinueForProbeAsync(cursor, cancellationToken)).ConfigureAwait(false);
         if (replayed is null)
         {
             return Result(LastUpdatedReplayProbeOutcome.ReadFailed);

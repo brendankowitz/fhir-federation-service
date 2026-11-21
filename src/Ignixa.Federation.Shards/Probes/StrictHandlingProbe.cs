@@ -19,7 +19,9 @@ namespace Ignixa.Federation.Shards.Probes;
 /// </para>
 /// <para>
 /// Only a lone request answered with 400 is proof. A 200, any other status, a retry that ends
-/// in 400 after another failure, a failure of the credential or meter, or a failed control is not. The probe proves one
+/// in 400 after another failure, a failure of the credential or meter, or a failed control is not. A credential outage
+/// while acquiring the token is such a failure, so it is a negative result and the next method is still probed; the
+/// credential provider's or meter's own unexpected exception still propagates. The probe proves one
 /// method per call; GET evidence says nothing about POST, so a caller that offers both probes both. It does not admit
 /// software or a profile, establish readiness, or test sorting or replay.
 /// </para>
@@ -95,7 +97,7 @@ public static class StrictHandlingProbe
 
         try
         {
-            await client.SearchAsync(Request(shard, type, method, []), cancellationToken).ConfigureAwait(false);
+            await client.SearchForProbeAsync(Request(shard, type, method, []), witness: null, cancellationToken).ConfigureAwait(false);
         }
         catch (ShardCallException)
         {
@@ -106,7 +108,7 @@ public static class StrictHandlingProbe
         ParameterOccurrence[] challenge = [new(UnadvertisedCode(advertisement, resource), ChallengeValue)];
         try
         {
-            await client.SearchWithWitnessAsync(Request(shard, type, method, challenge), witness, cancellationToken).ConfigureAwait(false);
+            await client.SearchForProbeAsync(Request(shard, type, method, challenge), witness, cancellationToken).ConfigureAwait(false);
             return Result(StrictHandlingProbeOutcome.ChallengeAccepted);
         }
         catch (ShardCallException) when (witness.WasOnlyAnsweredWith(BadRequest))

@@ -54,8 +54,8 @@ namespace Ignixa.Federation.Shards.Http;
 /// <c>Correlation-Context</c>): baggage is arbitrary application data and a shard is a separate trust domain.</para>
 /// <para><b>Failures.</b> A call either returns a page that represents the backend's answer exactly or throws: a
 /// classified <see cref="ShardCallException"/>, an <see cref="OperationCanceledException"/> when the caller cancels, or
-/// the credential provider's or meter's own exception (except that a metadata fetch reports a
-/// <see cref="ShardCredentialException"/> as <see cref="ShardCallFailure.CredentialUnavailable"/>). It never returns an
+/// the credential provider's or meter's own exception (except that a metadata fetch, and a search or redemption made by
+/// the startup probes, report a <see cref="ShardCredentialException"/> as <see cref="ShardCallFailure.CredentialUnavailable"/>). It never returns an
 /// empty page for a failure.</para>
 /// <para><b>Resilience.</b> A search, continuation or read that fails with a transient status (408, 429 or 5xx) or a
 /// connection fault is retried once if its wire method is GET, within the same deadline; a POST, a timeout, a permanent
@@ -77,10 +77,13 @@ public sealed class HttpShardClient : IShardClient, IDisposable
     private const string ReadStage = "read";
     private const string MetadataStage = "metadata";
 
-    // What one exchange asks of the backend; it decides how a status is read and what a failure says.
+    // What one exchange asks of the backend; it decides how a status is read and what a failure says. ProbeSearch is a
+    // Search for the startup probes: same wire, status reading and resilience, and differs only in reporting a credential
+    // outage at acquisition as a classified failure, because a probe records it as a negative result instead of faulting.
     private enum Operation
     {
         Search,
+        ProbeSearch,
         Read,
         Metadata,
     }
@@ -227,16 +230,19 @@ public sealed class HttpShardClient : IShardClient, IDisposable
         SearchWithContextAsync(request, context: default, cancellationToken);
 
     internal Task<ShardPage> SearchWithContextAsync(ShardSearchRequest request, ShardRequestContext context, CancellationToken cancellationToken) =>
-        SearchCoreAsync(request, context, witness: null, cancellationToken);
+        SearchCoreAsync(request, context, witness: null, Operation.Search, cancellationToken);
 
-    internal Task<ShardPage> SearchWithWitnessAsync(ShardSearchRequest request, WireWitness witness, CancellationToken cancellationToken) =>
-        SearchCoreAsync(request, context: default, witness, cancellationToken);
+    // The startup probes' search: the ordinary search exchange, except that a credential outage while acquiring the token
+    // is reported as CredentialUnavailable, as for a metadata fetch, so a probe can record it. The witness, when given,
+    // sees the wire of this exchange.
+    internal Task<ShardPage> SearchForProbeAsync(ShardSearchRequest request, WireWitness? witness, CancellationToken cancellationToken) =>
+        SearchCoreAsync(request, context: default, witness, Operation.ProbeSearch, cancellationToken);
 
     private Task<ShardPage> SearchCoreAsync(
-        ShardSearchRequest request, ShardRequestContext context, WireWitness? witness, CancellationToken cancellationToken)
+        ShardSearchRequest request, ShardRequestContext context, WireWitness? witness, Operation operation, CancellationToken cancellationToken)
     {
         (string query, bool post) = PrepareSearch(request);
-        return CallAsync(request.Type, query, post, ShardCallFailure.RequestTooLarge, page => FirstPage(request, query, page), context, witness, cancellationToken);
+        return CallAsync(request.Type, query, post, ShardCallFailure.RequestTooLarge, page => FirstPage(request, query, page), context, witness, operation, cancellationToken);
     }
 
     // Whether the wire form this search would send fits the configured ceiling for its own method, by the same rules a
@@ -281,7 +287,14 @@ public sealed class HttpShardClient : IShardClient, IDisposable
     public Task<ShardPage> ContinueAsync(ShardCursor cursor, CancellationToken cancellationToken) =>
         ContinueWithContextAsync(cursor, context: default, cancellationToken);
 
-    internal Task<ShardPage> ContinueWithContextAsync(ShardCursor cursor, ShardRequestContext context, CancellationToken cancellationToken)
+    internal Task<ShardPage> ContinueWithContextAsync(ShardCursor cursor, ShardRequestContext context, CancellationToken cancellationToken) =>
+        ContinueCoreAsync(cursor, context, Operation.Search, cancellationToken);
+
+    // The startup probes' redemption; see SearchForProbeAsync.
+    internal Task<ShardPage> ContinueForProbeAsync(ShardCursor cursor, CancellationToken cancellationToken) =>
+        ContinueCoreAsync(cursor, context: default, Operation.ProbeSearch, cancellationToken);
+
+    private Task<ShardPage> ContinueCoreAsync(ShardCursor cursor, ShardRequestContext context, Operation operation, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(cursor);
         if (cursor.Shard != _shard.Id)
@@ -308,6 +321,7 @@ public sealed class HttpShardClient : IShardClient, IDisposable
                 page.Total),
             context,
             witness: null,
+            operation,
             cancellationToken);
     }
 
@@ -680,6 +694,7 @@ public sealed class HttpShardClient : IShardClient, IDisposable
         Func<Searchset, ShardPage> interpret,
         ShardRequestContext context,
         WireWitness? witness,
+        Operation operation,
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
@@ -699,7 +714,7 @@ public sealed class HttpShardClient : IShardClient, IDisposable
                 post ? HttpMethod.Post : HttpMethod.Get,
                 uri,
                 post ? query : null,
-                Operation.Search,
+                operation,
                 body => interpret(Searchset.Read(body, _shard, type)),
                 context,
                 witness,
@@ -798,7 +813,7 @@ public sealed class HttpShardClient : IShardClient, IDisposable
         {
             throw new ExternalShardFailure(e);
         }
-        catch (ShardCredentialException) when (operation == Operation.Metadata)
+        catch (ShardCredentialException) when (operation is Operation.Metadata or Operation.ProbeSearch)
         {
             cancellationToken.ThrowIfCancellationRequested();
             throw Failure(
