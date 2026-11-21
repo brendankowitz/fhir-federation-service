@@ -388,6 +388,20 @@ public sealed class SortedPageExecutorSchedulingTests
         page.Fetches.ShouldBe(3);
     }
 
+    /// <summary>
+    /// The third match needs s0's refill, which a budget of 2 denies; the two matches already chosen are not returned.
+    /// </summary>
+    [Fact]
+    public async Task RequiredRefillBeyondTheBudget_FailsTheWholePage()
+    {
+        FakeShardClient client = RefillNeededForTheThirdMatch();
+
+        await Should.ThrowAsync<FetchBudgetExhaustedException>(SortedFixture.Executor(client, Fixture.Registry(2), 2)
+            .ExecuteAsync(SortedFixture.Streams(Ascending, 0, 1), Ascending, 3, null, 2, Token));
+
+        client.Calls.Select(c => c.ToString()).ShouldBe(["search s0 count=3", "search s1 count=3"]);
+    }
+
     /// <summary>s0: [a@1] → p1 [c@3] → p2 [e@5]; s1: [b@2, d@4]. A page of 3 needs s0's p1 but not its p2.</summary>
     private static FakeShardClient RefillNeededForTheThirdMatch()
     {
