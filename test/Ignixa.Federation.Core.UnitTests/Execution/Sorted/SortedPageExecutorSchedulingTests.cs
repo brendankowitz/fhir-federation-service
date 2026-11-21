@@ -65,6 +65,42 @@ public sealed class SortedPageExecutorSchedulingTests
     }
 
     /// <summary>
+    /// Redemption primes in the same batches as a first page: the replayed cursor of s0 and the saved search of s1 run
+    /// together, the exhausted s2 makes no call, and releasing s1 first changes nothing.
+    /// </summary>
+    [Fact]
+    public async Task RedemptionPriming_RunsInTheSameBoundedBatches()
+    {
+        var client = new FakeShardClient();
+        TaskCompletionSource s0Gate = Gate(), s1Gate = Gate();
+        ShardCursor p1 = Fixture.Cursor(0, "p1");
+        client.OnContinue(p1, s0Gate, Fixture.Page(null, SortedFixture.Entry(0, "a", 1), SortedFixture.Entry(0, "c", 3)));
+        client.OnSearch(1, s1Gate, Fixture.Page(null, SortedFixture.Entry(1, "b", 2)));
+        var resumeFrom = new SortedContinuation(
+            Fixture.Patient,
+            Ascending,
+            2,
+            [
+                SortedStreamContinuation.AtCursor(p1, SortedFixture.Anchor(0, "a", 1), new CursorCycleState(1UL, 2, 0), null),
+                SortedStreamContinuation.AtSearch(SortedFixture.Stream(1, pageSize: 2), null),
+                SortedStreamContinuation.AtEnd(Fixture.Shard(2), SortedFixture.Anchor(2, "z", 0)),
+            ]);
+
+        Task<SortedPage> running = SortedFixture.Executor(client, Fixture.Registry(3), 2)
+            .ExecuteAsync(SortedFixture.Streams(Ascending, 0, 1, 2), Ascending, 2, resumeFrom, 10, Token);
+        await client.WhenStarted(2).WaitAsync(Guard, Token);
+        s1Gate.SetResult();
+        await client.Calls[1].Finished.WaitAsync(Guard, Token);
+        s0Gate.SetResult();
+        SortedPage page = await running.WaitAsync(Guard, Token);
+
+        client.MaxInFlight.ShouldBe(2);
+        client.Calls.Select(c => c.ToString()).ShouldBe(["continue s0", "search s1 count=2"]);
+        page.Ids().ShouldBe(["s1/b", "s0/c"]);
+        page.Fetches.ShouldBe(2);
+    }
+
+    /// <summary>
     /// One batch holds s0, whose call goes wrong in the given way, s1, whose client fails, and s2, which the budget denies.
     /// s0's error is the one thrown, whichever of s0 and s1 completes first, and only once every started call has finished;
     /// s1's call is never cancelled because s0 went wrong.
