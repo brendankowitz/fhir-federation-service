@@ -56,6 +56,57 @@ public sealed class SortedPageExecutorFetchTests
         ]);
     }
 
+    [Theory]
+    [InlineData(100, 3, -1, 67)]
+    [InlineData(50, 10, -1, 20)]
+    [InlineData(5, 2, -1, 5)]
+    [InlineData(100, 3, 3, 67)]
+    public async Task FirstRequestCount_IsTheFairShareWithFloorCappedByPageSizeAndBackendLimit(
+        int pageSize,
+        int participatingCount,
+        int smallPageShard,
+        int fairShare)
+    {
+        // Every other shard of a larger registry participates, so K is the plan's stream count, not the registry size.
+        int[] participating = [.. Enumerable.Range(0, participatingCount).Select(i => (2 * i) + 1)];
+        var client = new FakeShardClient();
+        foreach (int ordinal in participating)
+        {
+            client.OnSearch(ordinal, Fixture.Page(null));
+        }
+
+        int registrySize = (2 * participatingCount) + 2;
+        ShardRegistry registry = smallPageShard < 0 ? Fixture.Registry(registrySize) : Fixture.Registry(registrySize, smallPageShard);
+        SortedPageExecutor executor = SortedFixture.Executor(client, registry);
+
+        SortedPage page = await executor.ExecuteAsync(
+            SortedFixture.Streams(LastUpdatedSort.Ascending, participating), LastUpdatedSort.Ascending, pageSize, null, 20, Token);
+
+        page.Matches.ShouldBeEmpty();
+        page.Next.ShouldBeNull();
+        client.Calls.Select(c => c.Search!.PageSize).ShouldBe(participating.Select(o => o == smallPageShard ? 2 : fairShare));
+    }
+
+    [Fact]
+    public async Task FirstRequest_KeepsTheTemplatesOccurrencesAndMethod_ButNotItsPageSize()
+    {
+        var client = new FakeShardClient();
+        client.OnSearch(1, Fixture.Page(null));
+        client.OnSearch(4, Fixture.Page(null));
+        ShardSearchRequest[] streams =
+        [
+            SortedFixture.Stream(1, LastUpdatedSort.Descending, ShardSearchMethod.PostSearch, pageSize: 7),
+            SortedFixture.Stream(4, LastUpdatedSort.Descending, ShardSearchMethod.Get, pageSize: 500),
+        ];
+        SortedPageExecutor executor = SortedFixture.Executor(client, Fixture.Registry(6));
+
+        await executor.ExecuteAsync(streams, LastUpdatedSort.Descending, 30, null, 20, Token);
+
+        client.Calls.Select(c => (c.Search!.Method, c.Search.PageSize)).ShouldBe(
+            [(ShardSearchMethod.PostSearch, 30), (ShardSearchMethod.Get, 30)]);
+        client.Calls.ShouldAllBe(c => c.Search!.Parameters.SequenceEqual(streams[0].Parameters));
+    }
+
     [Fact]
     public async Task SuccessorReadAheadButNotEmittedFrom_DoesNotDisplaceTheAnchoredCheckpoint()
     {

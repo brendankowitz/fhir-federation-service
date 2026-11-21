@@ -81,7 +81,8 @@ public sealed class SortedPageExecutor
             throw new NotSupportedException("Resuming a sorted search is not supported yet.");
         }
 
-        SortedStream[] owners = [.. ordered.Select(stream => new SortedStream(stream, stream.FirstPage(pageSize)))];
+        int requestCount = FirstRequestCount(pageSize, ordered.Length);
+        SortedStream[] owners = [.. ordered.Select(stream => new SortedStream(stream, stream.FirstPage(requestCount)))];
         var matches = new List<ShardEntry>(pageSize);
         var scheduler = new FetchScheduler(_client, fetchBudget, _maxParallelFetches, cancellationToken);
         await using (scheduler)
@@ -148,6 +149,13 @@ public sealed class SortedPageExecutor
             heads.Enqueue(owner, (head.LastUpdated!.Value, owner.Ordinal));
         }
     }
+
+    /// <summary>
+    /// Asks each of <paramref name="streamCount"/> owners for twice its fair share of the page, at least 20 to bound
+    /// round trips for skewed data and never more than the page itself (design Q4).
+    /// </summary>
+    private static int FirstRequestCount(int pageSize, int streamCount) =>
+        (int)Math.Min(pageSize, Math.Max(((2L * pageSize) + streamCount - 1) / streamCount, 20L));
 
     /// <summary>Orders heads by instant in <paramref name="direction"/>, then ascending registry ordinal (design Q6).</summary>
     private static Comparer<(DateTimeOffset Instant, int Ordinal)> EmissionOrder(LastUpdatedSort direction)
