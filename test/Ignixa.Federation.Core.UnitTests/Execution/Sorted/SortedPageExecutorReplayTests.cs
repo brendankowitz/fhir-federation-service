@@ -60,6 +60,26 @@ public sealed class SortedPageExecutorReplayTests
         page.Next.ShouldBeNull();
     }
 
+    /// <summary>An owner redeemed at its end stays at its end, and carries its saved anchor into every later snapshot.</summary>
+    [Fact]
+    public async Task Redeem_AnchoredEndBesideALiveOwner_KeepsTheEndAndItsAnchorInTheNextSnapshot()
+    {
+        var client = new FakeShardClient();
+        client.Chain(1, [SortedFixture.Entry(1, "b", 2), SortedFixture.Entry(1, "c", 3)], [SortedFixture.Entry(1, "d", 4)]);
+
+        SortedPage page = await client.Resume(
+            LastUpdatedSort.Ascending,
+            2,
+            SortedStreamContinuation.AtEnd(Fixture.Shard(0), SortedFixture.Anchor(0, "a", 1)),
+            SortedStreamContinuation.AtSearch(SortedFixture.Stream(1, pageSize: 2), null));
+
+        page.Ids().ShouldBe(["s1/b", "s1/c"]);
+        client.Calls.Select(c => c.ToString()).ShouldBe(["search s1 count=2"]);
+        SortedContinuation next = page.Next.ShouldNotBeNull();
+        next.Describe()[0].ShouldBe("s0 end a@1");
+        next.Streams[0].LastEmitted.ShouldNotBeNull().Key.ShouldBe(Fixture.Key(0, "a"));
+    }
+
     [Fact]
     public async Task Redeem_ReplaysTheSavedCursorVerbatim_AndCarriesItsCycleStateAndPrecedingInstant()
     {
