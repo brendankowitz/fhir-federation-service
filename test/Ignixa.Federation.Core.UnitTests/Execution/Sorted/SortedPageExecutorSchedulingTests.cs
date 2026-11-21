@@ -1,4 +1,5 @@
 using System.Runtime.CompilerServices;
+using System.Runtime.ExceptionServices;
 using Ignixa.Federation.Core.Execution;
 using Ignixa.Federation.Core.Execution.Sorted;
 using Ignixa.Federation.Core.Search;
@@ -473,6 +474,108 @@ public sealed class SortedPageExecutorSchedulingTests
         client.Calls.Select(c => c.ToString()).ShouldBe(["search s0 count=2", "search s1 count=2"]);
     }
 
+    /// <summary>
+    /// The caller cancels while a joined batch is arbitrated, as validation finds an invalid page (the first slot's, or a
+    /// later one's after an earlier slot validated): its cancellation outranks the failure that arbitration selected.
+    /// </summary>
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
+    public async Task CallerCancellationDuringArbitration_OutranksAnInvalidPage(int invalidSlot)
+    {
+        var client = new FakeShardClient();
+        for (int i = 0; i < 2; i++)
+        {
+            client.OnSearch(i, i == invalidSlot
+                ? Fixture.Page(null, SortedFixture.Entry(i, "b", 2), SortedFixture.Entry(i, "a", 1))
+                : Fixture.Page(null, SortedFixture.Entry(i, "c", 3)));
+        }
+
+        Exception cancelledAt = await CancelledAtArbitrationAsync(client, 2, caller => SortedFixture.Executor(client, Fixture.Registry(2), 2)
+            .ExecuteAsync(SortedFixture.Streams(Ascending, 0, 1), Ascending, 2, null, 10, caller));
+
+        cancelledAt.ShouldBeOfType<ShardFailureException>().Shard.ShouldBe(Fixture.Shard(invalidSlot));
+    }
+
+    /// <summary>The caller cancels as arbitration rethrows a later slot's call failure: its cancellation outranks it.</summary>
+    [Fact]
+    public async Task CallerCancellationDuringArbitration_OutranksAnAlreadyFailedCall()
+    {
+        var client = new FakeShardClient();
+        TaskCompletionSource s0Gate = Gate();
+        client.OnSearch(0, s0Gate, Fixture.Page(null, SortedFixture.Entry(0, "a", 1)));
+        client.OnSearchThrowsSynchronously(1);
+
+        Exception cancelledAt = await CancelledAtArbitrationAsync(
+            client,
+            1,
+            caller => SortedFixture.Executor(client, Fixture.Registry(2), 2)
+                .ExecuteAsync(SortedFixture.Streams(Ascending, 0, 1), Ascending, 2, null, 10, caller),
+            s0Gate);
+
+        cancelledAt.ShouldBeOfType<ShardFailureException>().Shard.ShouldBe(Fixture.Shard(1));
+    }
+
+    /// <summary>The caller cancels as arbitration rethrows a later slot's budget denial: its cancellation outranks it.</summary>
+    [Fact]
+    public async Task CallerCancellationDuringArbitration_OutranksABudgetDenial()
+    {
+        var client = new FakeShardClient();
+        TaskCompletionSource s0Gate = Gate();
+        client.OnSearch(0, s0Gate, Fixture.Page(null, SortedFixture.Entry(0, "a", 1)));
+        client.OnSearch(1, Fixture.Page(null, SortedFixture.Entry(1, "b", 2)));
+
+        Exception cancelledAt = await CancelledAtArbitrationAsync(
+            client,
+            1,
+            caller => SortedFixture.Executor(client, Fixture.Registry(2), 2)
+                .ExecuteAsync(SortedFixture.Streams(Ascending, 0, 1), Ascending, 2, null, 1, caller),
+            s0Gate);
+
+        cancelledAt.ShouldBeOfType<FetchBudgetExhaustedException>();
+        client.Calls.Select(c => c.ToString()).ShouldBe(["search s0 count=2"]);
+    }
+
+    /// <summary>The caller cancels as a redemption's replayed page proves its anchor missing: its cancellation outranks it.</summary>
+    [Fact]
+    public async Task CallerCancellationDuringArbitration_OutranksAMissingAnchor()
+    {
+        var client = new FakeShardClient();
+        client.OnSearch(0, Fixture.Page(null, SortedFixture.Entry(0, "b", 2), SortedFixture.Entry(0, "c", 3)));
+        var resumeFrom = new SortedContinuation(
+            Fixture.Patient,
+            Ascending,
+            2,
+            [SortedStreamContinuation.AtSearch(SortedFixture.Stream(0, pageSize: 2), SortedFixture.Anchor(0, "a", 1))]);
+
+        Exception cancelledAt = await CancelledAtArbitrationAsync(client, 1, caller => SortedFixture.Executor(client, Fixture.Registry(1))
+            .ExecuteAsync(SortedFixture.Streams(Ascending, 0), Ascending, 2, resumeFrom, 10, caller));
+
+        cancelledAt.ShouldBeOfType<ContinuationAnchorMissingException>().Shard.ShouldBe(Fixture.Shard(0));
+    }
+
+    /// <summary>
+    /// Runs <paramref name="execute"/> with a caller token that is cancelled when a slot failure is first thrown with
+    /// nothing in flight and <paramref name="finishedCalls"/> calls finished, so only during arbitration of the joined
+    /// batch. Releases <paramref name="release"/>, if any, once the batch has started. Asserts the execution fails with
+    /// the caller's cancellation and nothing in flight, and returns the failure the caller cancelled on.
+    /// </summary>
+    private static async Task<Exception> CancelledAtArbitrationAsync(
+        FakeShardClient client,
+        int finishedCalls,
+        Func<CancellationToken, Task<SortedPage>> execute,
+        TaskCompletionSource? release = null)
+    {
+        using var caller = new CancelOnArbitratedFailure(client, finishedCalls);
+        Task<SortedPage> running = execute(caller.Token);
+        release?.SetResult();
+
+        (await Should.ThrowAsync<OperationCanceledException>(running.WaitAsync(Guard, Token)))
+            .CancellationToken.ShouldBe(caller.Token);
+        client.InFlight.ShouldBe(0);
+        return caller.CancelledAt.ShouldNotBeNull();
+    }
+
     /// <summary>s0: [a@1] → p1 [c@3] → p2 [e@5]; s1: [b@2, d@4]. A page of 3 needs s0's p1 but not its p2.</summary>
     private static FakeShardClient RefillNeededForTheThirdMatch()
     {
@@ -489,4 +592,61 @@ public sealed class SortedPageExecutorSchedulingTests
     }
 
     private static TaskCompletionSource Gate() => new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    /// <summary>
+    /// A caller token that is cancelled the first time a shard failure, a missing anchor or a budget denial is thrown
+    /// while <paramref name="client"/> has nothing in flight and <paramref name="finishedCalls"/> calls have finished.
+    /// The first-chance notification runs on the throwing thread with its flowed execution context, so the scope, set
+    /// before the execution starts, sees only that execution's throws; parallel tests see no scope and are untouched.
+    /// </summary>
+    private sealed class CancelOnArbitratedFailure : IDisposable
+    {
+        private static readonly AsyncLocal<CancelOnArbitratedFailure?> Current = new();
+
+        private readonly FakeShardClient _client;
+        private readonly int _finishedCalls;
+        private readonly CancellationTokenSource _caller = new();
+
+        public CancelOnArbitratedFailure(FakeShardClient client, int finishedCalls)
+        {
+            _client = client;
+            _finishedCalls = finishedCalls;
+            Current.Value = this;
+            AppDomain.CurrentDomain.FirstChanceException += OnFirstChance;
+        }
+
+        public CancellationToken Token => _caller.Token;
+
+        /// <summary>Gets the failure whose throw cancelled the caller, or <see langword="null"/> if none did.</summary>
+        public Exception? CancelledAt { get; private set; }
+
+        public void Dispose()
+        {
+            AppDomain.CurrentDomain.FirstChanceException -= OnFirstChance;
+            Current.Value = null;
+            _caller.Dispose();
+        }
+
+        /// <summary>Never throws: it runs inside every throw on the scope's execution path.</summary>
+        private static void OnFirstChance(object? sender, FirstChanceExceptionEventArgs e)
+        {
+            if (Current.Value is not { CancelledAt: null } scope
+                || e.Exception is not (ShardFailureException or ContinuationAnchorMissingException or FetchBudgetExhaustedException)
+                || scope._client.InFlight != 0
+                || scope._client.Finished.Count < scope._finishedCalls)
+            {
+                return;
+            }
+
+            scope.CancelledAt = e.Exception;
+            try
+            {
+                scope._caller.Cancel();
+            }
+            catch (AggregateException)
+            {
+                // A registration's callback failed; the token is cancelled all the same.
+            }
+        }
+    }
 }

@@ -218,11 +218,20 @@ public sealed class SortedPageExecutor
         Task joined = Task.WhenAll(calls);
         await joined.ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
 
-        // Caller cancellation outranks every slot's outcome, whichever came first.
+        // Caller cancellation outranks every slot's outcome, whichever came first: it is polled once the batch is joined,
+        // and again when a call's failure or an invalid page is about to propagate, since validating pages takes time.
         cancellationToken.ThrowIfCancellationRequested();
-        for (int i = 0; i < calls.Count; i++)
+        try
         {
-            batch[i].Accept(await calls[i]);
+            for (int i = 0; i < calls.Count; i++)
+            {
+                batch[i].Accept(await calls[i]);
+            }
+        }
+        catch (Exception) when (cancellationToken.IsCancellationRequested)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            throw;
         }
     }
 
