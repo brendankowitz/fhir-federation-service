@@ -73,7 +73,8 @@ public sealed class SortedPageExecutor
     /// every outcome; otherwise the first stream by registry ordinal whose call failed, timed out, was denied by the
     /// budget or returned an invalid page decides the exception, whichever call finished first. Siblings are not cancelled
     /// on an ordinary failure, and no later batch starts after one. The token is passed to every call and checked before
-    /// each call starts, after each batch is joined and before the page is returned.
+    /// each call starts, after each batch is joined, again when a slot's failure is about to propagate, and before the
+    /// page is returned.
     /// </para>
     /// </remarks>
     /// <exception cref="ArgumentNullException"><paramref name="streams"/> is <see langword="null"/>.</exception>
@@ -198,8 +199,8 @@ public sealed class SortedPageExecutor
 
     /// <summary>
     /// Starts one call per owner of <paramref name="batch"/> in ordinal order without awaiting between starts, joins them
-    /// all, then hands each owner its page in ordinal order. The first owner whose call failed or whose page is invalid
-    /// throws, so which error wins never depends on which call finished first.
+    /// all, then hands each owner its page in ordinal order. Unless the caller has cancelled, the first owner whose call
+    /// failed or whose page is invalid throws, so which error wins never depends on which call finished first.
     /// </summary>
     private static async Task FetchAsync(SortedStream[] batch, FetchScheduler scheduler, CancellationToken cancellationToken)
     {
