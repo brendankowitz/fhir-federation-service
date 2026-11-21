@@ -50,6 +50,10 @@ internal static class SortedFixture
 
     public static ShardEntry Entry(int ordinal, string id, int seconds) => Entry(ordinal, id, At(seconds));
 
+    /// <summary>Creates the anchor of <see cref="Entry(int, string, int)"/>.</summary>
+    public static SortedAnchor Anchor(int ordinal, string id, int seconds, ResourceType? type = null) =>
+        new(At(seconds), Fixture.Key(ordinal, id, type));
+
     public static SortedPageExecutor Executor(IShardClient client, ShardRegistry registry, int maxParallelFetches = 1) =>
         new(client, registry, maxParallelFetches);
 

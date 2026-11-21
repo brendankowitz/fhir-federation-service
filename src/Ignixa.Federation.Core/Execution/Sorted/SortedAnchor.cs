@@ -11,8 +11,10 @@ public sealed class SortedAnchor
     /// <summary>Initializes a new instance of the <see cref="SortedAnchor"/> class.</summary>
     /// <param name="lastUpdated">The emitted entry's <c>meta.lastUpdated</c>, as the shard returned it.</param>
     /// <param name="key">The emitted entry's federation key.</param>
+    /// <exception cref="ArgumentNullException"><paramref name="key"/> is <see langword="null"/>.</exception>
     public SortedAnchor(DateTimeOffset lastUpdated, ResourceKey key)
     {
+        ArgumentNullException.ThrowIfNull(key);
         LastUpdated = lastUpdated;
         Key = key;
     }

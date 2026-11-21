@@ -1,3 +1,4 @@
+using Ignixa.Federation.Core.Identity;
 using Ignixa.Federation.Core.Shards;
 
 namespace Ignixa.Federation.Core.Execution.Sorted;
@@ -66,9 +67,19 @@ public sealed class SortedStreamContinuation
     /// <param name="sent">The request as it was sent, including its own count.</param>
     /// <param name="lastEmitted">The last match emitted from the response to <paramref name="sent"/>, or <see langword="null"/>.</param>
     /// <returns>The checkpoint.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="sent"/> is <see langword="null"/>.</exception>
+    /// <exception cref="ArgumentException">
+    /// <paramref name="sent"/> asks for no entries, or <paramref name="lastEmitted"/> is not of its shard and type.
+    /// </exception>
     public static SortedStreamContinuation AtSearch(ShardSearchRequest sent, SortedAnchor? lastEmitted)
     {
         ArgumentNullException.ThrowIfNull(sent);
+        if (sent.PageSize < 1)
+        {
+            throw new ArgumentException("A replayed search must ask for at least one entry.", nameof(sent));
+        }
+
+        RequireOwned(lastEmitted, sent.Shard, sent.Type);
         return new(sent.Shard, sent, null, false, lastEmitted, CursorCycleState.Initial, null);
     }
 
@@ -78,6 +89,12 @@ public sealed class SortedStreamContinuation
     /// <param name="cycleState">The stream's cycle detection after following <paramref name="cursor"/>.</param>
     /// <param name="previousPageLastUpdated">The last instant of the nonempty page before <paramref name="cursor"/>, if any.</param>
     /// <returns>The checkpoint.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="cursor"/> or <paramref name="cycleState"/> is <see langword="null"/>.</exception>
+    /// <exception cref="ArgumentException">
+    /// <paramref name="lastEmitted"/> is not of the cursor's shard and type, or there is no <paramref name="lastEmitted"/>
+    /// but there is a <paramref name="previousPageLastUpdated"/>: an owner's checkpoint moves to a cursor before its first
+    /// emission only past leading empty pages.
+    /// </exception>
     public static SortedStreamContinuation AtCursor(
         ShardCursor cursor,
         SortedAnchor? lastEmitted,
@@ -85,6 +102,15 @@ public sealed class SortedStreamContinuation
         DateTimeOffset? previousPageLastUpdated)
     {
         ArgumentNullException.ThrowIfNull(cursor);
+        ArgumentNullException.ThrowIfNull(cycleState);
+        RequireOwned(lastEmitted, cursor.Shard, cursor.Type);
+        if (lastEmitted is null && previousPageLastUpdated is not null)
+        {
+            throw new ArgumentException(
+                "An unanchored cursor checkpoint follows only empty pages, so it has no preceding instant.",
+                nameof(previousPageLastUpdated));
+        }
+
         return new(cursor.Shard, null, cursor, false, lastEmitted, cycleState, previousPageLastUpdated);
     }
 
@@ -92,6 +118,24 @@ public sealed class SortedStreamContinuation
     /// <param name="shard">The exhausted shard.</param>
     /// <param name="lastEmitted">The last match the stream emitted, or <see langword="null"/> when it emitted none.</param>
     /// <returns>The checkpoint.</returns>
-    public static SortedStreamContinuation AtEnd(ShardId shard, SortedAnchor? lastEmitted) =>
-        new(shard, null, null, true, lastEmitted, CursorCycleState.Initial, null);
+    /// <exception cref="ArgumentNullException"><paramref name="shard"/> is <see langword="null"/>.</exception>
+    /// <exception cref="ArgumentException"><paramref name="lastEmitted"/> is not of <paramref name="shard"/>.</exception>
+    public static SortedStreamContinuation AtEnd(ShardId shard, SortedAnchor? lastEmitted)
+    {
+        ArgumentNullException.ThrowIfNull(shard);
+        if (lastEmitted is not null && lastEmitted.Key.Shard != shard)
+        {
+            throw new ArgumentException("The last emission must belong to the checkpoint's shard.", nameof(lastEmitted));
+        }
+
+        return new(shard, null, null, true, lastEmitted, CursorCycleState.Initial, null);
+    }
+
+    private static void RequireOwned(SortedAnchor? lastEmitted, ShardId shard, ResourceType type)
+    {
+        if (lastEmitted is not null && (lastEmitted.Key.Shard != shard || lastEmitted.Key.Type != type))
+        {
+            throw new ArgumentException("The last emission must belong to the checkpoint's shard and type.", nameof(lastEmitted));
+        }
+    }
 }
