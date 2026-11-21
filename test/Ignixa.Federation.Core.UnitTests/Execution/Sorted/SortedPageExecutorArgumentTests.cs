@@ -90,8 +90,9 @@ public sealed class SortedPageExecutorArgumentTests
         using var cancelled = new CancellationTokenSource();
         await cancelled.CancelAsync();
 
-        await Should.ThrowAsync<OperationCanceledException>(
-            () => executor.ExecuteAsync(SortedFixture.Streams(LastUpdatedSort.Ascending, 0, 1), LastUpdatedSort.Ascending, 5, null, 10, cancelled.Token));
+        (await Should.ThrowAsync<OperationCanceledException>(
+            () => executor.ExecuteAsync(SortedFixture.Streams(LastUpdatedSort.Ascending, 0, 1), LastUpdatedSort.Ascending, 5, null, 10, cancelled.Token)))
+            .CancellationToken.ShouldBe(cancelled.Token);
 
         client.Calls.ShouldBeEmpty();
     }

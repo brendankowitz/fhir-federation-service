@@ -288,7 +288,8 @@ public sealed class SortedPageExecutorSchedulingTests
         running.IsCompleted.ShouldBeFalse("s1 has not finished");
         s1Exit.SetResult();
 
-        await Should.ThrowAsync<OperationCanceledException>(running.WaitAsync(Guard, Token));
+        (await Should.ThrowAsync<OperationCanceledException>(running.WaitAsync(Guard, Token)))
+            .CancellationToken.ShouldBe(caller.Token);
 
         s1Token.ShouldBe(caller.Token);
         client.Calls.Select(c => c.ToString()).ShouldBe(["search s0 count=2", "search s1 count=2"]);
@@ -309,8 +310,9 @@ public sealed class SortedPageExecutorSchedulingTests
         client.OnSearch(1, Fixture.Page(null, SortedFixture.Entry(1, "b", 2)));
         client.OnSearch(2, Fixture.Page(null, SortedFixture.Entry(2, "c", 3)));
 
-        await Should.ThrowAsync<OperationCanceledException>(SortedFixture.Executor(client, Fixture.Registry(3), 3)
-            .ExecuteAsync(SortedFixture.Streams(Ascending, 0, 1, 2), Ascending, 2, null, 10, caller.Token));
+        (await Should.ThrowAsync<OperationCanceledException>(SortedFixture.Executor(client, Fixture.Registry(3), 3)
+            .ExecuteAsync(SortedFixture.Streams(Ascending, 0, 1, 2), Ascending, 2, null, 10, caller.Token)))
+            .CancellationToken.ShouldBe(caller.Token);
 
         client.Calls.Select(c => c.ToString()).ShouldBe(["search s0 count=2"]);
     }
