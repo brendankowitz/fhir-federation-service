@@ -54,9 +54,9 @@ namespace Ignixa.Federation.Shards.Http;
 /// <c>Correlation-Context</c>): baggage is arbitrary application data and a shard is a separate trust domain.</para>
 /// <para><b>Failures.</b> A call either returns a page that represents the backend's answer exactly or throws: a
 /// classified <see cref="ShardCallException"/>, an <see cref="OperationCanceledException"/> when the caller cancels, or
-/// the credential provider's or meter's own exception (except that a metadata fetch, and a search or redemption made by
-/// the startup probes, report a <see cref="ShardCredentialException"/> as <see cref="ShardCallFailure.CredentialUnavailable"/>). It never returns an
-/// empty page for a failure.</para>
+/// the credential provider's or meter's own exception. Only metadata and startup probes classify a
+/// <see cref="ShardCredentialException"/> from credential acquisition as <see cref="ShardCallFailure.CredentialUnavailable"/>.
+/// It never returns an empty page for a failure.</para>
 /// <para><b>Resilience.</b> A search, continuation or read that fails with a transient status (408, 429 or 5xx) or a
 /// connection fault is retried once if its wire method is GET, within the same deadline; a POST, a timeout, a permanent
 /// status and a malformed or oversized body are never retried. Each such call also runs through the shard's circuit breaker

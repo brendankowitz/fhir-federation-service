@@ -20,8 +20,7 @@ namespace Ignixa.Federation.Shards.Probes;
 /// <para>
 /// Only a lone request answered with 400 is proof. A 200, any other status, a retry that ends
 /// in 400 after another failure, a failure of the credential or meter, or a failed control is not. A credential outage
-/// while acquiring the token is such a failure, so it is a negative result and the next method is still probed; the
-/// credential provider's or meter's own unexpected exception still propagates. The probe proves one
+/// during acquisition gives a negative result; an unexpected provider or meter exception still propagates. The probe proves one
 /// method per call; GET evidence says nothing about POST, so a caller that offers both probes both. It does not admit
 /// software or a profile, establish readiness, or test sorting or replay.
 /// </para>

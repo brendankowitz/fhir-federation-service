@@ -13,9 +13,9 @@ namespace Ignixa.Federation.Shards.Probes;
 /// <remarks>
 /// <para>
 /// It uses the client's probe search and redemption, which are the ordinary exchanges, so the credential, deadline, size
-/// limits, breaker, retry policy and meter are the client's. They differ in one way: a credential outage while acquiring the
-/// token is a failed read like any other, not an exception. The cursor is the one the client
-/// returned, with the redemption its stream method and profile give it. The probe sends at most three logical exchanges, reads
+/// limits, breaker, retry policy and meter are the client's. A credential outage during acquisition is reported as
+/// <see cref="LastUpdatedReplayProbeOutcome.ReadFailed"/>. The cursor is the one the client returned, with the redemption
+/// its stream method and profile give it. The probe sends at most three logical exchanges, reads
 /// no further page and writes nothing; a transport retry, if the client makes one, is the client's own.
 /// </para>
 /// <para>

@@ -154,14 +154,20 @@ public sealed class ProbeCredentialOutageTests
         await using var shard = ShardHarness.Start();
         ProbeScript.RespondWithChallenge(shard, ScriptedResponse.Status(400));
         ShardCredentialException fault = Outage();
-        shard.Meter.ThrowOnSend = fault;
-        shard.Meter.ThrowFromSend = 2; // the positive control; the metadata fetch before it is within budget
+        shard.Meter.OnBytes = _ =>
+        {
+            if (shard.Meter.Sends.Count == 2)
+            {
+                throw fault;
+            }
+        };
 
         ShardCredentialException thrown = await Should.ThrowAsync<ShardCredentialException>(
             () => StrictHandlingProbe.ProbeAsync(shard.Client, shard.Shard, ShardHarness.Patient, ShardSearchMethod.Get, Ct));
 
         thrown.ShouldBeSameAs(fault);
         shard.Credentials.Calls.ShouldBe(2, "the token was acquired, so the outage is not the provider's");
+        shard.Server.Requests.Count.ShouldBe(2, "the metadata fetch and positive control reached the server");
     }
 
     [Fact]
