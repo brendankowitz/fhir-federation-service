@@ -13,13 +13,15 @@ namespace Ignixa.Federation.Core.Execution.Sorted;
 /// </remarks>
 internal sealed class SortedStream
 {
+    private static readonly ShardPage Drained = new([], null, null);
+
     private readonly ShardStream _stream;
     private readonly ShardSearchRequest? _search;
     private readonly int _sign;
     private readonly IComparer<(DateTimeOffset Instant, int Ordinal)> _order;
     private readonly (DateTimeOffset Instant, int Ordinal)? _floor;
     private readonly HashSet<ShardCursor> _redeemed = [];
-    private Input _input = new(null, CursorCycleState.Initial, null);
+    private Input _input;
     private Input? _emittedFrom;
     private ShardPage? _page;
     private int _index;
@@ -59,6 +61,7 @@ internal sealed class SortedStream
         {
             _redeemed.Add(replayed);
         }
+
         // An owner the previous page proved exhausted starts drained, so it is never fetched again.
         if (start.IsExhausted)
         {
@@ -66,8 +69,6 @@ internal sealed class SortedStream
             _replayedAnchor = null;
         }
     }
-
-    private static readonly ShardPage Drained = new([], null, null);
 
     public int Ordinal => _stream.Ordinal;
 
