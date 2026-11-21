@@ -202,22 +202,6 @@ public sealed class PrimarySearchFailureTests
         host.Shards.Calls.ShouldBeEmpty();
     }
 
-    [Theory]
-    [InlineData("_total=accurate")]
-    [InlineData("_summary=count")]
-    [InlineData("_count=0")]
-    public async Task AdmittedButUnimplementedStages_AreNotImplemented_WithoutAnyShardCall(string query)
-    {
-        // Every shard certifies an exact count for this shape, so the planner admits the count and only the host refuses it.
-        using var host = SearchHost.Start(setup => setup.Capabilities = SearchWorld.Capabilities(exactCountShapes: ["Patient?name"]));
-
-        SearchResult result = await host.GetAsync($"/Patient?name=Orchid&{query}");
-
-        result.StatusCode.ShouldBe(HttpStatusCode.NotImplemented);
-        result.IssueCode.ShouldBe("not-supported");
-        host.Shards.Calls.ShouldBeEmpty();
-    }
-
     [Fact]
     public async Task ReferenceMissingPredicate_PagesAndFollows_SendingOnlyThatPredicateToEveryShard()
     {

@@ -75,11 +75,13 @@ internal static class SearchWorld
     /// <see cref="SearchCapabilities.Resources"/> projection never lists a reference parameter.
     /// </param>
     /// <param name="patient">Whether <c>Patient</c> is searchable at all.</param>
+    /// <param name="withoutExactCountProof">The shard with no exact-count proof, if any.</param>
     public static SearchCapabilities Capabilities(
         bool patientName = true,
         IEnumerable<string>? exactCountShapes = null,
         bool organizationMissing = false,
-        bool patient = true)
+        bool patient = true,
+        string? withoutExactCountProof = null)
     {
         List<SearchParameterSupport> patientParameters =
         [
@@ -104,16 +106,17 @@ internal static class SearchWorld
         {
             resources.Insert(0, new(ResourceType.Parse("Patient"), patientParameters, [], []));
         }
-        var certification = new SearchCertification(
+        SearchCertification Certify(IEnumerable<string> countShapes) => new(
             new Dictionary<SearchParamType, IReadOnlyCollection<string>> { [SearchParamType.String] = ["exact"], [SearchParamType.Reference] = ["missing"] },
             [SearchParamType.String, SearchParamType.Token],
             [SearchParamType.String, SearchParamType.Token],
-            exactCountShapes ?? ["Patient?"],
+            countShapes,
             []);
 
         return new SearchCapabilities(
             Registry,
-            Registry.Shards.Select(s => new ShardSearchCapability(s.Id, resources, certification)));
+            Registry.Shards.Select(s => new ShardSearchCapability(s.Id, resources,
+                Certify(s.Id.Value == withoutExactCountProof ? [] : exactCountShapes ?? ["Patient?"]))));
     }
 
     private static IReadOnlyList<ShardOptions> ShardOptions() =>

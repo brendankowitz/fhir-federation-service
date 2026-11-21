@@ -9,6 +9,7 @@ using Ignixa.Federation.Api.Continuations;
 using Ignixa.Federation.Api.Responses;
 using Ignixa.Federation.Core.Configuration;
 using Ignixa.Federation.Core.Execution;
+using Ignixa.Federation.Core.Execution.Counts;
 using Ignixa.Federation.Core.Identity;
 using Ignixa.Federation.Core.Search;
 using Ignixa.Federation.Core.Shards;
@@ -26,9 +27,9 @@ namespace Ignixa.Federation.Api.Search;
 /// </summary>
 /// <remarks>
 /// <para>
-/// <b>Scope.</b> Only plain predicates over every shard, unsorted, with a page size: the planner's admitted
-/// <c>Predicate/Keep</c> and <c>Control/Remove</c> occurrences. Anything else the planner admits (chains, includes,
-/// sort, counts, totals) is refused with 501 before any shard call, not approximated.
+/// <b>Scope.</b> Only plain predicates over every shard, unsorted: a page without a total, or a count-only search
+/// with exact shape proof and an explicit dialect for each shard. Admitted chains, includes, sort and paged totals
+/// are not executed.
 /// </para>
 /// <para>
 /// <b>Continuations.</b> A token carries the stored original raw query and the executor's snapshot. Redemption
@@ -76,12 +77,14 @@ internal sealed class PrimarySearch
     private readonly TimeProvider _time;
     private readonly int _maxRequestLineBytes;
     private readonly FrozenDictionary<string, string> _shardRevisions;
+    private readonly FrozenDictionary<ShardId, CountDialect>? _countDialects;
 
     private PrimarySearch(
         SearchHostSettings settings,
         SearchCapabilities capabilities,
         FederationOptions options,
         IShardClientFactory clients,
+        FrozenDictionary<ShardId, CountDialect>? countDialects,
         IDataProtectionProvider protection,
         TimeProvider time,
         int maxRequestLineBytes)
@@ -95,6 +98,7 @@ internal sealed class PrimarySearch
         _protector = new ContinuationProtector(protection, options.Tokens, time);
         _codec = new UnsortedSnapshotCodec(options.Tokens.MaxInlineTokenBytes, _registry);
         _clients = clients;
+        _countDialects = countDialects;
         _time = time;
         _maxRequestLineBytes = maxRequestLineBytes;
 
@@ -107,6 +111,10 @@ internal sealed class PrimarySearch
         new(_limits, _timeouts, _registry.Shards.Count, _time, caller);
 
     /// <summary>Builds the search from the registered view, transport and the <c>Federation</c> configuration.</summary>
+    /// <remarks>
+    /// To enable count-only searches, register an <see cref="IReadOnlyDictionary{TKey,TValue}"/> from <see cref="ShardId"/>
+    /// to <see cref="CountDialect"/> for that view. A missing or invalid map disables only count execution.
+    /// </remarks>
     /// <param name="services">The application services.</param>
     /// <param name="settings">The validated host settings.</param>
     /// <returns>The search.</returns>
@@ -148,6 +156,7 @@ internal sealed class PrimarySearch
             capabilities,
             options,
             clients,
+            CaptureCountDialects(capabilities.Registry, services.GetService<IReadOnlyDictionary<ShardId, CountDialect>>()),
             services.GetRequiredService<IDataProtectionProvider>(),
             services.GetRequiredService<TimeProvider>(),
             services.GetRequiredService<IOptions<KestrelServerOptions>>().Value.Limits.MaxRequestLineSize);
@@ -174,9 +183,9 @@ internal sealed class PrimarySearch
                 return result;
             }
             catch (Exception ex) when (ex is OperationCanceledException or ShardFailureException
-                or ContinuationAnchorMissingException or FetchBudgetExhaustedException)
+                or ContinuationAnchorMissingException or FetchBudgetExhaustedException or TotalOverflowException)
             {
-                // Prefer the live request budget to a shard failure, missing anchor, or logical fetch limit.
+                // Prefer the live request budget to failures discovered while executing the search.
                 budget.Checkpoint();
                 throw;
             }
@@ -200,6 +209,10 @@ internal sealed class PrimarySearch
         catch (ContinuationAnchorMissingException)
         {
             return SearchOutcome.Gone();
+        }
+        catch (TotalOverflowException)
+        {
+            return SearchOutcome.Error(StatusCodes.Status502BadGateway, "exception", "The exact total cannot be represented in a searchset.");
         }
     }
 
@@ -278,7 +291,14 @@ internal sealed class PrimarySearch
         }
 
         // Without a ct occurrence the planner always returns a plan.
-        if (!TryPrepare(type, post, raw, planned.Plan!, out PreparedSearch? prepared))
+        QueryPlan plan = planned.Plan!;
+        if (plan.CountOnly && plan.Occurrences.All(o => (o.Kind, o.Action) is
+            (OccurrenceKind.Control, OccurrenceAction.Remove) or (OccurrenceKind.Predicate, OccurrenceAction.Keep)))
+        {
+            return await ExecuteCountAsync(plan, post, raw, budget);
+        }
+
+        if (!TryPrepare(type, post, raw, plan, out PreparedSearch? prepared))
         {
             return SearchOutcome.NotSupported(StatusCodes.Status501NotImplemented, "The search is valid but this host does not yet execute it.");
         }
@@ -292,6 +312,56 @@ internal sealed class PrimarySearch
             : failure.IsNotSupported
                 ? SearchOutcome.NotSupported(StatusCodes.Status400BadRequest, failure.Message)
                 : SearchOutcome.Invalid(failure.Message);
+
+    private static FrozenDictionary<ShardId, CountDialect>? CaptureCountDialects(
+        ShardRegistry registry, IReadOnlyDictionary<ShardId, CountDialect>? registered)
+    {
+        if (registered is null)
+        {
+            return null;
+        }
+
+        // Validate the same ordinal shard identities and values that will actually be used for requests.
+        var copy = new Dictionary<ShardId, CountDialect>();
+        foreach ((ShardId shard, CountDialect dialect) in registered)
+        {
+            if (shard is null || !registry.TryGetById(shard, out _) || !Enum.IsDefined(dialect) || !copy.TryAdd(shard, dialect))
+            {
+                return null;
+            }
+        }
+
+        return copy.Count == registry.Shards.Count ? copy.ToFrozenDictionary() : null;
+    }
+
+    private async Task<IResult> ExecuteCountAsync(QueryPlan plan, bool post, string raw, RequestBudget budget)
+    {
+        if (_countDialects is null)
+        {
+            return SearchOutcome.NotSupported(StatusCodes.Status400BadRequest, "An exact count is not configured on every shard.");
+        }
+
+        ShardCountTarget[] targets =
+        [
+            .. _registry.Shards.Select(s => ShardCountTarget.Search(s.Id, SearchMethod(post, s), NoReplacements)),
+        ];
+        budget.Checkpoint();
+        var executor = new FederatedCountExecutor(
+            _clients.CreateClient(_capabilities, budget), _capabilities, _countDialects, _limits.MaxParallelBackendCalls);
+        int total;
+        try
+        {
+            total = await executor.ExecuteAsync(plan, targets, FetchAllowance, budget.Token)
+                ?? throw new InvalidOperationException("The count-only plan returned no total.");
+        }
+        catch (ExactCountNotCertifiedException)
+        {
+            return SearchOutcome.NotSupported(StatusCodes.Status400BadRequest, "An exact count is not certified for this query on every shard.");
+        }
+
+        budget.Checkpoint();
+        return SearchsetResponse.Create(_registry, SelfLink(plan.Type, raw), [], [], [], total: total);
+    }
 
     private async Task<IResult> ContinueAsync(ResourceType type, ContinuationBinding binding, string token, RequestBudget budget)
     {
@@ -367,8 +437,7 @@ internal sealed class PrimarySearch
         // A request whose deadline passed while its body was read or planned never reaches a shard.
         budget.Checkpoint();
         var executor = new UnsortedPageExecutor(_clients.CreateClient(_capabilities, budget), _registry, _limits.MaxParallelBackendCalls);
-        int fetchBudget = (int)Math.Min((long)_limits.BackendCallsPerShard * _registry.Shards.Count, int.MaxValue);
-        UnsortedPage page = await executor.ExecuteAsync(search.Streams, search.PageSize, resumeFrom, fetchBudget, budget.Token);
+        UnsortedPage page = await executor.ExecuteAsync(search.Streams, search.PageSize, resumeFrom, FetchAllowance, budget.Token);
 
         // A page that exceeded the cost budget is too costly, not a page with an unlinkable successor.
         budget.Checkpoint();
@@ -407,11 +476,10 @@ internal sealed class PrimarySearch
             nextDeadlineTicks = issue.DeadlineTicks;
         }
 
-        var self = new Uri($"{_settings.PublicBase}/{type.Value}" + (search.RawQuery.Length == 0 ? string.Empty : "?" + search.RawQuery));
         IResult response;
         try
         {
-            response = SearchsetResponse.Create(_registry, self, page.Matches, [], [], next);
+            response = SearchsetResponse.Create(_registry, SelfLink(type, search.RawQuery), page.Matches, [], [], next);
         }
         catch (SearchsetEntryException ex) when (_registry.TryGetById(ex.Key.Shard, out ShardDescriptor? shard))
         {
@@ -600,11 +668,19 @@ internal sealed class PrimarySearch
                 type,
                 parameters,
                 pageSize,
-                post && s.Profile.SupportsPostSearch ? ShardSearchMethod.PostSearch : ShardSearchMethod.Get)),
+                SearchMethod(post, s))),
         ];
         prepared = new PreparedSearch(post, raw, streams, pageSize, revisions);
         return true;
     }
+
+    private int FetchAllowance => (int)Math.Min((long)_limits.BackendCallsPerShard * _registry.Shards.Count, int.MaxValue);
+
+    private static ShardSearchMethod SearchMethod(bool post, ShardDescriptor shard) =>
+        post && shard.Profile.SupportsPostSearch ? ShardSearchMethod.PostSearch : ShardSearchMethod.Get;
+
+    private Uri SelfLink(ResourceType type, string raw) =>
+        new($"{_settings.PublicBase}/{type.Value}" + (raw.Length == 0 ? string.Empty : "?" + raw));
 
     private ContinuationDependencySet Dependencies(PreparedSearch search) =>
         ContinuationDependencySet.Create(

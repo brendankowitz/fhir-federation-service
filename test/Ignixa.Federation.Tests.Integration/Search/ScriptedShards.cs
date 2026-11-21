@@ -56,6 +56,9 @@ internal sealed class ScriptedShards : IShardClientFactory
     /// <summary>Gets or sets an action run once a page has been answered, as it is returned (for example, letting a deadline pass after the response).</summary>
     public Action<RequestBudget>? Answered { get; set; }
 
+    /// <summary>Supplies a backend response for a count-only search, when scripted.</summary>
+    public Func<ShardSearchRequest, ShardPage>? CountAnswer { get; set; }
+
     public IShardClient CreateClient(SearchCapabilities view, RequestBudget budget)
     {
         Views.Enqueue(view);
@@ -73,6 +76,11 @@ internal sealed class ScriptedShards : IShardClientFactory
                 request.PageSize,
                 Target: null));
             await SendAsync(request.Shard, cancellationToken);
+            if (request.PageSize == 0 && script.CountAnswer is { } count)
+            {
+                return Answered(count(request));
+            }
+
             ShardDescriptor shard = Shard(request.Shard);
             return Answered(Answer(shard, request.Type, 0, Math.Min(request.PageSize, script.PageSizeLimit),
                 target => ShardCursor.Next(request, shard.Profile, target)));
