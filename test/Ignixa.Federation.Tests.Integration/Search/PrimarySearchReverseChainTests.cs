@@ -304,6 +304,43 @@ public sealed class PrimarySearchReverseChainTests
         unconfigured.Shards.Calls.ShouldBeEmpty();
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task RegistryGrowthRequiresRestartEvenWhenTheReverseOwnerSubsetHasNotChanged(bool reverse)
+    {
+        using var ring = new IsolatedKeyRing();
+        using SearchHost issuer = Start(configure: s =>
+        {
+            s.Protection = ring.CreateProvider();
+            s.Shards.FilterGeneratedIds = true;
+            s.Shards.Resources = CorpusWithForeignWitness(includeWestRelative: false);
+        });
+        using SearchHost grown = Start(configure: s =>
+        {
+            s.Protection = ring.CreateProvider();
+            s.Capabilities = Capabilities(SearchWorld.ReverseRegistry(extraWitnessShard: true));
+            foreach (var (key, value) in SearchWorld.Settings(extraWitnessShard: true))
+            {
+                s.Settings[key] = value;
+            }
+        });
+        SearchResult first = await SendAsync(issuer, false, reverse ? Paged : "_count=1");
+        first.StatusCode.ShouldBe(HttpStatusCode.OK);
+        string next = first.Link("next").ShouldNotBeNull();
+        if (reverse)
+        {
+            ReadBookmark(ring, next).Saved.Streams.ShouldHaveSingleItem().Shard.Value.ShouldBe("east");
+        }
+
+        SearchResult refused = await grown.FollowAsync(next);
+
+        refused.StatusCode.ShouldBe(HttpStatusCode.Gone);
+        refused.IssueCode.ShouldBe("not-found");
+        grown.Shards.Views.ShouldBeEmpty();
+        grown.Shards.Calls.ShouldBeEmpty();
+    }
+
     [Fact]
     public async Task RedemptionRebuildsTheSavedWirePredicatesBeforeCreatingTheClient()
     {
@@ -313,13 +350,8 @@ public sealed class PrimarySearchReverseChainTests
         SearchResult first = await SendAsync(host, true, Paged + "&name=%4Frchid");
         first.StatusCode.ShouldBe(HttpStatusCode.OK);
         string next = first.Link("next").ShouldNotBeNull();
-        SearchCapabilities view = Capabilities();
-        (ContinuationProtector protector, _, RedeemedContinuation issued) = Redeem(ring, next);
-        SearchContinuationFrame.TryRead(issued.Snapshot.AsSpan(), out SearchContinuationFrame? frame)
-            .ShouldBe(UnsortedSnapshotOutcome.Success);
-        var codec = new UnsortedSnapshotCodec(new TokenOptions().MaxInlineTokenBytes, view.Registry);
-        codec.Decode(frame!.Snapshot, out UnsortedContinuationSnapshot? saved).ShouldBe(UnsortedSnapshotOutcome.Success);
-        ShardSearchRequest[] streams = [.. saved!.Streams];
+        var (protector, issued, frame, codec, saved) = ReadBookmark(ring, next);
+        ShardSearchRequest[] streams = [.. saved.Streams];
         ShardSearchRequest west = streams[1];
         streams[1] = new ShardSearchRequest(west.Shard, west.Type,
             [new("_id", "dup"), new("name", "Orchid")], west.PageSize, west.Method);
@@ -334,6 +366,211 @@ public sealed class PrimarySearchReverseChainTests
         refused.StatusCode.ShouldBe(HttpStatusCode.Gone);
         host.Shards.Views.Count.ShouldBe(1);
         host.Shards.Calls.Count.ShouldBe(calls);
+    }
+
+    [Theory]
+    [InlineData("owner order")]
+    [InlineData("missing occurrence")]
+    [InlineData("noncanonical generated encoding")]
+    [InlineData("empty ID")]
+    [InlineData("invalid ID")]
+    [InlineData("duplicate IDs")]
+    [InlineData("clauses disagree")]
+    [InlineData("wrong method")]
+    [InlineData("wrong stream page size")]
+    [InlineData("wrong snapshot page size")]
+    [InlineData("current key bound")]
+    public async Task AuthenticatedBookmarkMustReconstructEveryOwnerRequest(string change)
+    {
+        using var ring = new IsolatedKeyRing();
+        using SearchHost issuer = Start(configure: s => s.Protection = ring.CreateProvider());
+        issuer.Shards.FilterGeneratedIds = true;
+        const string query = Has + "&_count=1&_has:Observation:subject:_id=obs-dup&%5Fid=dup";
+        SearchResult first = await SendAsync(issuer, true, query);
+        first.StatusCode.ShouldBe(HttpStatusCode.OK);
+        string next = first.Link("next").ShouldNotBeNull();
+        var (protector, issued, frame, codec, saved) = ReadBookmark(ring, next);
+        ShardSearchRequest[] streams = [.. saved.Streams];
+        streams.Length.ShouldBe(2);
+        ShardSearchRequest east = streams[0];
+        east.Shard.Value.ShouldBe("east");
+        east.Parameters.ShouldBe([new ParameterOccurrence("_id", "dup"), new("_id", "dup"), new("%5Fid", "dup")]);
+        east.Method.ShouldBe(ShardSearchMethod.Get);
+        int pageSize = saved.PageSize;
+        switch (change)
+        {
+            case "owner order":
+                Array.Reverse(streams);
+                break;
+            case "missing occurrence":
+                streams[0] = Copy(east, parameters: [east.Parameters[0], east.Parameters[2]]);
+                break;
+            case "noncanonical generated encoding":
+                streams[0] = WithIds("%64up", "dup");
+                break;
+            case "empty ID":
+                streams[0] = WithIds("dup%2C", "dup%2C");
+                break;
+            case "invalid ID":
+                streams[0] = WithIds("dup%2Fbad", "dup%2Fbad");
+                break;
+            case "duplicate IDs":
+                streams[0] = WithIds("dup%2Cdup", "dup%2Cdup");
+                break;
+            case "clauses disagree":
+                streams[0] = WithIds("dup", "east-only");
+                break;
+            case "wrong method":
+                streams[0] = Copy(east, method: ShardSearchMethod.PostSearch);
+                break;
+            case "wrong stream page size":
+                streams[0] = Copy(east, pageSize: 2);
+                break;
+            case "wrong snapshot page size":
+                pageSize = 2;
+                streams[0] = Copy(east, pageSize: 2);
+                streams[1] = Copy(streams[1], pageSize: 2);
+                break;
+            case "current key bound":
+                break;
+            default:
+                throw new InvalidOperationException("Unknown test case.");
+        }
+
+        using SearchHost redeemer = Start(configure: s =>
+        {
+            s.Protection = ring.CreateProvider();
+            if (change == "current key bound")
+            {
+                s.Settings["Federation:Limits:MaxChainKeys"] = "1";
+            }
+        });
+        var changed = new UnsortedContinuationSnapshot(streams, pageSize, UnsortedContinuation.AtStart(east.Shard));
+        string token = change == "current key bound"
+            ? new Uri(next).Query["?ct=".Length..]
+            : IssueBookmark(protector, issued, frame, codec, changed);
+
+        await AssertRestartWithoutClientAsync(redeemer, token);
+
+        ShardSearchRequest WithIds(string firstIds, string secondIds) =>
+            Copy(east, parameters: [new("_id", firstIds), new("_id", secondIds), east.Parameters[2]]);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task BookmarkMustFitTheOwnersCurrentReplayProfile(bool changeCursorPolicy)
+    {
+        using var ring = new IsolatedKeyRing();
+        using SearchHost issuer = Start(configure: s =>
+        {
+            s.Protection = ring.CreateProvider();
+            s.Shards.FilterGeneratedIds = true;
+            s.Shards.Resources = CorpusWithForeignWitness(includeWestRelative: false);
+        });
+        SearchResult first = await SendAsync(issuer, false, Paged);
+        first.StatusCode.ShouldBe(HttpStatusCode.OK);
+        string next = first.Link("next").ShouldNotBeNull();
+        var (protector, issued, frame, codec, saved) = ReadBookmark(ring, next);
+        ShardSearchRequest east = saved.Streams.ShouldHaveSingleItem();
+        east.Method.ShouldBe(ShardSearchMethod.PostSearch);
+        saved.Continuation.Cursor!.Redemption.ShouldBe(NextLinkRedemption.FollowGet);
+        var profile = new BackendProfile(SearchWorld.PostCapable.Name, SupportsPostSearch: true,
+            changeCursorPolicy ? 100 : 1,
+            changeCursorPolicy ? NextLinkRedemption.RepostToSearch : NextLinkRedemption.FollowGet, null);
+        using SearchHost redeemer = Start(configure: s =>
+        {
+            s.Protection = ring.CreateProvider();
+            s.Capabilities = Capabilities(SearchWorld.ReverseRegistry(extraWitnessShard: false, profile));
+        });
+
+        string token;
+        if (changeCursorPolicy)
+        {
+            token = new Uri(next).Query["?ct=".Length..];
+        }
+        else
+        {
+            // Same outer page size and saved template; only the earlier exact send is too big for this owner now.
+            ShardSearchRequest template = Copy(east, pageSize: 2);
+            var anchor = new ResourceKey(east.Shard, east.Type, ResourceId.Parse("dup"));
+            var changed = new UnsortedContinuationSnapshot([template], 2, UnsortedContinuation.AtSearch(template, anchor));
+            token = IssueBookmark(protector, issued, frame, codec, changed, rawQuery: Has + "&_count=2");
+        }
+
+        await AssertRestartWithoutClientAsync(redeemer, token);
+    }
+
+    [Theory]
+    [InlineData("missing definition")]
+    [InlineData("missing owner")]
+    [InlineData("wrong caller")]
+    public async Task InvalidManifestAndWrongCallerAreNotClassifiedAsRegistryGrowth(string change)
+    {
+        using var ring = new IsolatedKeyRing();
+        using SearchHost issuer = Start(configure: s => s.Protection = ring.CreateProvider());
+        using SearchHost redeemer = Start(configure: s => s.Protection = ring.CreateProvider());
+        issuer.Shards.FilterGeneratedIds = true;
+        SearchResult first = await SendAsync(issuer, false, Paged);
+        first.StatusCode.ShouldBe(HttpStatusCode.OK);
+        var (protector, issued, _, _, _) = ReadBookmark(ring, first.Link("next").ShouldNotBeNull());
+        SearchCapabilities view = Capabilities();
+        var shards = view.Registry.Shards.Where(s => change != "missing owner" || s.Id.Value != "west")
+            .Select(s => KeyValuePair.Create(s.Id.Value, view.Registry.ComputeVersion([s.Id])));
+        List<KeyValuePair<string, string>> definitions =
+        [
+            KeyValuePair.Create("Observation.subject", Revision(view, ContinuationDependencyGroup.Definition, "Observation.subject").ShouldNotBeNull()),
+            KeyValuePair.Create("Observation.code", Revision(view, ContinuationDependencyGroup.Definition, "Observation.code").ShouldNotBeNull()),
+        ];
+        if (change != "missing definition")
+        {
+            definitions.Add(KeyValuePair.Create("Patient._id", Revision(view, ContinuationDependencyGroup.Definition, "Patient._id").ShouldNotBeNull()));
+        }
+
+        ContinuationBinding binding = change == "wrong caller"
+            ? ContinuationBinding.Create(SyntheticIdentityProvider.TrustedIssuer, "different-subject",
+                "different-oid", null, [SearchWorld.ReaderRole])
+            : issued.Binding;
+        ContinuationIssue invalid = protector.Issue(binding, ContinuationDependencySet.Create(shards, definitions), issued.Snapshot.AsSpan());
+
+        SearchResult refused = await redeemer.GetAsync("/Patient?ct=" + invalid.InlineToken.ShouldNotBeNull());
+
+        refused.StatusCode.ShouldBe(change == "wrong caller" ? HttpStatusCode.Forbidden : HttpStatusCode.BadRequest);
+        refused.IssueCode.ShouldBe(change == "wrong caller" ? "forbidden" : "invalid");
+        redeemer.Shards.Views.ShouldBeEmpty();
+        redeemer.Shards.Calls.ShouldBeEmpty();
+    }
+
+    private static async Task AssertRestartWithoutClientAsync(SearchHost host, string token)
+    {
+        SearchResult refused = await host.GetAsync("/Patient?ct=" + token);
+        refused.StatusCode.ShouldBe(HttpStatusCode.Gone);
+        refused.IssueCode.ShouldBe("not-found");
+        host.Shards.Views.ShouldBeEmpty();
+        host.Shards.Calls.ShouldBeEmpty();
+    }
+
+    private static ShardSearchRequest Copy(ShardSearchRequest request, int? pageSize = null,
+        ShardSearchMethod? method = null, ParameterOccurrence[]? parameters = null) =>
+        new(request.Shard, request.Type, parameters ?? request.Parameters, pageSize ?? request.PageSize, method ?? request.Method);
+
+    private static (ContinuationProtector Protector, RedeemedContinuation Issued, SearchContinuationFrame Frame,
+        UnsortedSnapshotCodec Codec, UnsortedContinuationSnapshot Saved) ReadBookmark(IsolatedKeyRing ring, string next)
+    {
+        var (protector, view, issued) = Redeem(ring, next);
+        SearchContinuationFrame.TryRead(issued.Snapshot.AsSpan(), out SearchContinuationFrame? frame)
+            .ShouldBe(UnsortedSnapshotOutcome.Success);
+        var codec = new UnsortedSnapshotCodec(new TokenOptions().MaxInlineTokenBytes, view.Registry);
+        codec.Decode(frame!.Snapshot, out UnsortedContinuationSnapshot? saved).ShouldBe(UnsortedSnapshotOutcome.Success);
+        return (protector, issued, frame, codec, saved.ShouldNotBeNull());
+    }
+
+    private static string IssueBookmark(ContinuationProtector protector, RedeemedContinuation issued, SearchContinuationFrame frame,
+        UnsortedSnapshotCodec codec, UnsortedContinuationSnapshot snapshot, string? rawQuery = null)
+    {
+        codec.Encode(snapshot, out byte[]? encoded).ShouldBe(UnsortedSnapshotOutcome.Success);
+        return protector.IssueSuccessor(issued, new SearchContinuationFrame(frame.Post, rawQuery ?? frame.RawQuery, encoded.ShouldNotBeNull()).ToArray())
+            .InlineToken.ShouldNotBeNull();
     }
 
     private static Dictionary<string, IReadOnlyList<SearchWorld.SeedResource>> CorpusWithForeignWitness(bool includeWestRelative = true)
@@ -379,15 +616,14 @@ public sealed class PrimarySearchReverseChainTests
         SearchHost.Start(setup =>
         {
             setup.Capabilities = Capabilities();
+            configure?.Invoke(setup);
             if (dialects)
             {
                 setup.ConfigureServices = services => services.AddSingleton<IReadOnlyDictionary<ShardId, CountDialect>>(
-                    SearchWorld.Registry.Shards.ToDictionary(s => s.Id, _ => CountDialect.CountZero));
+                    setup.Capabilities!.Registry.Shards.ToDictionary(s => s.Id, _ => CountDialect.CountZero));
             }
-
-            configure?.Invoke(setup);
         });
 
-    private static SearchCapabilities Capabilities() =>
-        SearchWorld.Capabilities(exactCountShapes: ["Patient?", "Patient?_id=,"], reverseChain: true);
+    private static SearchCapabilities Capabilities(ShardRegistry? registry = null) =>
+        SearchWorld.Capabilities(exactCountShapes: ["Patient?", "Patient?_id=,"], reverseChain: true, registry: registry);
 }

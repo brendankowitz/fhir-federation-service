@@ -39,7 +39,7 @@ internal static class SearchWorld
     public static IReadOnlyDictionary<string, string> ExpectedGiven => Seeds.Value.ExpectedGiven;
 
     /// <summary>A fresh, mutable copy of a valid configured host's settings.</summary>
-    public static Dictionary<string, string> Settings()
+    public static Dictionary<string, string> Settings(bool extraWitnessShard = false)
     {
         var settings = new Dictionary<string, string>(StringComparer.Ordinal)
         {
@@ -52,7 +52,7 @@ internal static class SearchWorld
             [$"Federation:Host:Roles:{ObservationRole}:0"] = "Observation",
         };
 
-        IReadOnlyList<ShardOptions> shards = ShardOptions();
+        List<ShardOptions> shards = ShardOptions(extraWitnessShard);
         for (int i = 0; i < shards.Count; i++)
         {
             string prefix = $"Federation:Shards:{i}";
@@ -77,13 +77,15 @@ internal static class SearchWorld
     /// <param name="patient">Whether <c>Patient</c> is searchable at all.</param>
     /// <param name="withoutExactCountProof">The shard with no exact-count proof, if any.</param>
     /// <param name="reverseChain">Whether to certify the fixture's Observation subject path.</param>
+    /// <param name="registry">The test registry or the default two-shard registry.</param>
     public static SearchCapabilities Capabilities(
         bool patientName = true,
         IEnumerable<string>? exactCountShapes = null,
         bool organizationMissing = false,
         bool patient = true,
         string? withoutExactCountProof = null,
-        bool reverseChain = false)
+        bool reverseChain = false,
+        ShardRegistry? registry = null)
     {
         List<SearchParameterSupport> patientParameters =
         [
@@ -125,17 +127,30 @@ internal static class SearchWorld
             countShapes,
             paths);
 
+        registry ??= Registry;
         return new SearchCapabilities(
-            Registry,
-            Registry.Shards.Select(s => new ShardSearchCapability(s.Id, resources,
+            registry,
+            registry.Shards.Select(s => new ShardSearchCapability(s.Id, resources,
                 Certify(s.Id.Value == withoutExactCountProof ? [] : exactCountShapes ?? ["Patient?"]))));
     }
 
-    private static IReadOnlyList<ShardOptions> ShardOptions() =>
-    [
-        Shard("east", "k7q2", "https://fhir-east.example.org/", PostCapable),
-        Shard("west", "p9xm", "https://fhir-west.example.org/", GetOnly),
-    ];
+    public static ShardRegistry ReverseRegistry(bool extraWitnessShard, BackendProfile? east = null) =>
+        ShardRegistry.Create(ShardOptions(extraWitnessShard), [east ?? PostCapable, GetOnly]);
+
+    private static List<ShardOptions> ShardOptions(bool extraWitnessShard = false)
+    {
+        List<ShardOptions> shards =
+        [
+            Shard("east", "k7q2", "https://fhir-east.example.org/", PostCapable),
+            Shard("west", "p9xm", "https://fhir-west.example.org/", GetOnly),
+        ];
+        if (extraWitnessShard)
+        {
+            shards.Add(Shard("north", "n5w2", "https://fhir-north.example.org/", GetOnly));
+        }
+
+        return shards;
+    }
 
     private static ShardOptions Shard(string id, string alias, string baseUrl, BackendProfile profile) => new()
     {

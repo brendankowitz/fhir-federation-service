@@ -502,11 +502,13 @@ internal sealed class PrimarySearch
             return SearchOutcome.Gone();
         }
 
-        // Redemption proved every carried revision current, and the same stored query over the same streams fixes
-        // which dependencies the page has: any other set is an inconsistent manifest, not drift.
+        // Redemption proved the carried revisions still current, not that they cover the whole witness registry.
+        // An intact old manifest can therefore be stale even when the owner streams still match.
         if (!SameDependencies(predecessor.Dependencies, Dependencies(prepared)))
         {
-            return SearchOutcome.Invalid("The continuation is not valid.");
+            return reverse && WitnessRegistryGrew(predecessor.Dependencies, prepared)
+                ? SearchOutcome.Gone()
+                : SearchOutcome.Invalid("The continuation is not valid.");
         }
 
         return await ExecuteAsync(type, binding, prepared, predecessor, snapshot.Continuation, budget);
@@ -800,6 +802,32 @@ internal sealed class PrimarySearch
     private ContinuationDependencySet Dependencies(PreparedSearch search) =>
         // Even shards without a primary stream contributed to reverse-chain discovery.
         ContinuationDependencySet.Create(_shardRevisions, search.DefinitionRevisions);
+
+    private bool WitnessRegistryGrew(ContinuationDependencySet carried, PreparedSearch search)
+    {
+        int carriedShardCount = 0;
+        bool revisionsCurrent = carried.AreCurrent((group, key) =>
+        {
+            if (group == ContinuationDependencyGroup.Shard)
+            {
+                carriedShardCount++;
+            }
+
+            return CurrentRevision(group, key);
+        });
+
+        // Shard revisions include their ordinal. If they still match, a prior registry with fewer shards can
+        // only be a prefix. It must include every saved owner and exactly the same resolved definitions.
+        if (!revisionsCurrent || carriedShardCount >= _registry.Shards.Count)
+        {
+            return false;
+        }
+
+        var prefix = _registry.Shards.Take(carriedShardCount)
+            .ToDictionary(s => s.Id.Value, s => _shardRevisions[s.Id.Value], StringComparer.Ordinal);
+        return search.Streams.All(s => prefix.ContainsKey(s.Shard.Value))
+            && SameDependencies(carried, ContinuationDependencySet.Create(prefix, search.DefinitionRevisions));
+    }
 
     /// <summary>Whether two dependency sets are the same canonical set, compared by their canonical encodings.</summary>
     /// <remarks>Lengths are compared first, so the buffers are allocated only at the size of the carried, token-bounded set.</remarks>
