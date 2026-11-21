@@ -52,11 +52,16 @@ public sealed class SortedPageExecutor
     /// or more than one resource type.
     /// </exception>
     /// <exception cref="NotSupportedException"><paramref name="resumeFrom"/> is set; resuming is not implemented yet.</exception>
-    /// <exception cref="OperationCanceledException"><paramref name="cancellationToken"/> was cancelled.</exception>
     /// <exception cref="ArgumentOutOfRangeException">
     /// <paramref name="direction"/> is not defined, <paramref name="pageSize"/> is less than 1 or <paramref name="fetchBudget"/>
     /// is negative.
     /// </exception>
+    /// <exception cref="ShardFailureException">
+    /// A shard the page needs failed, timed out or broke the shard contract: a foreign or repeated key, a missing or
+    /// out-of-order <c>_lastUpdated</c>, or a foreign, repeated or cyclic <c>next</c> link. No match is returned.
+    /// </exception>
+    /// <exception cref="FetchBudgetExhaustedException">The page needs a shard call beyond <paramref name="fetchBudget"/>.</exception>
+    /// <exception cref="OperationCanceledException"><paramref name="cancellationToken"/> was cancelled.</exception>
     public async Task<SortedPage> ExecuteAsync(
         IReadOnlyList<ShardSearchRequest> streams,
         LastUpdatedSort direction,
