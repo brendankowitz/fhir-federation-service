@@ -82,10 +82,12 @@ internal sealed class SortedStream
     public bool NeedsFetch => _page is null || (Head is null && _page.Next is not null);
 
     /// <summary>
-    /// Fetches the stream's next input: its first search, or the successor of its drained page. Following a successor
-    /// is a committed forward transition, so it advances cycle detection and carries the drained page's last instant.
+    /// Starts the call for the stream's next input: its first search, or the successor of its drained page. Following a
+    /// successor is a committed forward transition, so it advances cycle detection and carries the drained page's last
+    /// instant. The call is charged and started before this method first yields, so a batch can start several at once.
     /// </summary>
-    public async Task FetchAsync(FetchScheduler scheduler)
+    /// <returns>The call's page, for <see cref="Accept"/>.</returns>
+    public async Task<ShardPage> RequestAsync(FetchScheduler scheduler)
     {
         if (_page is { Next: { } next })
         {
@@ -95,7 +97,12 @@ internal sealed class SortedStream
             _input = new Input(next, cycle, preceding);
         }
 
-        ShardPage page = _input.Cursor is { } cursor ? await scheduler.ContinueAsync(cursor) : await scheduler.SearchAsync(_search!);
+        return _input.Cursor is { } cursor ? await scheduler.ContinueAsync(cursor) : await scheduler.SearchAsync(_search!);
+    }
+
+    /// <summary>Validates the page the stream's current input returned and buffers it from the stream's next head.</summary>
+    public void Accept(ShardPage page)
+    {
         _stream.Validate(page, _redeemed);
         if (page.Entries.Any(entry => entry.LastUpdated is null))
         {

@@ -120,7 +120,7 @@ public sealed class SortedPageExecutor
     /// Gives every owner a head or exhaustion proof, then repeatedly emits the head first in the total order and refills
     /// only that owner, until the page is full or every owner is exhausted.
     /// </summary>
-    private static async Task MergeAsync(
+    private async Task MergeAsync(
         SortedStream[] owners,
         Comparer<(DateTimeOffset Instant, int Ordinal)> order,
         int pageSize,
@@ -128,12 +128,13 @@ public sealed class SortedPageExecutor
         FetchScheduler scheduler)
     {
         // Ordinal rounds: one input per unresolved owner per round, so no owner's leading empties delay another's head.
+        // Each round runs in fixed ordinal batches, so which calls run together never depends on how fast shards answer.
         SortedStream[] unresolved = [.. owners.Where(owner => owner.NeedsFetch)];
         while (unresolved.Length > 0)
         {
-            foreach (SortedStream owner in unresolved)
+            foreach (SortedStream[] batch in unresolved.Chunk(_maxParallelFetches))
             {
-                await owner.FetchAsync(scheduler);
+                await FetchAsync(batch, scheduler);
             }
 
             unresolved = [.. unresolved.Where(owner => owner.NeedsFetch)];
@@ -155,10 +156,24 @@ public sealed class SortedPageExecutor
 
             while (winner.NeedsFetch)
             {
-                await winner.FetchAsync(scheduler);
+                await FetchAsync([winner], scheduler);
             }
 
             Enqueue(heads, winner);
+        }
+    }
+
+    /// <summary>
+    /// Starts one call per owner of <paramref name="batch"/> in ordinal order without awaiting between starts, joins them,
+    /// then hands each owner its page.
+    /// </summary>
+    private static async Task FetchAsync(SortedStream[] batch, FetchScheduler scheduler)
+    {
+        Task<ShardPage>[] calls = [.. batch.Select(owner => owner.RequestAsync(scheduler))];
+        ShardPage[] pages = await Task.WhenAll(calls);
+        for (int i = 0; i < batch.Length; i++)
+        {
+            batch[i].Accept(pages[i]);
         }
     }
 
