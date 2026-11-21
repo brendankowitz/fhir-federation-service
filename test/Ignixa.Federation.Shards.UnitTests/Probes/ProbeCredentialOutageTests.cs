@@ -171,6 +171,44 @@ public sealed class ProbeCredentialOutageTests
     }
 
     [Fact]
+    public async Task StrictProbe_TheSameCredentialException_IsANegativeFromAcquisitionButAFaultFromTheMeterAfterTheSend()
+    {
+        // One exception instance and otherwise identical strict GET exchanges: only where it is thrown differs.
+        ShardCredentialException sameError = Outage();
+
+        await using var acquisition = ShardHarness.Start();
+        ProbeScript.RespondWithChallenge(acquisition, ScriptedResponse.Status(400));
+        acquisition.Credentials.Acquire = _ => acquisition.Credentials.Calls == 2
+            ? throw sameError
+            : ValueTask.FromResult(SyntheticCredentials.Token);
+
+        await using var metering = ShardHarness.Start();
+        ProbeScript.RespondWithChallenge(metering, ScriptedResponse.Status(400));
+        metering.Meter.OnBytes = _ =>
+        {
+            if (metering.Meter.Sends.Count == 2)
+            {
+                throw sameError;
+            }
+        };
+
+        StrictHandlingProbeResult unsent = await StrictHandlingProbe.ProbeAsync(
+            acquisition.Client, acquisition.Shard, ShardHarness.Patient, ShardSearchMethod.Get, Ct);
+        ShardCredentialException escaped = await Should.ThrowAsync<ShardCredentialException>(
+            () => StrictHandlingProbe.ProbeAsync(metering.Client, metering.Shard, ShardHarness.Patient, ShardSearchMethod.Get, Ct));
+
+        unsent.Outcome.ShouldBe(StrictHandlingProbeOutcome.ControlFailed);
+        acquisition.Credentials.Calls.ShouldBe(2);
+        acquisition.Server.Requests.Count.ShouldBe(1, "only the metadata fetch was sent; the control never was");
+        acquisition.Meter.Sends.Count.ShouldBe(1);
+
+        escaped.ShouldBeSameAs(sameError);
+        metering.Credentials.Calls.ShouldBe(2, "the token for the control was acquired");
+        metering.Server.Requests.Count.ShouldBe(2, "metadata and the control reached the server; no challenge followed");
+        metering.Meter.Sends.Count.ShouldBe(2);
+    }
+
+    [Fact]
     public async Task OrdinaryContinueAndRead_KeepTheCredentialProvidersOwnException()
     {
         await using var shard = ShardHarness.Start();
