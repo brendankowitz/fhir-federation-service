@@ -171,25 +171,49 @@ public sealed class SortedContinuationTests
         Should.Throw<NotSupportedException>(() => downcast.Clear());
     }
 
+    /// <summary>
+    /// Walks every field reachable from the snapshot types, through the federation's own types and the element types of
+    /// arrays and generic collections, so a forbidden value held one or more levels down is found too.
+    /// </summary>
     [Fact]
     public void Snapshot_HoldsOnlyMetadata_NoEntriesPagesBytesOrDeferredWork()
     {
         Type[] forbidden = [typeof(ShardEntry), typeof(ShardPage), typeof(byte[]), typeof(ReadOnlyMemory<byte>), typeof(Task), typeof(Delegate)];
-        Type[] state = [typeof(SortedContinuation), typeof(SortedStreamContinuation), typeof(SortedAnchor)];
+        var pending = new Queue<Type>([typeof(SortedContinuation), typeof(SortedStreamContinuation), typeof(SortedAnchor)]);
+        var visited = new HashSet<Type>();
+        var walked = new List<string>();
 
-        foreach (Type owner in state)
+        while (pending.TryDequeue(out Type? owner))
         {
+            if (!visited.Add(owner))
+            {
+                continue;
+            }
+
+            walked.Add(owner.Name);
             foreach (FieldInfo field in owner.GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic))
             {
-                forbidden.ShouldNotContain(
-                    f => f.IsAssignableFrom(field.FieldType) || field.FieldType.IsAssignableTo(f) || ElementOf(field.FieldType) == f,
-                    $"{owner.Name}.{field.Name}");
+                foreach (Type held in Held(field.FieldType))
+                {
+                    forbidden.ShouldNotContain(f => held.IsAssignableTo(f), $"{owner.Name}.{field.Name}");
+                    if (held.Namespace?.StartsWith("Ignixa.", StringComparison.Ordinal) == true)
+                    {
+                        pending.Enqueue(held);
+                    }
+                }
             }
         }
+
+        walked.ShouldContain(nameof(ShardSearchRequest));
+        walked.ShouldContain(nameof(ShardCursor));
+        walked.ShouldContain(nameof(CursorCycleState));
     }
 
-    private static Type? ElementOf(Type type) =>
-        type.IsArray ? type.GetElementType() : type.IsGenericType ? type.GetGenericArguments().FirstOrDefault() : null;
+    /// <summary>Gets a field's type and, recursively, the element and generic argument types it holds.</summary>
+    private static IEnumerable<Type> Held(Type type) =>
+        type.IsArray
+            ? [type, .. Held(type.GetElementType()!)]
+            : [type, .. type.GetGenericArguments().SelectMany(Held)];
 
     private static SortedStreamContinuation Search(int ordinal) =>
         SortedStreamContinuation.AtSearch(SortedFixture.Stream(ordinal, pageSize: 2), null);
