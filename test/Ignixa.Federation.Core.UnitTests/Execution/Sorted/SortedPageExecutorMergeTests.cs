@@ -113,4 +113,62 @@ public sealed class SortedPageExecutorMergeTests
         next.Streams[0].Search.ShouldBeSameAs(client.Calls.Single(c => c.Shard == Fixture.Shard(0)).Search);
         next.Streams[3].Search.ShouldBeSameAs(client.Calls.Single(c => c.Shard == Fixture.Shard(3)).Search);
     }
+
+    [Theory]
+    [InlineData(LastUpdatedSort.Ascending, 20)]
+    [InlineData(LastUpdatedSort.Ascending, 4)]
+    [InlineData(LastUpdatedSort.Descending, 20)]
+    [InlineData(LastUpdatedSort.Descending, 4)]
+    public async Task MultiPageStreamsWithDelayedFirstHead_MergeIntoTheOracleOrder(LastUpdatedSort direction, int pageSize)
+    {
+        bool ascending = direction == LastUpdatedSort.Ascending;
+        ShardEntry a = SortedFixture.Entry(0, "a", 1), b = SortedFixture.Entry(0, "b", 4), c = SortedFixture.Entry(0, "c", 7);
+        ShardEntry d = SortedFixture.Entry(1, "d", 2), e = SortedFixture.Entry(1, "e", 4), f = SortedFixture.Entry(1, "f", 9);
+        ShardEntry g = SortedFixture.Entry(2, "g", 3), h = SortedFixture.Entry(2, "h", 5), i = SortedFixture.Entry(2, "i", 6);
+        var client = new FakeShardClient();
+        if (ascending)
+        {
+            client.Chain(0, [], [a, b], [c]);
+            client.Chain(1, [d], [e, f]);
+            client.Chain(2, [g, h, i]);
+        }
+        else
+        {
+            client.Chain(0, [], [c, b], [a]);
+            client.Chain(1, [f, e], [d]);
+            client.Chain(2, [i, h, g]);
+        }
+
+        SortedPageExecutor executor = SortedFixture.Executor(client, Fixture.Registry(3));
+
+        SortedPage page = await executor.ExecuteAsync(SortedFixture.Streams(direction, 1, 2, 0), direction, pageSize, null, 20, Token);
+
+        string[] oracle = ascending
+            ? ["s0/a", "s1/d", "s2/g", "s0/b", "s1/e", "s2/h", "s2/i", "s0/c", "s1/f"]
+            : ["s1/f", "s0/c", "s2/i", "s2/h", "s0/b", "s1/e", "s2/g", "s1/d", "s0/a"];
+        page.Ids().ShouldBe(oracle.Take(pageSize));
+        (page.Next is null).ShouldBe(pageSize >= oracle.Length);
+    }
+
+    [Theory]
+    [InlineData(LastUpdatedSort.Ascending)]
+    [InlineData(LastUpdatedSort.Descending)]
+    public async Task EqualInstantsWithinOneOwner_KeepItsOwnOrder_AcrossNext(LastUpdatedSort direction)
+    {
+        bool ascending = direction == LastUpdatedSort.Ascending;
+        ShardEntry j = SortedFixture.Entry(1, "j", 3), n = SortedFixture.Entry(1, "n", 5);
+        var client = new FakeShardClient();
+        client.Chain(
+            0,
+            [SortedFixture.Entry(0, "m", 5), SortedFixture.Entry(0, "c", 5)],
+            [SortedFixture.Entry(0, "q", 5), SortedFixture.Entry(0, "b", 5)]);
+        client.Chain(1, ascending ? [j, n] : [n, j]);
+        SortedPageExecutor executor = SortedFixture.Executor(client, Fixture.Registry(2));
+
+        SortedPage page = await executor.ExecuteAsync(SortedFixture.Streams(direction, 1, 0), direction, 20, null, 10, Token);
+
+        page.Ids().ShouldBe(ascending
+            ? ["s1/j", "s0/m", "s0/c", "s0/q", "s0/b", "s1/n"]
+            : ["s0/m", "s0/c", "s0/q", "s0/b", "s1/n", "s1/j"]);
+    }
 }

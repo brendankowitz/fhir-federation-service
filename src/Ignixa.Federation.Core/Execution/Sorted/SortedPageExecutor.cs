@@ -106,9 +106,16 @@ public sealed class SortedPageExecutor
         List<ShardEntry> matches,
         FetchScheduler scheduler)
     {
-        foreach (SortedStream owner in owners)
+        // Ordinal rounds: one input per unresolved owner per round, so no owner's leading empties delay another's head.
+        SortedStream[] unresolved = owners;
+        while (unresolved.Length > 0)
         {
-            await owner.FetchAsync(scheduler);
+            foreach (SortedStream owner in unresolved)
+            {
+                await owner.FetchAsync(scheduler);
+            }
+
+            unresolved = [.. unresolved.Where(owner => owner.NeedsFetch)];
         }
 
         var heads = new PriorityQueue<SortedStream, (DateTimeOffset Instant, int Ordinal)>(EmissionOrder(direction));
@@ -123,6 +130,11 @@ public sealed class SortedPageExecutor
             if (matches.Count == pageSize)
             {
                 return;
+            }
+
+            while (winner.NeedsFetch)
+            {
+                await winner.FetchAsync(scheduler);
             }
 
             Enqueue(heads, winner);
