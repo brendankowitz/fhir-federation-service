@@ -286,6 +286,49 @@ public sealed class SortedPageExecutorReplayTests
         again.Next.ShouldNotBeNull().Describe().ShouldBe(pages[2].Next!.Describe());
     }
 
+    [Theory]
+    [InlineData(0, 3)]
+    [InlineData(2, 3)]
+    [InlineData(1, 5)]
+    public async Task CursorCycleSpanningFederationPages_IsAContractViolationWithinABoundedNumberOfPages(int prefix, int cycle)
+    {
+        var client = new FakeShardClient();
+        int links = prefix + cycle;
+        client.OnSearch(0, Fixture.Page(Fixture.Cursor(0, "p0"), SortedFixture.Entry(0, "start", 5)));
+        for (int i = 0; i < links; i++)
+        {
+            int successor = i + 1 < links ? i + 1 : prefix;
+            client.OnContinue(Fixture.Cursor(0, $"p{i}"), Fixture.Page(Fixture.Cursor(0, $"p{successor}"), SortedFixture.Entry(0, $"e{i}", 5)));
+        }
+
+        SortedPageExecutor executor = SortedFixture.Executor(client, Fixture.Registry(1));
+
+        ShardFailureException failure = await Should.ThrowAsync<ShardFailureException>(
+            () => executor.ReadAllAsync(SortedFixture.Streams(LastUpdatedSort.Ascending, 0), LastUpdatedSort.Ascending, 1, maxPages: (3 * links) + 2));
+
+        (failure.Shard, failure.Reason, failure.InnerException).ShouldBe((Fixture.Shard(0), ShardFailureReason.ContractViolation, null));
+    }
+
+    [Fact]
+    public async Task LongAcyclicCursorChainAcrossFederationPages_Terminates()
+    {
+        const int Links = 100;
+        var client = new FakeShardClient();
+        client.OnSearch(0, Fixture.Page(Fixture.Cursor(0, "p0"), SortedFixture.Entry(0, "start", 5)));
+        for (int i = 0; i < Links; i++)
+        {
+            ShardCursor? next = i + 1 < Links ? Fixture.Cursor(0, $"p{i + 1}") : null;
+            client.OnContinue(Fixture.Cursor(0, $"p{i}"), Fixture.Page(next, SortedFixture.Entry(0, $"e{i}", 5)));
+        }
+
+        SortedPageExecutor executor = SortedFixture.Executor(client, Fixture.Registry(1));
+
+        List<SortedPage> pages = await executor.ReadAllAsync(
+            SortedFixture.Streams(LastUpdatedSort.Ascending, 0), LastUpdatedSort.Ascending, 1, maxPages: Links + 2);
+
+        pages.SelectMany(p => p.Ids()).ShouldBe(["s0/start", .. Enumerable.Range(0, Links).Select(i => $"s0/e{i}")]);
+    }
+
     [Fact]
     public async Task FetchedButUnemittedSuccessor_LeavesTheCursorCheckpointAtItsInputCycleState()
     {
