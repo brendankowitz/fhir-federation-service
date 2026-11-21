@@ -1,3 +1,4 @@
+using Ignixa.Federation.Core.Execution;
 using Ignixa.Federation.Core.Execution.Sorted;
 using Ignixa.Federation.Core.Search;
 using Ignixa.Federation.Core.Shards;
@@ -57,6 +58,50 @@ public sealed class SortedPageExecutorReplayTests
         client.Calls.Select(c => c.Search).ShouldBe([resumeFrom.Streams[1].Search, resumeFrom.Streams[2].Search]);
         page.Fetches.ShouldBe(2);
         page.Next.ShouldBeNull();
+    }
+
+    [Fact]
+    public async Task Redeem_ReplaysTheSavedCursorVerbatim_AndCarriesItsCycleStateAndPrecedingInstant()
+    {
+        var client = new FakeShardClient();
+        client.Chain(0, [SortedFixture.Entry(0, "a", 1)], [SortedFixture.Entry(0, "b", 2), SortedFixture.Entry(0, "c", 3)], [SortedFixture.Entry(0, "d", 4)], [SortedFixture.Entry(0, "e", 5)]);
+        client.Chain(1, [SortedFixture.Entry(1, "z", 9)]);
+        SortedPageExecutor executor = SortedFixture.Executor(client, Fixture.Registry(2));
+        ShardSearchRequest[] streams = SortedFixture.Streams(LastUpdatedSort.Ascending, 0, 1);
+
+        SortedPage first = await executor.ExecuteAsync(streams, LastUpdatedSort.Ascending, 2, null, 10, Token);
+        SortedPage second = await executor.ExecuteAsync(streams, LastUpdatedSort.Ascending, 2, first.Next, 10, Token);
+        SortedPage third = await executor.ExecuteAsync(streams, LastUpdatedSort.Ascending, 2, second.Next, 10, Token);
+
+        first.Next.ShouldNotBeNull().Describe().ShouldBe(["s0 cursor p1 b@2 power=2 steps=0 preceding=1", "s1 search count=2 -"]);
+        second.Ids().ShouldBe(["s0/c", "s0/d"]);
+        second.Next.ShouldNotBeNull().Describe().ShouldBe(["s0 cursor p2 d@4 power=2 steps=1 preceding=3", "s1 search count=2 -"]);
+        third.Ids().ShouldBe(["s0/e", "s1/z"]);
+        third.Next.ShouldBeNull();
+        client.Calls.Skip(3).Select(c => c.ToString()).ShouldBe(["continue s0", "search s1 count=2", "continue s0", "continue s0", "search s1 count=2", "continue s0"]);
+        client.Calls[3].Cursor.ShouldBeSameAs(first.Next.Streams[0].Cursor);
+        client.Calls[6].Cursor.ShouldBeSameAs(second.Next.Streams[0].Cursor);
+    }
+
+    [Fact]
+    public async Task Redeem_ReplayedCursorPageLinkingBackToThatCursor_FailsBeforeAnyFurtherCall()
+    {
+        var client = new FakeShardClient();
+        ShardCursor[] cursors = client.Chain(
+            0, [SortedFixture.Entry(0, "a", 1)], [SortedFixture.Entry(0, "b", 2)], [SortedFixture.Entry(0, "c", 3)], [SortedFixture.Entry(0, "d", 4)]);
+        client.Chain(1, [SortedFixture.Entry(1, "z", 9)]);
+        SortedPageExecutor executor = SortedFixture.Executor(client, Fixture.Registry(2));
+        ShardSearchRequest[] streams = SortedFixture.Streams(LastUpdatedSort.Ascending, 0, 1);
+        SortedPage first = await executor.ExecuteAsync(streams, LastUpdatedSort.Ascending, 3, null, 10, Token);
+        first.Next.ShouldNotBeNull().Describe()[0].ShouldBe("s0 cursor p2 c@3 power=2 steps=1 preceding=2");
+        client.OnContinue(cursors[1], Fixture.Page(cursors[1], [SortedFixture.Entry(0, "c", 3), SortedFixture.Entry(0, "d", 4)]));
+        int before = client.Calls.Count;
+
+        ShardFailureException failure = await Should.ThrowAsync<ShardFailureException>(
+            () => executor.ExecuteAsync(streams, LastUpdatedSort.Ascending, 3, first.Next, 10, Token));
+
+        (failure.Shard, failure.Reason).ShouldBe((Fixture.Shard(0), ShardFailureReason.ContractViolation));
+        client.Calls.Skip(before).Select(c => c.ToString()).ShouldBe(["continue s0"]);
     }
 
     [Fact]

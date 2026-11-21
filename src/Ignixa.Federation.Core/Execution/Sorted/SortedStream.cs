@@ -37,6 +37,11 @@ internal sealed class SortedStream
         _replayedAnchor = start.LastEmitted;
         _emittedFrom = start.LastEmitted is null ? null : _input;
 
+        // The replayed cursor is this execution's first redemption, so a page that links back to it is a cycle.
+        if (start.Cursor is { } replayed)
+        {
+            _redeemed.Add(replayed);
+        }
         // An owner the previous page proved exhausted starts drained, so it is never fetched again.
         if (start.IsExhausted)
         {
