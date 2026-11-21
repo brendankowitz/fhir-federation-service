@@ -265,5 +265,65 @@ public sealed class SortedPageExecutorSchedulingTests
         client.Calls.Select(c => c.ToString()).ShouldBe(["search s0 count=2"]);
     }
 
+    /// <summary>
+    /// A client that throws before returning its task fails like one whose task faults: as <see cref="ShardFailureReason.Failed"/>
+    /// with the shard and cause, and only once the rest of its batch has finished.
+    /// </summary>
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task NeededClientFailure_IsFailedWithItsShardAndCause_OnceItsBatchHasFinished(bool synchronous)
+    {
+        var client = new FakeShardClient();
+        var cause = new InvalidOperationException("s0 failed");
+        if (synchronous)
+        {
+            client.OnSearchThrowsSynchronously(0);
+        }
+        else
+        {
+            client.OnSearchThrows(0, cause);
+        }
+
+        TaskCompletionSource s1Gate = Gate();
+        client.OnSearch(1, s1Gate, Fixture.Page(null, SortedFixture.Entry(1, "b", 2)));
+
+        Task<SortedPage> running = SortedFixture.Executor(client, Fixture.Registry(2), 2)
+            .ExecuteAsync(SortedFixture.Streams(Ascending, 0, 1), Ascending, 2, null, 10, Token);
+        await client.WhenStarted(synchronous ? 1 : 2).WaitAsync(Guard, Token);
+        running.IsCompleted.ShouldBeFalse("s1 has not finished");
+        s1Gate.SetResult();
+        ShardFailureException failure = await Should.ThrowAsync<ShardFailureException>(running);
+
+        (failure.Shard, failure.Reason).ShouldBe((Fixture.Shard(0), ShardFailureReason.Failed));
+        if (synchronous)
+        {
+            failure.InnerException.ShouldBeOfType<InvalidOperationException>().Message.ShouldBe(FakeShardClient.SynchronousFailureMessage);
+        }
+        else
+        {
+            failure.InnerException.ShouldBeSameAs(cause);
+        }
+
+        client.InFlight.ShouldBe(0);
+    }
+
+    /// <summary>A refill that fails after its owner's match was tentatively emitted fails the whole page.</summary>
+    [Fact]
+    public async Task FailedRefillAfterATentativeMatch_FailsThePage()
+    {
+        var client = new FakeShardClient();
+        var cause = new InvalidOperationException("s0 refill failed");
+        client.OnSearch(0, Fixture.Page(Fixture.Cursor(0, "p1"), SortedFixture.Entry(0, "a", 1)));
+        client.OnContinue(Fixture.Cursor(0, "p1"), _ => Task.FromException<ShardPage>(cause));
+        client.OnSearch(1, Fixture.Page(null, SortedFixture.Entry(1, "b", 2), SortedFixture.Entry(1, "c", 3)));
+
+        ShardFailureException failure = await Should.ThrowAsync<ShardFailureException>(SortedFixture.Executor(client, Fixture.Registry(2), 2)
+            .ExecuteAsync(SortedFixture.Streams(Ascending, 0, 1), Ascending, 3, null, 10, Token));
+
+        (failure.Shard, failure.Reason, failure.InnerException).ShouldBe((Fixture.Shard(0), ShardFailureReason.Failed, cause));
+        client.Calls.Select(c => c.ToString()).ShouldBe(["search s0 count=3", "search s1 count=3", "continue s0"]);
+    }
+
     private static TaskCompletionSource Gate() => new(TaskCreationOptions.RunContinuationsAsynchronously);
 }
