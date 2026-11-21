@@ -26,6 +26,13 @@ public sealed class PatientCountBackendFixture : IAsyncLifetime
     internal Task<RepeatedIdEvidence> SearchRepeatedIdAsync(HttpMethod method, RepeatedIdShape shape, CancellationToken cancellationToken) =>
         Backend.Client.SearchRepeatedIdAsync(method, shape, cancellationToken);
 
+    /// <summary>
+    /// Walks the sorted Patient search through its native continuations against the direct-read oracle of the
+    /// reserved Patients and returns the accounted-for report.
+    /// </summary>
+    internal Task<ContinuationReport> WalkContinuationAsync(HttpMethod method, PatientSortDirection direction, CancellationToken cancellationToken) =>
+        ContinuationWitness.RunAsync(Backend.Client, CountSeedData.Seed.Ids, method, direction, cancellationToken);
+
     public async ValueTask DisposeAsync()
     {
         if (_backend is not null)

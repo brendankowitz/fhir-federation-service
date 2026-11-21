@@ -332,6 +332,58 @@ internal sealed class BackendHttpClient : IDisposable
             cancellationToken);
     }
 
+    /// <summary>
+    /// Reads <c>Patient/{id}</c> directly. This is the oracle for continuation evidence: it never goes through a
+    /// search, so the expected id, version and instant do not depend on the behavior being judged.
+    /// </summary>
+    /// <param name="id">A reserved Patient id.</param>
+    public async Task<PatientRow> ReadPatientAsync(string id, CancellationToken cancellationToken)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Get, new Uri($"Patient/{id}", UriKind.Relative));
+        return await SendForEvidenceAsync(request, "the direct Patient read", "a result", json => PatientRow.ParseRead(json, id), cancellationToken);
+    }
+
+    /// <summary>
+    /// Builds the first page of a sorted traversal: <c>_sort=_lastUpdated</c> (or <c>-_lastUpdated</c>) with
+    /// <c>_count=1</c>, as the GET target or the form body of <c>POST Patient/_search</c>. Strict handling is requested.
+    /// </summary>
+    internal static HttpRequestMessage BuildSortedStartRequest(HttpMethod method, PatientSortDirection direction, Uri baseAddress) =>
+        BuildLiteralRequest(method, "Patient", $"_sort={(direction == PatientSortDirection.Ascending ? "" : "-")}_lastUpdated&_count=1", baseAddress);
+
+    /// <summary>
+    /// Builds the replay of an issued next link: its query suffix exactly as issued, as the GET target or as the
+    /// form body of <c>POST Patient/_search</c>. Nothing is decoded, split, reordered or merged.
+    /// </summary>
+    internal static HttpRequestMessage BuildContinuationRequest(HttpMethod method, NativeContinuation continuation, Uri baseAddress) =>
+        BuildLiteralRequest(method, "Patient", continuation.Query, baseAddress);
+
+    /// <summary>Sends <see cref="BuildSortedStartRequest"/> and accounts for the page. Failures name only the method, status and fixed text.</summary>
+    public async Task<ContinuationPage> StartSortedPageAsync(HttpMethod method, PatientSortDirection direction, CancellationToken cancellationToken)
+    {
+        using HttpRequestMessage request = BuildSortedStartRequest(method, direction, _http.BaseAddress!);
+        return await SendForEvidenceAsync(
+            request,
+            $"the {method.Method} {direction} sorted start",
+            "a result",
+            json => ContinuationPage.Parse(json, _http.BaseAddress!),
+            cancellationToken);
+    }
+
+    /// <summary>
+    /// Redeems an issued next link once with <paramref name="method"/>. The link was validated when its page was
+    /// parsed, so no request can leave the local fixture origin and Patient path.
+    /// </summary>
+    public async Task<ContinuationPage> RedeemAsync(HttpMethod method, NativeContinuation continuation, CancellationToken cancellationToken)
+    {
+        using HttpRequestMessage request = BuildContinuationRequest(method, continuation, _http.BaseAddress!);
+        return await SendForEvidenceAsync(
+            request,
+            $"the {method.Method} continuation replay",
+            "a result",
+            json => ContinuationPage.Parse(json, _http.BaseAddress!),
+            cancellationToken);
+    }
+
     private async Task<T> SendForEvidenceAsync<T>(
         HttpRequestMessage request,
         string operation,

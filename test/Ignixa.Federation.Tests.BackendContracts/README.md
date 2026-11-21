@@ -217,6 +217,37 @@ without a software identity recorded in this repository) selected the matches in
 echoed both occurrences for `equal` and `unequal`; POST echoed one occurrence for `equal` and both for `unequal`.
 That is not evidence for this suite and not acceptance. No live outcome of this witness is recorded yet.
 
+## Directional sort and continuation witness (`PatientContinuationContractTests`)
+
+A sixth witness records, over FHIR HTTP only, how the backend orders and pages `Patient?_sort=_lastUpdated` and
+`Patient?_sort=-_lastUpdated` with `_count=1`, and whether it keeps a continuation stable when its `next` link is
+redeemed again. Four live cases are added, each a separate case: GET and form POST, ascending and descending. It
+reuses the three-Patient count fixture and seed, so no extra backend start and no write during the walk.
+
+- **Oracle.** Three direct reads of the reserved Patients give each one's id, version and update instant. The
+  expected order is those instants, ascending or reversed. It is never taken from a search, from seed order or
+  from id order. The seed pauses 50 ms after each write so the instants differ. If two are equal the walk fails
+  as `[incomplete-search]`; a tie is a failure of the evidence, never a skip or a pass.
+- **Walk.** The start page is the one-row page of the sort. A GET follows each `next` link verbatim; a POST
+  re-posts the link's query suffix to `Patient/_search` as the form body. The suffix is replayed exactly as issued:
+  never decoded, split, reordered or merged. Each distinct issued link is redeemed twice, and both redemptions must
+  hold exactly the one Patient the oracle expects at that position with the same version and instant.
+- **Termination.** After the third row, an absent `next` or one empty terminal page with no `next` and no rows is
+  accepted. A missing, extra, repeated, backward or earlier-ending row, or a `next` after the terminal page, is a
+  `[contract]` failure. The walk sends at most 15 searches plus the three reads and never repeats a link a
+  third time.
+- **Safety.** A `next` link is accepted only on the exact origin of the fixture (`http://127.0.0.1:<port>`), the
+  `Patient` path and a non-empty plain query. Otherwise the page is not evidence and nothing further is sent.
+  Reports print reserved ids, versions, instants and counts, never a link, token or response text.
+
+It makes no claim about tied instants, other queries or the token text. Offline tests
+(`PatientContinuationEvidenceTests`, no Docker) drive the real client and walk against a scripted loopback
+backend that accepts only the exact wire shape, and check the replay of an odd encoded suffix on each verb, double
+redemption, terminal handling, every mismatch class, the origin and path rejections, report sanitization and the
+seed spacing. Mutations of the double redemption, the tie rule, the version and instant comparison, the terminal
+rule, direction, oracle order, the origin check and verbatim replay each fail them. No live outcome of this
+witness is recorded, and it is not accepted until a Linux run supplies one.
+
 ## Run it
 
 Requires .NET SDK 11.0.100. The live tests also require a local Docker engine for `linux/amd64` containers.
@@ -224,12 +255,13 @@ The harness uses `/var/run/docker.sock` on Linux and the Docker Desktop Linux en
 Run the same two commands as CI from the repository root:
 
 ```text
-dotnet run --project test/Ignixa.Federation.Tests.BackendContracts/Ignixa.Federation.Tests.BackendContracts.csproj --configuration Release -- --show-live-output on --progress off --fail-skips on --filter-class '*EvidenceTests' --minimum-expected-tests 252
-dotnet run --project test/Ignixa.Federation.Tests.BackendContracts/Ignixa.Federation.Tests.BackendContracts.csproj --configuration Release --no-build -- --show-live-output on --progress off --fail-skips on --filter-class '*ContractTests' --minimum-expected-tests 31
+dotnet run --project test/Ignixa.Federation.Tests.BackendContracts/Ignixa.Federation.Tests.BackendContracts.csproj --configuration Release -- --show-live-output on --progress off --fail-skips on --filter-class '*EvidenceTests' --minimum-expected-tests 324
+dotnet run --project test/Ignixa.Federation.Tests.BackendContracts/Ignixa.Federation.Tests.BackendContracts.csproj --configuration Release --no-build -- --show-live-output on --progress off --fail-skips on --filter-class '*ContractTests' --minimum-expected-tests 35
 ```
 
-The first command builds the project and runs the 252 offline tests. The second runs the thirty-one live
-cases (three reference, six count, four repeated `_id`, twelve Patient.given, six Observation.subject join)
+The first command builds the project and runs the 324 offline tests. The second runs the thirty-five live
+cases (three reference, six count, four repeated `_id`, twelve Patient.given, six Observation.subject join,
+four directional continuation)
 using that build. The separate
 filters and minimum test counts prevent offline tests from satisfying the live gate. Failed or skipped cases
 make their command exit non-zero.
@@ -288,11 +320,13 @@ base and can include foreign references, so it is not an exact-local query.
 ## Evidence status
 
 - Local (Windows, no Docker engine): the project builds with the .NET 11.0.100 SDK. The offline tests pass.
-  The thirty-one live cases (three reference, six count, four repeated `_id`, twelve Patient.given, six
-  Observation.subject join) run and fail with `[prerequisite]`, as they should without Docker: the offline run
-  is 252 passed, 0 failed, 0 skipped, and the live run is 31 total, 0 passed, 31 failed, 0 skipped.
+  The thirty-five live cases (three reference, six count, four repeated `_id`, twelve Patient.given, six
+  Observation.subject join, four directional continuation) run and fail with `[prerequisite]`, as they should
+  without Docker: the offline run is 324 passed, 0 failed, 0 skipped, and the live run is 35 total, 0 passed,
+  35 failed, 0 skipped.
 - Pending Docker or CI: startup, port binding, match sets, the Patient count totals, the repeated
-  `_id` match and echo outcomes, the Patient.given match and echo outcomes, and the Observation.subject join
-  match and echo outcomes have not been verified against a live backend; no outcome is recorded here and none is
+  `_id` match and echo outcomes, the Patient.given match and echo outcomes, the Observation.subject join
+  match and echo outcomes, and the directional continuation outcomes
+  have not been verified against a live backend; no outcome is recorded here and none is
   assumed. The first Linux run in `.github/workflows/backend-contracts.yml` supplies that evidence. Until then
-  the count, Patient.given and Observation.subject join witnesses are not accepted.
+  the count, Patient.given, Observation.subject join and continuation witnesses are not accepted.

@@ -16,7 +16,8 @@ internal static class CountSeedData
             Patient("count-female-1", "female"),
             Patient("count-female-2", "female"),
             Patient("count-male-1", "male"),
-        ]);
+        ],
+        WriteSpacing: TimeSpan.FromMilliseconds(50));
 
     private static SeedResource Patient(string id, string gender) =>
         new("Patient", id, new JsonObject { ["resourceType"] = "Patient", ["id"] = id, ["gender"] = gender }.ToJsonString());

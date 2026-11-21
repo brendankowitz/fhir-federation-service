@@ -24,7 +24,29 @@ internal sealed class LoopbackFhirServer : IDisposable
     public Uri BaseAddress => new($"http://127.0.0.1:{((IPEndPoint)_listener.LocalEndpoint).Port}/");
 
     /// <summary>Accepts one connection, records its request, replies with <paramref name="status"/> and <paramref name="responseBody"/>, and closes.</summary>
-    public async Task<CapturedRequest> ServeOnceAsync(string responseBody, CancellationToken cancellationToken, int status = 200)
+    public async Task<CapturedRequest> ServeOnceAsync(string responseBody, CancellationToken cancellationToken, int status = 200) =>
+        await ServeConnectionAsync(_ => (status, responseBody), cancellationToken);
+
+    /// <summary>
+    /// Serves connections one at a time until <paramref name="cancellationToken"/> is cancelled, letting
+    /// <paramref name="respond"/> choose each answer from the exact captured request.
+    /// </summary>
+    public async Task ServeAsync(Func<CapturedRequest, (int Status, string Body)> respond, CancellationToken cancellationToken)
+    {
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            try
+            {
+                await ServeConnectionAsync(respond, cancellationToken);
+            }
+            catch (OperationCanceledException)
+            {
+                return;
+            }
+        }
+    }
+
+    private async Task<CapturedRequest> ServeConnectionAsync(Func<CapturedRequest, (int Status, string Body)> respond, CancellationToken cancellationToken)
     {
         using TcpClient client = await _listener.AcceptTcpClientAsync(cancellationToken);
         NetworkStream stream = client.GetStream();
@@ -52,6 +74,8 @@ internal sealed class LoopbackFhirServer : IDisposable
 
         string body = Encoding.Latin1.GetString([.. received.Skip(bodyStart).Take(contentLength)]);
 
+        var captured = new CapturedRequest(lines[0], string.Join("\r\n", lines.Skip(1)), body);
+        (int status, string responseBody) = respond(captured);
         byte[] payload = Encoding.UTF8.GetBytes(responseBody);
         byte[] head = Encoding.ASCII.GetBytes(
             $"HTTP/1.1 {status} Canned\r\nContent-Type: application/fhir+json\r\nContent-Length: {payload.Length}\r\nConnection: close\r\n\r\n");
@@ -59,7 +83,7 @@ internal sealed class LoopbackFhirServer : IDisposable
         await stream.WriteAsync(payload, cancellationToken);
         await stream.FlushAsync(cancellationToken);
 
-        return new CapturedRequest(lines[0], string.Join("\r\n", lines.Skip(1)), body);
+        return captured;
     }
 
     public void Dispose() => _listener.Dispose();

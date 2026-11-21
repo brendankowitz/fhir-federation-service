@@ -317,6 +317,10 @@ internal sealed class MicrosoftFhirSqlBackend : IAsyncDisposable
         foreach (SeedResource resource in seed.Resources(LocalBaseUrl))
         {
             await Client.PutAsync(resource, cancellationToken);
+            if (seed.WriteSpacing > TimeSpan.Zero)
+            {
+                await Task.Delay(seed.WriteSpacing, cancellationToken);
+            }
         }
     }
 

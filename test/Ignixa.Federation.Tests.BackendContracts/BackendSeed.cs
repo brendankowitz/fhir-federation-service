@@ -7,7 +7,9 @@ namespace Ignixa.Federation.Tests.BackendContracts;
 /// <param name="ResourceType">The type the readiness search runs against.</param>
 /// <param name="Ids">The ids of the seeded resources of that type.</param>
 /// <param name="Resources">The resources to write in write order, given the local base with a trailing slash.</param>
+/// <param name="WriteSpacing">A bounded pause after each write, so seeded resources get distinct update instants. Zero for none.</param>
 internal sealed record BackendSeed(
     string ResourceType,
     IReadOnlyList<string> Ids,
-    Func<string, IReadOnlyList<SeedResource>> Resources);
+    Func<string, IReadOnlyList<SeedResource>> Resources,
+    TimeSpan WriteSpacing = default);
