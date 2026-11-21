@@ -245,5 +245,25 @@ public sealed class SortedPageExecutorSchedulingTests
         client.InFlight.ShouldBe(0);
     }
 
+    /// <summary>Cancellation observed between two starts of a batch admits no further call.</summary>
+    [Fact]
+    public async Task CallerCancellationDuringAdmission_StartsNoFurtherCall()
+    {
+        using var caller = CancellationTokenSource.CreateLinkedTokenSource(Token);
+        var client = new FakeShardClient();
+        client.OnSearch(Fixture.Shard(0), async (_, _) =>
+        {
+            await caller.CancelAsync();
+            return Fixture.Page(null, SortedFixture.Entry(0, "a", 1));
+        });
+        client.OnSearch(1, Fixture.Page(null, SortedFixture.Entry(1, "b", 2)));
+        client.OnSearch(2, Fixture.Page(null, SortedFixture.Entry(2, "c", 3)));
+
+        await Should.ThrowAsync<OperationCanceledException>(SortedFixture.Executor(client, Fixture.Registry(3), 3)
+            .ExecuteAsync(SortedFixture.Streams(Ascending, 0, 1, 2), Ascending, 2, null, 10, caller.Token));
+
+        client.Calls.Select(c => c.ToString()).ShouldBe(["search s0 count=2"]);
+    }
+
     private static TaskCompletionSource Gate() => new(TaskCreationOptions.RunContinuationsAsynchronously);
 }

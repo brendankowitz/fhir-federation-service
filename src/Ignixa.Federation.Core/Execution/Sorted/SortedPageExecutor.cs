@@ -171,7 +171,16 @@ public sealed class SortedPageExecutor
     /// </summary>
     private static async Task FetchAsync(SortedStream[] batch, FetchScheduler scheduler, CancellationToken cancellationToken)
     {
-        Task<ShardPage>[] calls = [.. batch.Select(owner => owner.RequestAsync(scheduler))];
+        var calls = new List<Task<ShardPage>>(batch.Length);
+        foreach (SortedStream owner in batch)
+        {
+            if (cancellationToken.IsCancellationRequested)
+            {
+                break;
+            }
+
+            calls.Add(owner.RequestAsync(scheduler));
+        }
 
         // Joining observes every call's failure, so the ones arbitration discards never surface as unobserved exceptions.
         Task joined = Task.WhenAll(calls);
@@ -179,7 +188,7 @@ public sealed class SortedPageExecutor
 
         // Caller cancellation outranks every slot's outcome, whichever came first.
         cancellationToken.ThrowIfCancellationRequested();
-        for (int i = 0; i < batch.Length; i++)
+        for (int i = 0; i < calls.Count; i++)
         {
             batch[i].Accept(await calls[i]);
         }
