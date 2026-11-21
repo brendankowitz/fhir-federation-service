@@ -23,8 +23,10 @@ public sealed class SortedPageExecutorSchedulingTests
     private static CancellationToken Token => TestContext.Current.CancellationToken;
 
     /// <summary>
-    /// Four gated owners are primed in ordinal batches of at most <paramref name="maxParallel"/>. Each batch is released
-    /// against ordinal order; the next batch may start only once the whole batch has finished.
+    /// Four owners are primed in fixed ordinal batches of at most <paramref name="maxParallel"/>. The last call of each
+    /// batch completes as it starts and the rest are released against ordinal order, lowest ordinal last, so a free slot
+    /// opens while the batch still runs. Every call records how many calls had finished when it started: only the whole
+    /// of the earlier batches, so no call slides into a slot its batch freed early.
     /// </summary>
     [Theory]
     [InlineData(1)]
@@ -35,9 +37,17 @@ public sealed class SortedPageExecutorSchedulingTests
     {
         var client = new FakeShardClient();
         TaskCompletionSource[] gates = [.. Enumerable.Range(0, 4).Select(_ => Gate())];
+        int[] finishedAtStart = new int[4];
         for (int i = 0; i < 4; i++)
         {
-            client.OnSearch(i, gates[i], Fixture.Page(null, SortedFixture.Entry(i, "a", 10 - i), SortedFixture.Entry(i, "b", 20 - i)));
+            int ordinal = i;
+            bool lastOfBatch = i % maxParallel == maxParallel - 1 || i == 3;
+            ShardPage response = Fixture.Page(null, SortedFixture.Entry(i, "a", 10 - i), SortedFixture.Entry(i, "b", 20 - i));
+            client.OnSearch(Fixture.Shard(i), (_, cancellationToken) =>
+            {
+                finishedAtStart[ordinal] = client.Finished.Count;
+                return lastOfBatch ? Task.FromResult(response) : Respond(gates[ordinal], response, cancellationToken);
+            });
         }
 
         Task<SortedPage> running = SortedFixture.Executor(client, Fixture.Registry(4), maxParallel)
@@ -46,8 +56,11 @@ public sealed class SortedPageExecutorSchedulingTests
         {
             int batch = Math.Min(maxParallel, 4 - started);
             await client.WhenStarted(started + batch).WaitAsync(Guard, Token);
-            client.Calls.Count.ShouldBe(started + batch, "a later batch waits for this one");
-            for (int i = started + batch - 1; i >= started; i--)
+            if (batch > 1)
+            {
+                client.Calls.Count.ShouldBe(started + batch, "a later batch waits for this one's gated calls");
+            }
+            for (int i = started + batch - 2; i >= started; i--)
             {
                 gates[i].SetResult();
                 await client.Calls[i].Finished.WaitAsync(Guard, Token);
@@ -58,6 +71,7 @@ public sealed class SortedPageExecutorSchedulingTests
 
         SortedPage page = await running.WaitAsync(Guard, Token);
 
+        finishedAtStart.ShouldBe([.. Enumerable.Range(0, 4).Select(i => i / maxParallel * maxParallel)], "a call starts only after every earlier batch");
         client.MaxInFlight.ShouldBe(maxParallel);
         client.Calls.Select(c => c.ToString()).ShouldBe(["search s0 count=5", "search s1 count=5", "search s2 count=5", "search s3 count=5"]);
         page.Ids().ShouldBe(["s3/a", "s2/a", "s1/a", "s0/a", "s3/b"]);
@@ -464,6 +478,12 @@ public sealed class SortedPageExecutorSchedulingTests
         client.Chain(0, [SortedFixture.Entry(0, "a", 1)], [SortedFixture.Entry(0, "c", 3)], [SortedFixture.Entry(0, "e", 5)]);
         client.Chain(1, [SortedFixture.Entry(1, "b", 2), SortedFixture.Entry(1, "d", 4)]);
         return client;
+    }
+
+    private static async Task<ShardPage> Respond(TaskCompletionSource gate, ShardPage page, CancellationToken cancellationToken)
+    {
+        await gate.Task.WaitAsync(cancellationToken);
+        return page;
     }
 
     private static TaskCompletionSource Gate() => new(TaskCreationOptions.RunContinuationsAsynchronously);
