@@ -10,9 +10,18 @@ namespace Ignixa.Federation.Core.Execution.Sorted;
 /// then the shard's own order.
 /// </summary>
 /// <remarks>
+/// <para>
 /// Before each emission every live stream holds a head or proof that it is exhausted, so a match is emitted only when no
 /// stream can still produce an earlier one. Empty and short backend pages are followed through their <c>next</c> links.
 /// The executor is stateless between calls and safe to share.
+/// </para>
+/// <para>
+/// One execution has one coordinator. Priming, for a first page and a redemption alike, runs in ordinal rounds of one
+/// call per stream without a head; each round runs in fixed ordinal batches of at most the configured parallelism, whose
+/// calls start together and are all joined before the next batch starts. After priming only the stream whose head was
+/// emitted is refilled, one call at a time and only while the page needs another match. Which calls run together, the
+/// requests sent and the matches emitted never depend on the order in which shards answer.
+/// </para>
 /// </remarks>
 public sealed class SortedPageExecutor
 {
@@ -46,7 +55,25 @@ public sealed class SortedPageExecutor
     /// <param name="resumeFrom">Where the previous page ended, or <see langword="null"/> for the first page.</param>
     /// <param name="fetchBudget">The most shard calls this execution may start.</param>
     /// <param name="cancellationToken">Cancels the execution.</param>
-    /// <returns>The page; <see cref="SortedPage.Next"/> is <see langword="null"/> when every stream is known to be exhausted.</returns>
+    /// <returns>
+    /// The page; <see cref="SortedPage.Next"/> is <see langword="null"/> when every stream is known to be exhausted, and
+    /// <see cref="SortedPage.Fetches"/> is the number of shard calls started.
+    /// </returns>
+    /// <remarks>
+    /// <para>
+    /// Each started call is charged against <paramref name="fetchBudget"/> before it starts; a call the budget denies starts
+    /// nothing, and a page that needs it fails whole, discarding any match already chosen. A budget below the number of
+    /// streams that need a first call therefore starts only the calls of its ordinal prefix and then fails.
+    /// </para>
+    /// <para>
+    /// When a batch goes wrong, every call it started is awaited before anything is thrown, so no call outlives the
+    /// execution and no discarded failure goes unobserved. Cancellation of <paramref name="cancellationToken"/> outranks
+    /// every outcome; otherwise the first stream by registry ordinal whose call failed, timed out, was denied by the
+    /// budget or returned an invalid page decides the exception, whichever call finished first. Siblings are not cancelled
+    /// on an ordinary failure, and no later batch starts after one. The token is passed to every call and checked before
+    /// each call starts, after each batch is joined and before the page is returned.
+    /// </para>
+    /// </remarks>
     /// <exception cref="ArgumentNullException"><paramref name="streams"/> is <see langword="null"/>.</exception>
     /// <exception cref="ArgumentException">
     /// <paramref name="streams"/> is empty, holds <see langword="null"/>, a shard the registry does not know, a shard twice
@@ -109,6 +136,7 @@ public sealed class SortedPageExecutor
         {
             await MergeAsync(owners, order, pageSize, matches, scheduler, cancellationToken);
         }
+
 
         SortedContinuation? next = owners.All(owner => owner.IsExhausted)
             ? null
