@@ -137,6 +137,8 @@ public sealed class SortedPageExecutor
             await MergeAsync(owners, order, pageSize, matches, scheduler, cancellationToken);
         }
 
+        // A cancellation that lands after the last join, while matches are chosen, still wins over returning the page.
+        cancellationToken.ThrowIfCancellationRequested();
 
         SortedContinuation? next = owners.All(owner => owner.IsExhausted)
             ? null
