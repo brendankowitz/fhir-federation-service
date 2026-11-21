@@ -94,4 +94,28 @@ public sealed class SortedPageExecutorValidationTests
         page.Ids().ShouldBe(["s0/a", "s1/x", "s0/b"]);
         page.Next.ShouldBeNull();
     }
+
+    [Theory]
+    [InlineData("foreign shard")]
+    [InlineData("foreign type")]
+    [InlineData("duplicate key")]
+    public async Task ForeignOrDuplicateKeyInAnUnusedTail_IsAContractViolation(string defect)
+    {
+        ShardEntry bad = defect switch
+        {
+            "foreign shard" => SortedFixture.Entry(1, "f", 2),
+            "foreign type" => new ShardEntry(Fixture.Key(0, "f", Fixture.Observation), "v", SortedFixture.At(2), "{}"u8.ToArray()),
+            _ => SortedFixture.Entry(0, "a", 2),
+        };
+        var client = new FakeShardClient();
+        client.Chain(0, [SortedFixture.Entry(0, "a", 1), bad]);
+        client.Chain(1, [SortedFixture.Entry(1, "x", 5)]);
+        SortedPageExecutor executor = SortedFixture.Executor(client, Fixture.Registry(2));
+
+        ShardFailureException failure = await Should.ThrowAsync<ShardFailureException>(() => executor.ExecuteAsync(
+            SortedFixture.Streams(LastUpdatedSort.Ascending, 0, 1), LastUpdatedSort.Ascending, 1, null, 10, Token));
+
+        failure.Shard.ShouldBe(Fixture.Shard(0));
+        failure.Reason.ShouldBe(ShardFailureReason.ContractViolation);
+    }
 }

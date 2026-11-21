@@ -16,6 +16,7 @@ internal sealed class SortedStream
     private readonly ShardStream _stream;
     private readonly ShardSearchRequest _search;
     private readonly int _sign;
+    private readonly HashSet<ShardCursor> _redeemed = [];
     private Input _input = new(null, CursorCycleState.Initial, null);
     private Input? _emittedFrom;
     private ShardPage? _page;
@@ -54,6 +55,7 @@ internal sealed class SortedStream
         }
 
         ShardPage page = _input.Cursor is { } cursor ? await scheduler.ContinueAsync(cursor) : await scheduler.SearchAsync(_search);
+        _stream.Validate(page, _redeemed);
         CheckOrder(page);
         _page = page;
         _index = 0;
