@@ -1,0 +1,12 @@
+- name: Start here
+  href: index.md
+- name: Operate a gateway
+  href: operator.md
+- name: Build a client
+  href: client-developer-guide.md
+- name: Search support
+  href: status.md
+- name: Configuration
+  href: configuration.md
+- name: Shard API
+  href: contracts.md
