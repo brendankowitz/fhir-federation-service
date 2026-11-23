@@ -175,6 +175,28 @@ public sealed class CapabilityPublicationWorkerTests
     }
 
     [Fact]
+    public async Task CancellationFromAnotherTokenRaisedAfterStopWasRequested_IsNotNormalizedIntoSuccessfulExecution()
+    {
+        await using Harness h = Harness.Create();
+        await h.Worker.StartAsync(TestContext.Current.CancellationToken);
+        Probe probe = await h.Source.NextAsync();
+
+        Task stop = h.Worker.StopAsync(TestContext.Current.CancellationToken);
+        probe.Token.IsCancellationRequested.ShouldBeTrue();
+        using var other = new CancellationTokenSource();
+        await other.CancelAsync();
+        probe.Result.SetException(new OperationCanceledException("The source was cancelled by its own token.", other.Token));
+
+        await stop.WaitAsync(Guard, TestContext.Current.CancellationToken);
+        Task execution = h.Worker.ExecuteTask.ShouldNotBeNull();
+        OperationCanceledException raised = await Should.ThrowAsync<OperationCanceledException>(execution.WaitAsync(Guard, TestContext.Current.CancellationToken));
+        raised.CancellationToken.ShouldBe(other.Token);
+        execution.IsCompletedSuccessfully.ShouldBeFalse();
+        h.Evidence.Commits.ShouldBe(0);
+        await AssertColdAsync(h);
+    }
+
+    [Fact]
     public async Task StopWhileBuilding_ClosesThePath_SoACommitTheSourceStillAllowsInstallsNothing()
     {
         await using Harness h = Harness.Create();
@@ -412,8 +434,11 @@ public sealed class CapabilityPublicationWorkerTests
         }
     }
 
-    /// <summary>The worker's clock: each wait is surfaced to the test, and elapses only when the test fires it.</summary>
-    private sealed class StepClock : TimeProvider
+    /// <summary>
+    /// The worker's clock: each wait is surfaced to the test, and elapses only when the test fires it. A shared host clock
+    /// can limit that to the waits <paramref name="surfaces"/> accepts; any other timer runs on the system clock.
+    /// </summary>
+    internal sealed class StepClock(Func<TimeSpan, bool>? surfaces = null) : TimeProvider
     {
         private readonly Channel<StepTimer> _waits = Channel.CreateUnbounded<StepTimer>();
 
@@ -421,6 +446,11 @@ public sealed class CapabilityPublicationWorkerTests
 
         public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
         {
+            if (surfaces is not null && !surfaces(dueTime))
+            {
+                return base.CreateTimer(callback, state, dueTime, period);
+            }
+
             var timer = new StepTimer(callback, state, dueTime);
             _waits.Writer.TryWrite(timer);
             return timer;
@@ -429,7 +459,7 @@ public sealed class CapabilityPublicationWorkerTests
         public Task<StepTimer> NextWaitAsync() => _waits.Reader.ReadAsync(TestContext.Current.CancellationToken).AsTask().WaitAsync(Guard);
     }
 
-    private sealed class StepTimer(TimerCallback callback, object? state, TimeSpan due) : ITimer
+    internal sealed class StepTimer(TimerCallback callback, object? state, TimeSpan due) : ITimer
     {
         public TimeSpan Due { get; } = due;
 
@@ -445,7 +475,7 @@ public sealed class CapabilityPublicationWorkerTests
     }
 
     /// <summary>One pending probe. It ignores its token: only the test completes it, so a stop can be held behind it.</summary>
-    private sealed class Probe(CancellationToken token)
+    internal sealed class Probe(CancellationToken token)
     {
         public CancellationToken Token { get; } = token;
 
@@ -454,7 +484,7 @@ public sealed class CapabilityPublicationWorkerTests
         public void Release(CapabilityAdmission? admission) => Result.TrySetResult(admission);
     }
 
-    private sealed class ScriptedAdmissions : ICapabilityAdmissionSource
+    internal sealed class ScriptedAdmissions : ICapabilityAdmissionSource
     {
         private readonly Lock _gate = new();
         private readonly Channel<Probe> _probes = Channel.CreateUnbounded<Probe>();
@@ -506,7 +536,7 @@ public sealed class CapabilityPublicationWorkerTests
     }
 
     /// <summary>Replaceable evidence with a commit gate: an admission is current until the evidence is replaced.</summary>
-    private sealed class ProofEvidence
+    internal sealed class ProofEvidence
     {
         private readonly Lock _gate = new();
         private int _generation;

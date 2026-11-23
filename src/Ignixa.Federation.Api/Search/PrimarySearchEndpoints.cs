@@ -17,12 +17,18 @@ namespace Ignixa.Federation.Api.Search;
 /// <see cref="PrimarySearchState"/>). A registered view is resolved at startup and any gap fails the host rather than the
 /// first request. A trusted component can publish, replace or withdraw the view later through
 /// <see cref="IFederationCapabilityPublisher"/>, which exists only on a configured host.
+/// An explicit <c>Federation:Backend:Mode=PrototypeCatalog</c> instead starts the host cold, never reads a registered view,
+/// registers no publisher, and lets one hosted <see cref="CapabilityPublicationWorker"/> publish from the registered
+/// <see cref="ICapabilityAdmissionSource"/>. That mode requires <c>Federation:Host</c> and a source, and fails startup without them.
 /// </remarks>
 internal static class PrimarySearchEndpoints
 {
     /// <summary>The Data Protection application discriminator; instances that share a key ring and this name redeem each other's tokens.</summary>
     private const string ApplicationName = "Ignixa.Federation";
     private const string SigningUnavailable = "Caller signing configuration is not ready.";
+
+    /// <summary>How often the catalog worker asks its source for a fresh admission or refusal.</summary>
+    private static readonly TimeSpan CatalogCadence = TimeSpan.FromSeconds(1);
 
     /// <summary>Registers the search services when the host is configured for search.</summary>
     /// <param name="builder">The application builder.</param>
@@ -35,9 +41,13 @@ internal static class PrimarySearchEndpoints
             o.SetParameterPolicy<ResourceTypeRouteConstraint>(ResourceTypeRouteConstraint.Name);
             o.SetParameterPolicy<ResourceIdRouteConstraint>(ResourceIdRouteConstraint.Name);
         });
+        // Decided first so an invalid explicit mode fails even on a host with no Federation:Host.
+        bool catalog = CatalogBackendSelection.IsSelected(builder.Configuration);
         if (SearchHostSettings.Read(builder.Configuration) is not { } settings)
         {
-            return builder;
+            return catalog
+                ? throw new InvalidOperationException($"{CatalogBackendSelection.ModePath} requires a valid Federation:Host section.")
+                : builder;
         }
 
         builder.Services.AddAuthentication().AddFederationCallerJwtBearer(settings.Authority, settings.Issuer, settings.Audience);
@@ -57,8 +67,24 @@ internal static class PrimarySearchEndpoints
         // The handler logs token validation exceptions from the library. Keep detailed token data out of host logs.
         builder.Logging.AddFilter(typeof(JwtBearerHandler).FullName, LogLevel.None);
         builder.Services.AddSingleton(settings);
-        builder.Services.AddSingleton(services => PrimarySearchState.Create(services, settings));
-        builder.Services.AddSingleton<IFederationCapabilityPublisher>(services => services.GetRequiredService<PrimarySearchState>());
+        if (catalog)
+        {
+            // The worker is the only publisher: no seed is resolved and no manual publisher exists. The source is resolved
+            // when the host starts, before any request, so a test or deployment registration made after this call is seen.
+            builder.Services.AddSingleton(services => PrimarySearchState.CreateCold(services, settings));
+            builder.Services.AddHostedService(services => new CapabilityPublicationWorker(
+                services.GetRequiredService<PrimarySearchState>(),
+                services.GetService<ICapabilityAdmissionSource>() ?? throw new InvalidOperationException(
+                    $"{CatalogBackendSelection.ModePath} requires a registered {nameof(ICapabilityAdmissionSource)}."),
+                CatalogCadence,
+                services.GetRequiredService<TimeProvider>()));
+        }
+        else
+        {
+            builder.Services.AddSingleton(services => PrimarySearchState.Create(services, settings));
+            builder.Services.AddSingleton<IFederationCapabilityPublisher>(services => services.GetRequiredService<PrimarySearchState>());
+        }
+
         builder.Services.AddHealthChecks().AddCheck<PrimarySearchState>(PrimarySearchState.HealthCheckName, tags: ["ready"]);
         return builder;
     }

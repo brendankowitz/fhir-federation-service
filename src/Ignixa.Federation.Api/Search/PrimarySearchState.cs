@@ -107,6 +107,12 @@ internal sealed class PrimarySearchState : IHealthCheck, IFederationCapabilityPu
         return state;
     }
 
+    /// <summary>Builds a cold state that never looks at a registered view; the proof-backed worker is its only publisher.</summary>
+    /// <param name="services">The application services.</param>
+    /// <param name="settings">The validated host settings.</param>
+    /// <returns>The cold state.</returns>
+    public static PrimarySearchState CreateCold(IServiceProvider services, SearchHostSettings settings) => new(services, settings);
+
     /// <inheritdoc />
     public void Publish(SearchCapabilities? capabilities)
     {
