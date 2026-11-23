@@ -264,7 +264,7 @@ dotnet run --project test/Ignixa.Federation.Tests.BackendContracts/Ignixa.Federa
 dotnet run --project test/Ignixa.Federation.Tests.BackendContracts/Ignixa.Federation.Tests.BackendContracts.csproj --configuration Release --no-build -- --show-live-output on --progress off --fail-skips on --filter-class '*ContractTests' --minimum-expected-tests 35
 ```
 
-The first command builds the project and runs the 302 offline tests. The second runs the thirty-five live
+The first command builds the project and runs the offline evidence tests. The second runs the thirty-five live
 cases (three reference, six count, four repeated `_id`, twelve Patient.given, six Observation.subject join,
 four directional continuation)
 using that build. The separate
@@ -314,7 +314,8 @@ Reports do not contain container logs, response bodies, endpoints, or credential
 Before any case runs, the fixture waits until all five seeded Observations are returned by an `_id` search.
 If readiness times out, it reports the last sanitized observation: why a response was incomplete, or how
 many seeds were in a complete response. Each case then requests `_count=100` with an accurate total and fails
-unless the page has no next link and the total equals the number of matches.
+unless the page has no next link and the total equals the number of matches. Duplicate JSON members are
+rejected before those checks, so a second `link` member cannot hide a continuation.
 
 ## Known limitation: relative references
 

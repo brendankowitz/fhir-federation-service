@@ -17,7 +17,7 @@ internal static class SearchsetJson
         JsonDocument document;
         try
         {
-            document = JsonDocument.Parse(json, new JsonDocumentOptions { AllowDuplicateProperties = !countOnly });
+            document = JsonDocument.Parse(json, new JsonDocumentOptions { AllowDuplicateProperties = false });
         }
         catch (JsonException)
         {

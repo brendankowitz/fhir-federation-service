@@ -206,6 +206,35 @@ public sealed class BackendEvidenceTests
     }
 
     [Fact]
+    public void A_duplicate_link_cannot_hide_a_next_page()
+    {
+        const string page = """
+            {"resourceType":"Bundle","type":"searchset","total":1,
+             "link":[{"relation":"next","url":"Observation?_getpages=x"}],"link":[],
+             "entry":[{"resource":{"resourceType":"Observation","id":"obs-relative-dup"},
+                       "search":{"mode":"match"}}]}
+            """;
+
+        var failure = Assert.Throws<BackendEvidenceException>(() => SearchsetEvidence.Parse(page));
+
+        Assert.Equal(BackendFailureKind.IncompleteSearch, failure.Kind);
+    }
+
+    [Fact]
+    public void A_duplicate_search_mode_cannot_turn_an_include_into_a_match()
+    {
+        const string page = """
+            {"resourceType":"Bundle","type":"searchset","total":1,
+             "entry":[{"resource":{"resourceType":"Observation","id":"obs-relative-dup"},
+                       "search":{"mode":"include","mode":"match"}}]}
+            """;
+
+        var failure = Assert.Throws<BackendEvidenceException>(() => SearchsetEvidence.Parse(page));
+
+        Assert.Equal(BackendFailureKind.IncompleteSearch, failure.Kind);
+    }
+
+    [Fact]
     public void A_total_that_differs_from_the_match_count_means_the_evidence_is_incomplete()
     {
         string truncated = Build(["obs-relative-dup"], total: 2);
