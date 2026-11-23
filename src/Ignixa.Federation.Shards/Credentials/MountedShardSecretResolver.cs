@@ -88,6 +88,9 @@ public sealed class MountedShardSecretResolver : IShardSecretResolver
         _leaves = leaves.ToFrozenDictionary(StringComparer.Ordinal);
     }
 
+    // Config-only membership, ordinal like a lookup: it reads no file and parses no value.
+    internal bool Maps(string secretName) => _leaves.ContainsKey(secretName);
+
     /// <inheritdoc />
     /// <exception cref="ArgumentNullException"><paramref name="secretName"/> is <see langword="null"/>.</exception>
     /// <exception cref="ShardCredentialException">

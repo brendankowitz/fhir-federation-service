@@ -94,23 +94,24 @@ public sealed class AzureShardCredentialProvider : IShardCredentialProvider
         }
     }
 
-    private static string ScopeFor(string resource)
+    // The pure lexical rule behind the scope; the prototype composition applies it at registration.
+    internal static bool IsValidResource(string resource)
     {
         foreach (char c in resource)
         {
             if (char.IsWhiteSpace(c) || char.IsControl(c))
             {
-                throw new ShardCredentialException(ShardCredentialFailure.InvalidConfiguration);
+                return false;
             }
         }
 
-        if (resource.EndsWith(DefaultScopeSuffix, StringComparison.OrdinalIgnoreCase))
-        {
-            throw new ShardCredentialException(ShardCredentialFailure.InvalidConfiguration);
-        }
-
-        return resource + DefaultScopeSuffix;
+        return !resource.EndsWith(DefaultScopeSuffix, StringComparison.OrdinalIgnoreCase);
     }
+
+    private static string ScopeFor(string resource) =>
+        IsValidResource(resource)
+            ? resource + DefaultScopeSuffix
+            : throw new ShardCredentialException(ShardCredentialFailure.InvalidConfiguration);
 
     private async ValueTask<string> AcquireAsync(ShardAuth auth, CancellationToken cancellationToken)
     {

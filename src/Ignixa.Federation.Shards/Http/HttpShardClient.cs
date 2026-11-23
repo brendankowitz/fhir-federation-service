@@ -88,8 +88,9 @@ public sealed class HttpShardClient : IShardClient, IDisposable
         Metadata,
     }
 
-    // A CancellationTokenSource delay is at most uint.MaxValue - 1 milliseconds.
-    private static readonly TimeSpan MaxCallTimeout = TimeSpan.FromMilliseconds(uint.MaxValue - 1);
+    // A CancellationTokenSource delay is at most uint.MaxValue - 1 milliseconds. Shared with the prototype composition so
+    // its settings check cannot drift from what a client accepts.
+    internal static readonly TimeSpan MaxCallTimeout = TimeSpan.FromMilliseconds(uint.MaxValue - 1);
 
     private static readonly UriCreationOptions Verbatim = new() { DangerousDisablePathAndQueryCanonicalization = true };
 
