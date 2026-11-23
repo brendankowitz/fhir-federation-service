@@ -42,7 +42,8 @@ internal sealed class ShardHarness : IAsyncDisposable
             Auth = new AuthOptions { Type = "ManagedIdentity", Resource = "https://fhir.synthetic.example" },
         };
         options.LinkBaseAliases.Add(AliasBase);
-        Shard = ShardRegistry.Create([options], [Repost, Follow, GetOnly]).Shards.Single();
+        Registry = ShardRegistry.Create([options], [Repost, Follow, GetOnly]);
+        Shard = Registry.Shards.Single();
         Resilience = new ShardResilience(Shard, clock);
         Client = trustLoopback
             ? new HttpShardClient(Shard, Credentials, callTimeout, maxResponseBytes, limits, Meter, Resilience, LoopbackCertificate.Trust, deadlineClock)
@@ -56,6 +57,9 @@ internal sealed class ShardHarness : IAsyncDisposable
     public RecordingMeter Meter { get; } = new();
 
     public ShardDescriptor Shard { get; }
+
+    /// <summary>Gets the registry that holds <see cref="Shard"/>.</summary>
+    public ShardRegistry Registry { get; }
 
     /// <summary>Gets the breaker state the harness's clients share.</summary>
     public ShardResilience Resilience { get; }

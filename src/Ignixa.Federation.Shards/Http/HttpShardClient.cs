@@ -382,7 +382,7 @@ public sealed class HttpShardClient : IShardClient, IDisposable
 
         try
         {
-            return CapabilityStatementReader.Read(body);
+            return CapabilityStatementReader.Read(body).FetchedFrom(_shard);
         }
         catch (FormatException)
         {

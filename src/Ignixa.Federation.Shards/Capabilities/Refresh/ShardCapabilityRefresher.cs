@@ -48,6 +48,15 @@ public sealed class ShardCapabilityRefresher
     /// <summary>Gets the latest published snapshot; it never changes, so keep or compare it freely.</summary>
     public ShardCapabilitySnapshot Current => Volatile.Read(ref _current);
 
+    /// <summary>
+    /// Reads the evidence currently published for <paramref name="shard"/>: the instance itself, not a copy. Null when the
+    /// shard is not this refresher's exact registered descriptor or nothing has been fetched.
+    /// </summary>
+    internal ShardCapabilityEvidence? EvidenceFor(ShardDescriptor shard) =>
+        _registry.TryGetById(shard.Id, out ShardDescriptor? registered) && ReferenceEquals(registered, shard)
+            ? Current.Shards[shard.Id].Evidence
+            : null;
+
     /// <summary>Runs sweeps until <paramref name="stoppingToken"/> is cancelled.</summary>
     /// <param name="stoppingToken">Stops the loop, including a fetch in progress.</param>
     /// <returns>A task that completes normally on shutdown. Results are discarded when cancellation is observed before publication.</returns>

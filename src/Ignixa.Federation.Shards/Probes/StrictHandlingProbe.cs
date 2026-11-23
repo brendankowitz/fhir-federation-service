@@ -68,6 +68,28 @@ public static class StrictHandlingProbe
 
         cancellationToken.ThrowIfCancellationRequested();
 
+        return await ProbeCoreAsync(client, shard, type, method, advertisement: null, cancellationToken).ConfigureAwait(false);
+    }
+
+    // Same probe against an advertisement the caller already holds, so the evidence it vouches for is the evidence used
+    // and no second metadata fetch can supply a different one.
+    internal static Task<StrictHandlingProbeResult> ProbeAdvertisedAsync(
+        HttpShardClient client,
+        ShardDescriptor shard,
+        ResourceType type,
+        ShardSearchMethod method,
+        ShardCapabilityEvidence advertisement,
+        CancellationToken cancellationToken) =>
+        ProbeCoreAsync(client, shard, type, method, advertisement, cancellationToken);
+
+    private static async Task<StrictHandlingProbeResult> ProbeCoreAsync(
+        HttpShardClient client,
+        ShardDescriptor shard,
+        ResourceType type,
+        ShardSearchMethod method,
+        ShardCapabilityEvidence? advertisement,
+        CancellationToken cancellationToken)
+    {
         StrictHandlingProbeResult Result(StrictHandlingProbeOutcome outcome)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -79,14 +101,16 @@ public static class StrictHandlingProbe
             return Result(StrictHandlingProbeOutcome.MethodNotOffered);
         }
 
-        ShardCapabilityEvidence advertisement;
-        try
+        if (advertisement is null)
         {
-            advertisement = await client.GetCapabilitiesAsync(cancellationToken).ConfigureAwait(false);
-        }
-        catch (ShardCallException)
-        {
-            return Result(StrictHandlingProbeOutcome.AdvertisementUnavailable);
+            try
+            {
+                advertisement = await client.GetCapabilitiesAsync(cancellationToken).ConfigureAwait(false);
+            }
+            catch (ShardCallException)
+            {
+                return Result(StrictHandlingProbeOutcome.AdvertisementUnavailable);
+            }
         }
 
         if (!advertisement.SearchableResources.TryGetValue(type, out ResourceSearchEvidence? resource))
