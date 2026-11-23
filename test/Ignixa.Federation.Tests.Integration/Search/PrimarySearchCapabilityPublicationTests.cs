@@ -367,12 +367,15 @@ public sealed class PrimarySearchCapabilityPublicationTests
         state.Install(state.Prepare(ViewA(), evidence.IsCurrent));
         evidence.Checks.ShouldBe(0);
 
+        await host.WaitForReadinessAsync();
+        int checksAfterReadiness = evidence.Checks;
+
         (await host.GetAsync("/Patient?name=Orchid")).StatusCode.ShouldBe(HttpStatusCode.OK);
-        evidence.Checks.ShouldBe(1);
+        evidence.Checks.ShouldBe(checksAfterReadiness + 1);
         (await host.PostFormAsync("/Patient/_search", "name=Orchid")).StatusCode.ShouldBe(HttpStatusCode.OK);
-        evidence.Checks.ShouldBe(2);
+        evidence.Checks.ShouldBe(checksAfterReadiness + 2);
         (await host.GetAsync("/metadata", token: null)).StatusCode.ShouldBe(HttpStatusCode.OK);
-        evidence.Checks.ShouldBe(3);
+        evidence.Checks.ShouldBe(checksAfterReadiness + 3);
     }
 
     [Fact]
