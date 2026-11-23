@@ -68,15 +68,23 @@ public sealed class HttpShardClientBreakerTests
     [Fact]
     public async Task Timeouts_CountAgainstTheBackend()
     {
-        await using var shard = ShardHarness.Start(callTimeout: TimeSpan.FromMilliseconds(200));
+        TimeSpan timeout = TimeSpan.FromSeconds(10);
+        var deadline = new ManualTimeProvider();
+        await using var shard = ShardHarness.Start(callTimeout: timeout, clock: new ManualTimeProvider(), deadlineClock: deadline);
         for (int i = 0; i < ShardResilience.MinimumThroughput; i++)
         {
-            shard.Server.Respond(ScriptedResponse.Stall());
-            ShardCallException timeout = await Should.ThrowAsync<ShardCallException>(() => shard.Client.SearchAsync(shard.SarahRequest(ShardSearchMethod.PostSearch), Ct));
-            timeout.Failure.ShouldBe(ShardCallFailure.Timeout);
+            var response = new ResponseHold();
+            shard.Server.Respond(ScriptedResponse.Json(shard.SarahPage(), response.BeforeHead));
+            Task<ShardPage> call = shard.Client.SearchAsync(shard.SarahRequest(ShardSearchMethod.PostSearch), Ct);
+            await response.ArrivalAsync(Ct);
+            deadline.Advance(timeout);
+
+            ShardCallException failure = await Should.ThrowAsync<ShardCallException>(() => Guard(call));
+            failure.Failure.ShouldBe(ShardCallFailure.Timeout);
         }
 
         await AssertCircuitOpenAsync(() => shard.Client.SearchAsync(shard.SarahRequest(ShardSearchMethod.PostSearch), Ct));
+        shard.Server.Requests.Count.ShouldBe(ShardResilience.MinimumThroughput);
     }
 
     [Fact]
@@ -403,14 +411,26 @@ public sealed class HttpShardClientBreakerTests
     [Fact]
     public async Task ACredentialTheDeadlineCutsShort_IsATimeoutButNotTheBackendsFailure()
     {
-        await using var shard = ShardHarness.Start(callTimeout: TimeSpan.FromMilliseconds(200));
-        shard.Credentials.Acquire = NeverAnswers;
+        TimeSpan timeout = TimeSpan.FromSeconds(10);
+        var deadline = new ManualTimeProvider();
+        await using var shard = ShardHarness.Start(callTimeout: timeout, clock: new ManualTimeProvider(), deadlineClock: deadline);
         for (int i = 0; i < ShardResilience.MinimumThroughput + 1; i++)
         {
-            ShardCallException timeout = await Should.ThrowAsync<ShardCallException>(() => Guard(shard.Client.SearchAsync(shard.SarahRequest(ShardSearchMethod.PostSearch), Ct)));
-            timeout.Failure.ShouldBe(ShardCallFailure.Timeout);
+            var acquiring = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            shard.Credentials.Acquire = ct =>
+            {
+                acquiring.SetResult();
+                return NeverAnswers(ct);
+            };
+            Task<ShardPage> call = shard.Client.SearchAsync(shard.SarahRequest(ShardSearchMethod.PostSearch), Ct);
+            await acquiring.Task.WaitAsync(TimeSpan.FromSeconds(15), Ct);
+            deadline.Advance(timeout);
+
+            ShardCallException failure = await Should.ThrowAsync<ShardCallException>(() => Guard(call));
+            failure.Failure.ShouldBe(ShardCallFailure.Timeout);
         }
 
+        // The success call uses the same breaker; only Guard bounds it in wall-clock time.
         shard.Credentials.Acquire = _ => ValueTask.FromResult(SyntheticCredentials.Token);
         shard.Server.Respond(ScriptedResponse.Json(shard.SarahPage()));
         await Guard(shard.Client.SearchAsync(shard.SarahRequest(), Ct));

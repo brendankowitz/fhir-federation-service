@@ -416,10 +416,16 @@ public sealed class HttpShardClientRetryTests
     [Fact]
     public async Task Timeout_IsNeverRetried()
     {
-        await using var shard = ShardHarness.Start(callTimeout: TimeSpan.FromMilliseconds(300));
-        shard.Server.Respond(ScriptedResponse.Stall(), ScriptedResponse.Json(shard.SarahPage()));
+        TimeSpan timeout = TimeSpan.FromSeconds(10);
+        var deadline = new ManualTimeProvider();
+        await using var shard = ShardHarness.Start(callTimeout: timeout, deadlineClock: deadline);
+        var response = new ResponseHold();
+        shard.Server.Respond(ScriptedResponse.Json(shard.SarahPage(), response.BeforeHead), ScriptedResponse.Json(shard.SarahPage()));
+        Task<ShardPage> call = shard.Client.SearchAsync(shard.SarahRequest(), Ct);
+        await response.ArrivalAsync(Ct);
+        deadline.Advance(timeout);
 
-        ShardCallException failure = await Should.ThrowAsync<ShardCallException>(() => shard.Client.SearchAsync(shard.SarahRequest(), Ct));
+        ShardCallException failure = await Should.ThrowAsync<ShardCallException>(() => Guard(call));
 
         failure.Failure.ShouldBe(ShardCallFailure.Timeout);
         shard.Server.Requests.Count.ShouldBe(1);
