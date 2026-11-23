@@ -17,6 +17,31 @@ namespace Ignixa.Federation.Core.UnitTests.Search;
 
 public sealed class ReleaseCompositionTests
 {
+    [Theory]
+    [InlineData(FhirVersion.R4, "4.0.0", "4.0.1")]
+    [InlineData(FhirVersion.R5, "5.0.0", null)]
+    public void SpecificationOwnsShardVersionPolicy(FhirVersion version, string first, string? second)
+    {
+        IFhirSchemaProvider schema = version.GetSchemaProvider();
+        var definitions = new SearchParameterDefinitionManager(schema, NullLogger<SearchParameterDefinitionManager>.Instance);
+        SearchOptionsBuilder Compiler()
+        {
+            var references = new ReferenceSearchValueParser(schema, NullFhirBaseUriProvider.Instance);
+            var parser = new ExpressionParser(() => definitions, new SearchParameterExpressionParser(references, schema), schema);
+            return new SearchOptionsBuilder(parser, definitions);
+        }
+
+        var specification = new FederationSearchSpecification(version, schema, definitions, Compiler);
+        string[] expected = second is null ? [first] : [first, second];
+        specification.AcceptedShardVersions.ShouldBe(expected, ignoreOrder: true);
+        foreach (string accepted in expected)
+        {
+            View(specification, accepted, AllResources[0]).Resources.ShouldNotBeEmpty();
+        }
+
+        Should.Throw<ArgumentException>(() => View(specification, version == FhirVersion.R4 ? "5.0.0" : "4.0.1", AllResources[0]));
+    }
+
     [Fact]
     public void SameAdvertisement_IsPublishedAndPlansOnlyInTheR5View()
     {
@@ -53,9 +78,11 @@ public sealed class ReleaseCompositionTests
     public void SpecificationUsesItsSchemaVersionAndImmutableAcceptedVersions()
     {
         IFhirSchemaProvider schema = FhirVersion.R4.GetSchemaProvider();
-        var versions = new List<string> { "4.0.0", "4.0.1" };
-        FederationSearchSpecification specification = Compose(FhirVersion.R4, schema, versions);
-        versions.Add("5.0.0");
+        IFederationSearchSpecification specification = Compose(FhirVersion.R4);
+        if (specification.AcceptedShardVersions is ISet<string> versions)
+        {
+            Should.Throw<NotSupportedException>(() => versions.Add("5.0.0"));
+        }
 
         specification.Version.ShouldBe(FhirVersion.R4);
         specification.PublishedVersion.ShouldBe(schema.FullVersion);
@@ -110,11 +137,6 @@ public sealed class ReleaseCompositionTests
     internal static IFederationSearchSpecification Compose(FhirVersion version)
     {
         IFhirSchemaProvider schema = version.GetSchemaProvider();
-        return Compose(version, schema, version == FhirVersion.R4 ? ["4.0.0", "4.0.1"] : [schema.FullVersion]);
-    }
-
-    private static FederationSearchSpecification Compose(FhirVersion version, IFhirSchemaProvider schema, IEnumerable<string> versions)
-    {
         var manager = new SearchParameterDefinitionManager(schema, NullLogger<SearchParameterDefinitionManager>.Instance);
         SearchOptionsBuilder Compiler()
         {
@@ -123,7 +145,7 @@ public sealed class ReleaseCompositionTests
             return new SearchOptionsBuilder(parser, manager);
         }
 
-        return new FederationSearchSpecification(version, schema, manager, Compiler, versions);
+        return new FederationSearchSpecification(version, schema, manager, Compiler);
     }
 
     private static SearchCapabilities View(IFederationSearchSpecification specification, string version, ResourceSearchSupport resource)

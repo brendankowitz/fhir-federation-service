@@ -23,18 +23,15 @@ public sealed class FederationSearchSpecification : IFederationSearchSpecificati
     /// <param name="schema">The schema shared by this view.</param>
     /// <param name="definitions">The base definition manager for this schema.</param>
     /// <param name="createCompiler">Creates a fresh compiler for each occurrence.</param>
-    /// <param name="acceptedShardVersions">The exact release versions accepted from shards.</param>
     public FederationSearchSpecification(
         FhirVersion version,
         IFhirSchemaProvider schema,
         SearchParameterDefinitionManager definitions,
-        Func<SearchOptionsBuilder> createCompiler,
-        IEnumerable<string> acceptedShardVersions)
+        Func<SearchOptionsBuilder> createCompiler)
     {
         ArgumentNullException.ThrowIfNull(schema);
         ArgumentNullException.ThrowIfNull(definitions);
         ArgumentNullException.ThrowIfNull(createCompiler);
-        ArgumentNullException.ThrowIfNull(acceptedShardVersions);
         if (schema.Version != version)
         {
             throw new ArgumentException("The selected release must match the schema.", nameof(version));
@@ -42,6 +39,7 @@ public sealed class FederationSearchSpecification : IFederationSearchSpecificati
 
         Version = version;
         PublishedVersion = schema.FullVersion;
+        string[] acceptedShardVersions = version == FhirVersion.R4 ? ["4.0.0", "4.0.1"] : [schema.FullVersion];
         AcceptedShardVersions = acceptedShardVersions.ToFrozenSet(StringComparer.Ordinal);
         _schema = schema;
         _definitions = definitions;

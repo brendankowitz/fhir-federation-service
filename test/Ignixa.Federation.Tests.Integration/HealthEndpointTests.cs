@@ -1,6 +1,7 @@
 using System.Net;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Shouldly;
@@ -19,6 +20,21 @@ public sealed class HealthEndpointTests(WebApplicationFactory<Program> factory) 
         using HttpResponseMessage response = await client.GetAsync(new Uri(path, UriKind.Relative), TestContext.Current.CancellationToken);
 
         response.StatusCode.ShouldBe(HttpStatusCode.OK);
+    }
+
+    [Fact]
+    public void IndexedShardOverlay_FormsAGroupOverShippedSettings()
+    {
+        using WebApplicationFactory<Program> host = factory.WithWebHostBuilder(builder =>
+            builder.ConfigureAppConfiguration((_, config) => config.AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["Federation:Shards:0:Id"] = "east",
+                ["Federation:Shards:1:Id"] = "west",
+            })));
+
+        IConfigurationSection shards = host.Services.GetRequiredService<IConfiguration>().GetSection("Federation:Shards");
+        shards.Value.ShouldBeNull();
+        shards.GetChildren().Select(row => row["Id"]).ShouldBe(["east", "west"]);
     }
 
     [Fact]
