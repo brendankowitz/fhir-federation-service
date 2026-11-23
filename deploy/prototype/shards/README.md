@@ -120,15 +120,31 @@ success line), `130` interrupted during startup.
 
 ## Tests
 
-`test_start.py` holds unit-level checks (always run) and a native acceptance class that is skipped unless all
-three variables are set. The acceptance tests use an independent `curl` witness to read the shards, then
-check teardown against canary LocalDB instances and Developer catalogs.
+`test_start.py` has two tiers.
+
+**Default run (no variables set): no SQL or data access.** Every test that runs is mocked or stubbed. It needs
+only Python: it never starts `SqlLocalDB` or `sqlcmd`, never reads or changes SQL Server or LocalDB state, and
+never starts a shard host. Each case that would is skipped, and the skip is shown in `-v` output with the reason.
+
+**Opted-in run (all three variables set): touches real SQL.** The variables are the opt-in for every case that
+uses real SQL Server or LocalDB: the prerequisite and catalog-guard classes, the one real LocalDB
+partial-enter case, and the native acceptance class. These need Windows, a local SQL Server **Developer**
+instance at `lpc:localhost` that your login may create and drop databases on, `SqlLocalDB` (it creates a
+version 15.0 instance) and `sqlcmd` on `PATH`, and the built artifacts above. They create and remove real
+`FedProto…` LocalDB instances and `FedProtoWest_…` catalogs and read the real inventory before and after, so run
+them only on a machine where that is acceptable. The acceptance tests use
+an independent `curl` witness to read the shards, then check teardown against canary LocalDB instances and
+Developer catalogs.
 
 ```powershell
+# Default: no SQL or data access
+python -B -m unittest discover -s deploy/prototype/shards -v
+
+# Opted in: real SQL Server, LocalDB and hosts
 $env:FED_PROTO_DOTNET = "<path-to-dotnet.exe>"
 $env:FED_PROTO_IGNIXA_DLL = "<path-to-Ignixa.Web.dll>"
 $env:FED_PROTO_MICROSOFT_DLL = "<path-to-Microsoft.Health.Fhir.R4.Web.dll>"
 python -B -m unittest discover -s deploy/prototype/shards -v
 ```
 
-The full native suite takes about three minutes.
+The full opted-in suite takes about three minutes.

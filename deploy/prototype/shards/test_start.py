@@ -1,8 +1,14 @@
 """Behavioural witness for the native prototype shard launcher.
 
-Offline tests run anywhere on Windows with Python. The native acceptance tests
-need the caller-built stock artifacts, named by these variables, and are
-skipped (visibly) without them:
+Default run: every test is mocked or stubbed. It needs only Python and never
+starts SqlLocalDB or sqlcmd, never reads or changes SQL Server or LocalDB state,
+and never starts a shard host. Cases that would are skipped, visibly.
+
+Opted-in run: setting all three variables below enables every case that touches
+real SQL Server or LocalDB (the prerequisite and catalog-guard cases, the real
+partial-enter case, and the native acceptance tests). Those need Windows, a local
+SQL Server Developer instance at lpc:localhost, SqlLocalDB (version 15.0) and
+sqlcmd on PATH, plus caller-built stock artifacts:
 
     FED_PROTO_DOTNET            path to a dotnet.exe that has the needed runtimes
     FED_PROTO_IGNIXA_DLL        path to Ignixa.Web.dll
@@ -45,7 +51,8 @@ DOTNET = os.environ.get("FED_PROTO_DOTNET")
 IGNIXA_DLL = os.environ.get("FED_PROTO_IGNIXA_DLL")
 MICROSOFT_DLL = os.environ.get("FED_PROTO_MICROSOFT_DLL")
 NATIVE = all((DOTNET, IGNIXA_DLL, MICROSOFT_DLL))
-NATIVE_SKIP = "set FED_PROTO_DOTNET, FED_PROTO_IGNIXA_DLL and FED_PROTO_MICROSOFT_DLL"
+NATIVE_SKIP = ("opt-in: touches real SQL Server/LocalDB; set FED_PROTO_DOTNET, "
+               "FED_PROTO_IGNIXA_DLL and FED_PROTO_MICROSOFT_DLL")
 
 EAST_BASE = r"https://localhost:[1-9]\d{0,4}/tenant/1"
 WEST_BASE = r"https://localhost:[1-9]\d{0,4}"
@@ -188,8 +195,10 @@ class RunningLauncher:
         self._stderr.close()
 
 
+@unittest.skipUnless(NATIVE, NATIVE_SKIP)
 class PrerequisiteTests(unittest.TestCase):
-    """Fail-closed behaviour; touches no SQL and starts no server."""
+    """Fail-closed behaviour of the real launcher process. Opt-in: it reads the real LocalDB inventory
+    before and after each rejected launch to prove nothing was created."""
 
     def rejected(self, **artifacts):
         before = localdb_instances()
@@ -381,6 +390,22 @@ class ReadmeTests(unittest.TestCase):
         lines = (HERE / "README.md").read_text(encoding="utf-8").splitlines()
         self.assertEqual([], [line for line in lines if re.match(r"\s*curl\s", line)])
         self.assertEqual(4, len([line for line in lines if line.startswith("curl.exe --noproxy ")]))
+
+    def test_the_default_and_opted_in_test_runs_are_documented(self):
+        text = (HERE / "README.md").read_text(encoding="utf-8")
+        for phrase in ("no SQL or data access", "touches real SQL", "FED_PROTO_DOTNET", "lpc:localhost", "SqlLocalDB", "sqlcmd"):
+            self.assertIn(phrase, text)
+
+
+class SqlOptInGateTests(unittest.TestCase):
+    """Every case that touches real SQL Server or LocalDB is skipped unless all three artifact variables are set."""
+
+    def test_the_sql_touching_cases_are_gated_by_the_opt_in(self):
+        gated = (PrerequisiteTests, CatalogGuardTests, NativeAcceptanceTests,
+                 PrivateLocalDbTests.test_an_interrupt_just_after_the_instance_exists_still_removes_it)
+        for case in gated:
+            with self.subTest(case=getattr(case, "__qualname__", case)):
+                self.assertEqual(not NATIVE, bool(getattr(case, "__unittest_skip__", False)))
 
 
 class FlowTests(unittest.TestCase):
@@ -723,8 +748,10 @@ class SeedingTests(unittest.TestCase):
         self.assertIn("SYSTEMROOT", {k.upper() for k in inherited})
 
 
+@unittest.skipUnless(NATIVE, NATIVE_SKIP)
 class CatalogGuardTests(unittest.TestCase):
-    """The west catalog is dropped only when it is still the one this run created."""
+    """The west catalog is dropped only when it is still the one this run created.
+    Opt-in: these create and drop real catalogs on the local Developer instance."""
 
     def drop(self, name):
         sql(DEVELOPER, "master", f"if db_id(N'{name}') is not null begin alter database [{name}] set single_user "
@@ -800,6 +827,7 @@ class CatalogGuardTests(unittest.TestCase):
 class PrivateLocalDbTests(unittest.TestCase):
     """An interrupt or failure while the private LocalDB instance is being created must not leak it silently."""
 
+    @unittest.skipUnless(NATIVE, NATIVE_SKIP)  # the only case here that creates a real LocalDB instance
     def test_an_interrupt_just_after_the_instance_exists_still_removes_it(self):
         import start
         before, real = localdb_instances(), start.run_tool
