@@ -235,12 +235,12 @@ internal sealed partial class PrototypeShardBackendSettings
         string timeoutsPath = $"{_prefix}:Timeouts";
         if (ExpectGroupOrAbsent(timeouts, timeoutsPath) == Shape.Group)
         {
-            if (Scalar(timeouts, "BackendCall", timeoutsPath) is { } backendCall)
+            if (TransportScalar(timeouts, "BackendCall", timeoutsPath) is { } backendCall)
             {
                 Options.Timeouts.BackendCall = ParseTimeSpan(backendCall, $"{timeoutsPath}:BackendCall") ?? Options.Timeouts.BackendCall;
             }
 
-            if (Scalar(timeouts, "Request", timeoutsPath) is { } request)
+            if (TransportScalar(timeouts, "Request", timeoutsPath) is { } request)
             {
                 Options.Timeouts.Request = ParseTimeSpan(request, $"{timeoutsPath}:Request") ?? Options.Timeouts.Request;
             }
@@ -249,7 +249,7 @@ internal sealed partial class PrototypeShardBackendSettings
         IConfigurationSection limits = section.GetSection("Limits");
         string limitsPath = $"{_prefix}:Limits";
         if (ExpectGroupOrAbsent(limits, limitsPath) == Shape.Group
-            && Scalar(limits, "MaxResponseBytes", limitsPath) is { } maxResponseBytes)
+            && TransportScalar(limits, "MaxResponseBytes", limitsPath) is { } maxResponseBytes)
         {
             if (long.TryParse(maxResponseBytes, NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out long bytes))
             {
@@ -260,6 +260,23 @@ internal sealed partial class PrototypeShardBackendSettings
                 Fail($"{limitsPath}:MaxResponseBytes", "must be a decimal 64-bit integer.");
             }
         }
+    }
+
+    private string? TransportScalar(IConfigurationSection parent, string name, string parentPath)
+    {
+        string path = $"{parentPath}:{name}";
+        if (!TryScalar(parent.GetSection(name), path, out string? value))
+        {
+            return null;
+        }
+
+        // The JSON provider exposes both null and omitted values as null; only a present key appears among the children.
+        if (value is null && parent.GetChildren().Any(child => string.Equals(child.Key, name, StringComparison.OrdinalIgnoreCase)))
+        {
+            Fail(path, "must have a value when configured.");
+        }
+
+        return value;
     }
 
     private TimeSpan? ParseTimeSpan(string text, string path)

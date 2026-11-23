@@ -1,3 +1,4 @@
+using System.Text;
 using Ignixa.Federation.Core.Configuration;
 using Ignixa.Federation.Core.Search;
 using Ignixa.Federation.Core.Shards;
@@ -711,13 +712,68 @@ public sealed class PrototypeShardBackendConfigurationTests
         new ServiceCollection().AddPrototypeShardBackend(ok.Section());
     }
 
-    private static OptionsValidationException Refuse(Cfg config)
+    [Theory]
+    [InlineData("Timeouts", "BackendCall")]
+    [InlineData("Timeouts", "Request")]
+    [InlineData("Limits", "MaxResponseBytes")]
+    public void AnExplicitJsonNullTransportValueIsRefusedInsteadOfDefaulted(string group, string field)
     {
+        IConfigurationSection section = JsonSection($$"""
+            "{{group}}": { "{{field}}": null },
+            """);
+
+        AssertRefused(Refuse(section), $"Federation:{group}:{field}");
+    }
+
+    [Fact]
+    public void OmittedTransportLeavesAndOptionalClientIdStillUseTheirDefaultsWithJson()
+    {
+        IConfigurationSection section = JsonSection("""
+            "Timeouts": { "ChainSubquery": null },
+            "Limits": { "BackendCallsPerShard": null },
+            """);
         var services = new ServiceCollection();
-        services.AddSingleton(new Marker());
+
+        services.AddPrototypeShardBackend(section);
+
+        using IHost host = Build(services);
+        var registry = host.Services.GetRequiredService<ShardRegistry>();
+        registry.Shards[0].Auth.ShouldBeOfType<ManagedIdentityAuth>().ClientId.ShouldBeNull();
+        host.Services.GetRequiredService<MultiShardHttpClient>().ShouldNotBeNull();
+    }
+
+    private static IConfigurationSection JsonSection(string transport)
+    {
+        using var stream = new MemoryStream(Encoding.UTF8.GetBytes($$"""
+            {
+                "Federation": {
+                    {{transport}}
+                    "Shards": [
+                        {
+                            "Id": "east",
+                            "Alias": "east",
+                            "BaseUrl": "https://east.synthetic.example/fhir",
+                            "Profile": "{{IgnixaProfile}}",
+                            "Auth": { "Type": "ManagedIdentity", "Resource": "api://{{Sentinel}}", "ClientId": null },
+                            "WireLimits": { "MaxGetTargetBytes": 1024, "MaxPostBodyBytes": 1024 }
+                        }
+                    ]
+                }
+            }
+            """));
+        return new ConfigurationBuilder().AddJsonStream(stream).Build().GetSection("Federation");
+    }
+
+    private static OptionsValidationException Refuse(Cfg config) => Refuse(config.Section());
+
+    private static OptionsValidationException Refuse(IConfigurationSection section)
+    {
+        IServiceCollection services = new ServiceCollection();
+        var marker = ServiceDescriptor.Singleton(new Marker());
+        services.Add(marker);
         OptionsValidationException ex = Should.Throw<OptionsValidationException>(() =>
-            services.AddPrototypeShardBackend(config.Section()));
-        services.Count.ShouldBe(1);
+            services.AddPrototypeShardBackend(section));
+        services.ShouldHaveSingleItem().ShouldBeSameAs(marker);
         ex.InnerException.ShouldBeNull();
         return ex;
     }
