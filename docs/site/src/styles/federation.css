@@ -44,6 +44,12 @@ main h1 { font-size: clamp(2.5rem, 4.4vw, 4rem); line-height: 1.06; }
 .sl-markdown-content h2 { line-height: 1.15; }
 .sl-markdown-content :is(th,td) { padding: .65em .85em; }
 .sl-markdown-content th { background: var(--fed-panel); }
+.sl-markdown-content table:has(> thead > tr > th:nth-child(3):last-child) > thead > tr > th { min-width: 8rem; }
+.sl-markdown-content table:has(> thead > tr > th:nth-child(3):last-child) > thead > tr > th:nth-child(2) { min-width: 12rem; }
+@media (max-width: 50rem) {
+  .sl-markdown-content table:has(> thead > tr > th:nth-child(3):last-child) > tbody > tr > td:first-child code { overflow-wrap: anywhere; }
+  .sl-markdown-content table:has(> thead > tr > th:nth-child(3):last-child) > thead > tr > th:nth-child(3) { min-width: 24rem; }
+}
 .sl-markdown-content img[src*="/architecture/"] { width: 100%; border: 1px solid var(--fed-line); border-radius: .4rem; }
 
 /* Give the field guide the whole splash canvas, not an article measure. */
