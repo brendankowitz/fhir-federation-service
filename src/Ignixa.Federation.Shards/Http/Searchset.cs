@@ -99,6 +99,8 @@ internal sealed partial class Searchset
                 throw Malformed(shard, "A Bundle.link is not a relation and url.");
             }
 
+            RejectModifierExtension(link, shard);
+
             // Registered relation types compare case-insensitively (RFC 8288 §2.1.1), so "Next" is a next link, never an
             // unknown relation that would make the page look exhausted.
             if (string.Equals(relation, "self", StringComparison.OrdinalIgnoreCase))
@@ -127,6 +129,9 @@ internal sealed partial class Searchset
             {
                 throw Malformed(shard, "An entry is not a search match.");
             }
+
+            RejectModifierExtension(entry, shard);
+            RejectModifierExtension(search, shard);
 
             if (!entry.TryGetProperty("resource", out JsonElement resource)
                 || resource.ValueKind != JsonValueKind.Object
@@ -202,6 +207,16 @@ internal sealed partial class Searchset
         return array.ValueKind == JsonValueKind.Array
             ? array.EnumerateArray()
             : throw Malformed(shard, $"Bundle.{name} is not an array.");
+    }
+
+    // Unknown modifiers can change the meaning of the framing we interpret. An empty array modifies nothing.
+    private static void RejectModifierExtension(JsonElement element, ShardDescriptor shard)
+    {
+        if (element.TryGetProperty("modifierExtension", out JsonElement modifier)
+            && !(modifier.ValueKind == JsonValueKind.Array && modifier.GetArrayLength() == 0))
+        {
+            throw Malformed(shard, "A modifierExtension on a Bundle link or entry is not supported.");
+        }
     }
 
     private static string NonEmpty(string url, ShardDescriptor shard) =>
