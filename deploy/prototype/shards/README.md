@@ -14,10 +14,11 @@ deployment, and it makes **no statement about any container image**.
 
 ## Prerequisites
 
-- Windows, Python 3.12+, `sqlcmd` and `SqlLocalDB` on `PATH`, the Windows `curl.exe` in `System32`.
+- Windows, Python 3 (tested with 3.12), `sqlcmd` and `SqlLocalDB` on `PATH`, the Windows `curl.exe` in `System32`.
 - A local SQL Server **Developer** edition instance reachable over shared memory (`lpc:localhost`) with
   your Windows login allowed to create and drop databases.
 - A `dotnet.exe` with the runtimes both hosts need (.NET 10 and .NET 11 runtimes).
+- A development HTTPS certificate trusted for your user (`dotnet dev-certs https --trust`).
 - Built stock artifacts (you build them; this folder does not):
   - Ignixa: `brendankowitz/ignixa-fhir` at `main` commit `2f07ac88d655b3e8e87d41c39f6c2b4039b5a8d7`, SDK
     10.0.401 (roll-forward to a later 10.0 feature band), `dotnet build src/Application/Ignixa.Web -c Release`
@@ -26,11 +27,18 @@ deployment, and it makes **no statement about any container image**.
     `2a67597a015b957066822b0d54f2ccc46971c14e`, SDK 11.0.100 (its `global.json`),
     `dotnet build src/Microsoft.Health.Fhir.R4.Web -c Release`
     → `…/bin/Release/net11.0/Microsoft.Health.Fhir.R4.Web.dll`.
-  - The Microsoft build command above is the standard one; it was not captured verbatim from the original
-    build log (see the recorded blocker in the Task 75 evidence).
+  - Neither build command was replayed or captured verbatim for this task; they are the standard commands for
+    those commits and are unverified here.
 
-The launcher checks all of this first and exits `2` with a `prerequisite: …` message on stderr, having
-started and created nothing.
+Before it creates anything the launcher checks: Windows, `dotnet.exe`, `sqlcmd`, `SqlLocalDB`, `curl.exe`,
+the committed corpus files, that both `.dll`s are built hosts whose runtimes are installed, and (read-only)
+that `lpc:localhost` answers and is a Developer edition. A failure there exits `2` with a `prerequisite: …`
+message on stderr, having started and created nothing.
+
+Not checked in advance: the Python version, your permission to create and drop databases, and certificate
+trust. A refused `create database` fails the launch (exit `1`) and anything already created is removed. An
+untrusted development certificate makes every HTTPS probe fail, so the launch fails only after the
+300-second startup budget.
 
 ## Run
 
@@ -49,22 +57,37 @@ printed to stdout (progress and diagnostics go to stderr):
 ```
 
 The process then stays in the foreground. **Ctrl+C or Ctrl+Break** stops both servers and removes every
-resource the launcher created.
+resource the launcher created. Pressing it during startup does the same for whatever exists by then, and
+exits `130`. While cleanup runs, further Ctrl+C/Ctrl+Break presses are ignored so they cannot abandon it.
 
-`--verify` runs the identical launch, seed and live reads, then stops, cleans up and prints only
-`{"verified": true}`.
+`--verify` runs the identical launch, seed and live reads, then stops and cleans up. It prints
+`{"verified": true}` only after cleanup has finished without a problem; if any resource could not be removed
+it prints nothing on stdout and exits `3`.
+
+## If the launcher is killed
+
+Cleanup cannot run if the process is ended forcibly (`taskkill /F`, closing the console window, a crash,
+power loss). Then nothing is cleaned up: the two server processes may keep running, and these remain:
+
+- a LocalDB instance `FedProto<12 hex>`: `SqlLocalDB stop <name> -k`, then `SqlLocalDB delete <name>`;
+- a catalog `FedProtoWest_<guid>` on `lpc:localhost`: drop it once you know it is yours;
+- a `%TEMP%\fed-shards-*` folder.
+
+When a cleanup step fails or an interrupt lands while a resource is being created, the launcher names the
+LocalDB instance or catalog it could not remove on stderr, and exits non-zero, so you can finish by hand. A
+catalog whose creation was interrupted is named but never dropped, because its identity could not be proven.
 
 ## Direct reads
 
 Use the printed bases. The servers present the local ASP.NET development certificate for `localhost`; keep
-certificate verification on (`curl` uses the system trust store once `dotnet dev-certs https --trust` has been
-run for your user):
+certificate verification on (`curl.exe` uses the system trust store once `dotnet dev-certs https --trust` has
+been run for your user). In Windows PowerShell `curl` is an alias for `Invoke-WebRequest`; call `curl.exe`:
 
 ```powershell
-curl --noproxy "*" <east>/Patient/dup                 # east: Eli
-curl --noproxy "*" <west>/Patient/dup                 # west: Gus, same id, different resource
-curl --noproxy "*" <west>/Observation/obs-dup-xref    # subject -> <east>/Patient/dup
-curl --noproxy "*" <east>/metadata                    # R4 CapabilityStatement
+curl.exe --noproxy "*" <east>/Patient/dup                 # east: Eli
+curl.exe --noproxy "*" <west>/Patient/dup                 # west: Gus, same id, different resource
+curl.exe --noproxy "*" <west>/Observation/obs-dup-xref    # subject -> <east>/Patient/dup
+curl.exe --noproxy "*" <east>/metadata                    # R4 CapabilityStatement
 ```
 
 The west `obs-dup-xref` subject is the only value rewritten from the committed corpus: its reserved
@@ -88,8 +111,9 @@ any other placeholder host fails the launch.
 - Ignixa runs with Reindex disabled, as the stock build requires on this setup.
 - No Docker, no network beyond loopback, nothing remote, no changes to any service configuration.
 
-Exit codes: `0` normal stop or `--verify` success, `1` launch failure or a child dying after ready, `2`
-prerequisite not met, `3` run completed but a cleanup step needs attention, `130` interrupted during startup.
+Exit codes: `0` normal stop or `--verify` success (after cleanup), `1` launch failure or a child dying after
+ready, `2` prerequisite not met, `3` run completed but a cleanup step needs attention (`--verify` prints no
+success line), `130` interrupted during startup.
 
 ## Tests
 

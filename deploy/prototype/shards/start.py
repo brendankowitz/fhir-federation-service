@@ -68,6 +68,8 @@ def run_tool(argv: list[str], *, timeout: int, stdin: bytes | None = None) -> su
         return subprocess.run(argv, input=stdin, capture_output=True, timeout=timeout, env=child_environment())
     except subprocess.TimeoutExpired:
         raise LaunchError(f"{Path(argv[0]).name} did not finish within {timeout} seconds") from None
+    except OSError:
+        raise LaunchError(f"{Path(argv[0]).name} could not be run") from None
 
 
 # --- prerequisites ---------------------------------------------------------------------------------
@@ -100,14 +102,26 @@ def require_artifact(path: Path, name: str, runtimes: set[tuple[str, tuple[int, 
     if not config.is_file() or not path.with_name(path.stem + ".deps.json").is_file():
         raise PrerequisiteError(f"{name} is not a built host (missing runtimeconfig or deps beside it)")
     try:
-        frameworks = json.loads(config.read_text(encoding="utf-8"))["runtimeOptions"]["frameworks"]
+        frameworks = [(f["name"], tuple(int(p) for p in f["version"].split(".")))
+                      for f in json.loads(config.read_text(encoding="utf-8"))["runtimeOptions"]["frameworks"]]
     except (ValueError, KeyError, TypeError):
         raise PrerequisiteError(f"{name} has an unreadable runtimeconfig") from None
-    for framework in frameworks:
-        needed = tuple(int(p) for p in framework["version"].split("."))
-        if not any(n == framework["name"] and v[0] == needed[0] and v >= needed for n, v in runtimes):
-            raise PrerequisiteError(f"{name} needs {framework['name']} {framework['version']} or a later patch of that major version")
+    for framework, needed in frameworks:
+        if not any(n == framework and v[0] == needed[0] and v >= needed for n, v in runtimes):
+            version = ".".join(map(str, needed))
+            raise PrerequisiteError(f"{name} needs {framework} {version} or a later patch of that major version")
     return path
+
+
+def require_developer_edition() -> None:
+    """Read-only proof, before anything is created, that the local Developer instance answers over shared memory."""
+    try:
+        edition = sql(DEVELOPER_SERVER, "master", "select convert(nvarchar(96), serverproperty('Edition'))")
+    except LaunchError:
+        raise PrerequisiteError(f"cannot reach the local SQL Server instance at {DEVELOPER_SERVER} "
+                                "with Windows authentication") from None
+    if "Developer" not in edition:
+        raise PrerequisiteError("the local SQL Server instance is not a Developer edition")
 
 
 def check_prerequisites(args: argparse.Namespace) -> Prerequisites:
@@ -126,11 +140,13 @@ def check_prerequisites(args: argparse.Namespace) -> Prerequisites:
         if not (CORPUS_DIR / f"{side}.json").is_file():
             raise PrerequisiteError(f"committed corpus file {side}.json is missing")
     runtimes = installed_runtimes(dotnet)
-    return Prerequisites(
+    prerequisites = Prerequisites(
         dotnet=dotnet,
         ignixa_dll=require_artifact(Path(args.ignixa_dll), IGNIXA_DLL_NAME, runtimes),
         microsoft_dll=require_artifact(Path(args.microsoft_dll), MICROSOFT_DLL_NAME, runtimes),
         curl=curl)
+    require_developer_edition()
+    return prerequisites
 
 
 # --- corpus ----------------------------------------------------------------------------------------
@@ -160,6 +176,15 @@ def collision_corpus(east_base: str) -> tuple[list[dict], list[dict]]:
 # --- HTTP ------------------------------------------------------------------------------------------
 
 
+def json_object(payload: bytes) -> dict | None:
+    """The body as a JSON object; None when it is empty or anything else, such as a plain-text startup error."""
+    try:
+        parsed = json.loads(payload) if payload.strip() else None
+    except ValueError:  # includes undecodable bytes
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
 class Endpoint:
     """A shard's loopback HTTPS base; every request is bounded and verified against the system trust store."""
 
@@ -181,7 +206,11 @@ class Endpoint:
         if done.returncode:
             raise LaunchError(f"HTTPS request failed (curl exit {done.returncode})")
         payload, _, status = done.stdout.rpartition(b"\n")
-        return int(status), json.loads(payload) if payload else None
+        try:
+            code = int(status)
+        except ValueError:
+            raise LaunchError("the HTTPS response had no readable status") from None
+        return code, json_object(payload)
 
     def get_resource(self, resource_type: str, resource_id: str, *, url: str | None = None) -> dict:
         status, resource = self.request(f"/{resource_type}/{resource_id}", url=url)
@@ -199,7 +228,7 @@ class Endpoint:
         path = f"/{resource['resourceType']}/{resource['id']}"
         status, outcome = self.request(path, resource)
         if status not in (200, 201):
-            codes = [i.get("code") for i in (outcome or {}).get("issue", [])] if isinstance(outcome, dict) else []
+            codes = [i.get("code") for i in (outcome or {}).get("issue", []) if isinstance(i, dict)]
             raise LaunchError(f"PUT {path} was refused (HTTP {status}, issue codes {codes})")
 
 
@@ -218,58 +247,86 @@ def sql(server: str, database: str, query: str) -> str:
 
 @contextlib.contextmanager
 def private_localdb(workdir: Path):
-    """A uniquely named LocalDB instance holding the east catalog; both are discarded on exit."""
+    """A uniquely named LocalDB instance holding the east catalog; both are discarded on exit.
+
+    The instance is discarded even when an interrupt or failure struck while it was being created.
+    """
     name = "FedProto" + uuid.uuid4().hex[:12]
-    if name in run_tool(["SqlLocalDB", "info"], timeout=30).stdout.decode().split():
+    if name in localdb_names():
         raise LaunchError("LocalDB instance name collision")
-    run_checked(["SqlLocalDB", "create", name, "15.0", "-s"], "could not create the private LocalDB instance")
     server = "(localdb)\\" + name
     try:
+        run_checked(["SqlLocalDB", "create", name, "15.0", "-s"], f"could not create the private LocalDB instance {name}")
         mdf = str(workdir / "east").replace("'", "''")
         sql(server, "master", f"create database [Prototype_east] on primary (name='Prototype_east', filename=N'{mdf}.mdf') "
                               f"log on (name='Prototype_east_log', filename=N'{mdf}_log.ldf')")
         yield server
     finally:
-        try:
-            run_checked(["SqlLocalDB", "stop", name, "-k"], "could not stop the private LocalDB instance", cleanup=True)
-        finally:
-            run_checked(["SqlLocalDB", "delete", name], "could not delete the private LocalDB instance", cleanup=True)
+        discard_localdb(name)
+
+
+def localdb_names() -> set[str]:
+    return set(run_tool(["SqlLocalDB", "info"], timeout=30).stdout.decode().split())
+
+
+def discard_localdb(name: str) -> None:
+    """Stop and delete the instance if it exists; a failure or interrupt during creation may have left none."""
+    try:
+        if name not in localdb_names():
+            return
+    except LaunchError as error:
+        raise CleanupError(f"private LocalDB instance {name} may remain: {error}") from None
+    try:
+        run_checked(["SqlLocalDB", "stop", name, "-k"], f"could not stop the private LocalDB instance {name}", cleanup=True)
+    finally:
+        run_checked(["SqlLocalDB", "delete", name], f"could not delete the private LocalDB instance {name}", cleanup=True)
 
 
 def run_checked(argv: list[str], failure: str, *, cleanup: bool = False) -> None:
-    if run_tool(argv, timeout=90).returncode:
-        raise (CleanupError if cleanup else LaunchError)(failure)
+    error = CleanupError if cleanup else LaunchError
+    try:
+        done = run_tool(argv, timeout=90)
+    except LaunchError as timed_out:
+        raise error(f"{failure}: {timed_out}") from None
+    if done.returncode:
+        raise error(failure)
 
 
 @contextlib.contextmanager
 def west_catalog():
     """Create a fresh catalog on the Developer instance; drop it only if it is still the catalog created here.
 
-    Raises CleanupError, leaving any replacement untouched, when the name now belongs to a different database.
+    Raises CleanupError, leaving any replacement untouched, when the name now belongs to a different database,
+    and when the catalog cannot be removed; the message always names the catalog.
     """
-    edition = sql(DEVELOPER_SERVER, "master", "select convert(nvarchar(96), serverproperty('Edition'))")
-    if "Developer" not in edition:
-        raise PrerequisiteError("the local SQL Server instance is not a Developer edition")
     name = "FedProtoWest_" + uuid.uuid4().hex
     guid_of = ("select isnull((select convert(varchar(36), database_guid) from sys.database_recovery_status "
                f"where database_id=db_id(N'{name}')), '')")
-    marker = sql(DEVELOPER_SERVER, "master",
-                 f"if db_id(N'{name}') is not null throw 50001, 'Name already in use', 1; create database [{name}]; {guid_of}")
+    try:
+        marker = sql(DEVELOPER_SERVER, "master",
+                     f"if db_id(N'{name}') is not null throw 50001, 'Name already in use', 1; create database [{name}]; {guid_of}")
+    except BaseException:
+        # An interrupt or timeout can land after the server created it; without its GUID it is not safe to drop.
+        log(f"west catalog {name} may exist because its creation did not finish; if it does, remove it manually")
+        raise
     if not re.fullmatch(r"[0-9A-Fa-f-]{36}", marker):
         raise LaunchError(f"could not identify the new catalog; it may need manual removal: {name}")
     try:
         yield name
     finally:
-        current = sql(DEVELOPER_SERVER, "master", guid_of)
-        if current == "":
-            log(f"west catalog {name} was already removed")
-        elif current != marker:
-            raise CleanupError(f"west catalog {name} was replaced by another database; left in place")
-        else:
-            sql(DEVELOPER_SERVER, "master",
-                f"if not exists (select 1 from sys.database_recovery_status where database_id=db_id(N'{name}') "
-                f"and database_guid='{marker}') throw 50001, 'Catalog no longer matches', 1; "
-                f"alter database [{name}] set single_user with rollback immediate; drop database [{name}];")
+        try:
+            current = sql(DEVELOPER_SERVER, "master", guid_of)
+            if current == "":
+                log(f"west catalog {name} was already removed")
+            elif current != marker:
+                raise CleanupError(f"west catalog {name} was replaced by another database; left in place")
+            else:
+                sql(DEVELOPER_SERVER, "master",
+                    f"if not exists (select 1 from sys.database_recovery_status where database_id=db_id(N'{name}') "
+                    f"and database_guid='{marker}') throw 50001, 'Catalog no longer matches', 1; "
+                    f"alter database [{name}] set single_user with rollback immediate; drop database [{name}];")
+        except LaunchError as error:
+            raise CleanupError(f"west catalog {name} could not be removed ({error}); remove it manually") from None
 
 
 # --- children --------------------------------------------------------------------------------------
@@ -297,10 +354,13 @@ class Child:
 
 def start_child(label: str, argv: list[str], env: dict[str, str], folder: Path) -> Child:
     log_path = folder / "host.log"
-    with log_path.open("wb") as stream:
-        # A new process group keeps Ctrl+C aimed at the launcher; children are stopped through their handles.
-        process = subprocess.Popen(argv, cwd=folder, env=env, stdout=stream, stderr=subprocess.STDOUT,
-                                   creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
+    try:
+        with log_path.open("wb") as stream:
+            # A new process group keeps Ctrl+C aimed at the launcher; children are stopped through their handles.
+            process = subprocess.Popen(argv, cwd=folder, env=env, stdout=stream, stderr=subprocess.STDOUT,
+                                       creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
+    except OSError:
+        raise LaunchError(f"{label} could not be started") from None
     return Child(label, process, log_path)
 
 
@@ -313,11 +373,14 @@ def await_ready(child: Child, curl: Path, path_suffix: str, deadline: float) -> 
                               f"(exception types: {child.exception_types()})")
         match = listening.search(child.log_path.read_text(encoding="utf-8", errors="replace"))
         if match:
-            endpoint = Endpoint(curl, f"https://localhost:{match[1]}{path_suffix}")
+            try:
+                endpoint = Endpoint(curl, f"https://localhost:{match[1]}{path_suffix}")
+            except ValueError:
+                raise LaunchError(f"{child.label} reported a listening port that is not a loopback port") from None
             try:
                 statement = endpoint.metadata()
             except LaunchError:
-                statement = None  # the host may still be binding or migrating
+                statement = None  # the host may still be binding or migrating, or not answering HTTP yet
             if statement:
                 if not str(statement.get("fhirVersion", "")).startswith("4.0"):
                     raise LaunchError(f"{child.label} is not an R4 server")
@@ -400,49 +463,72 @@ def remove_tree(path: Path) -> None:
 
 
 def serve(prereq: Prerequisites, verify_only: bool, problems: list[str]) -> int:
-    with contextlib.ExitStack() as stack:
-        workdir = Path(tempfile.mkdtemp(prefix="fed-shards-"))
-        stack.callback(guarded, problems, "working directory", remove_tree, workdir)
-        east_folder, west_folder = workdir / "east", workdir / "west"
-        east_folder.mkdir(), west_folder.mkdir()
+    """Launch, seed and read; in run mode print the bases and wait. Everything created is removed before returning.
 
-        east_server = stack.enter_context(guarded_context(problems, "east LocalDB", private_localdb(workdir)))
-        catalog = stack.enter_context(guarded_context(problems, "west catalog", west_catalog()))
+    Returns 0 after a verified ``--verify`` pass or a Ctrl+C stop. Cleanup shields itself from further interrupts so a
+    second Ctrl+C cannot abandon it half way; failures are appended to ``problems``.
+    """
+    stack = contextlib.ExitStack()
+    try:
+        return launch(stack, prereq, verify_only, problems)
+    finally:
+        with interrupts_deferred():
+            stack.close()
 
-        children = []
-        for label, folder, (argv, env) in (
-                ("east (Ignixa)", east_folder, ignixa_command(prereq, east_server, east_folder)),
-                ("west (Microsoft)", west_folder, microsoft_command(prereq, catalog, west_folder))):
-            child = start_child(label, argv, env, folder)
-            stack.callback(guarded, problems, f"stop {label}", child.stop)
-            children.append(child)
 
-        deadline = time.monotonic() + STARTUP_BUDGET_SECONDS
-        east = await_ready(children[0], prereq.curl, "/tenant/1", deadline)
-        west = await_ready(children[1], prereq.curl, "", deadline)
-        log("both shards are serving R4 metadata; loading the collision corpus")
+@contextlib.contextmanager
+def interrupts_deferred():
+    """Ignore Ctrl+C and Ctrl+Break for the bounded duration of cleanup."""
+    signals = (signal.SIGINT, signal.SIGBREAK)
+    saved = [signal.signal(s, signal.SIG_IGN) for s in signals]
+    try:
+        yield
+    finally:
+        for s, handler in zip(signals, saved):
+            signal.signal(s, handler)
 
-        east_resources, west_resources = collision_corpus(east.base)
-        for endpoint, resources in ((east, east_resources), (west, west_resources)):
-            for resource in resources:
-                endpoint.put(resource)
-        verify(east, west)
 
-        if verify_only:
-            log("verified: Eli on east, Gus on west, cross-shard reference resolves")
-            print(json.dumps({"verified": True}), flush=True)
-            return 0
-        print(json.dumps({"east": east.base, "west": west.base}), flush=True)
-        log("serving; press Ctrl+C to stop and clean up")
-        try:
-            while True:
-                for child in children:
-                    if child.process.poll() is not None:
-                        raise LaunchError(f"{child.label} exited with code {child.process.returncode} after it was ready")
-                time.sleep(1)
-        except KeyboardInterrupt:
-            log("interrupted; stopping")
-            return 0
+def launch(stack: contextlib.ExitStack, prereq: Prerequisites, verify_only: bool, problems: list[str]) -> int:
+    workdir = Path(tempfile.mkdtemp(prefix="fed-shards-"))
+    stack.callback(guarded, problems, "working directory", remove_tree, workdir)
+    east_folder, west_folder = workdir / "east", workdir / "west"
+    east_folder.mkdir(), west_folder.mkdir()
+
+    east_server = stack.enter_context(guarded_context(problems, "east LocalDB", private_localdb(workdir)))
+    catalog = stack.enter_context(guarded_context(problems, "west catalog", west_catalog()))
+
+    children = []
+    for label, folder, (argv, env) in (
+            ("east (Ignixa)", east_folder, ignixa_command(prereq, east_server, east_folder)),
+            ("west (Microsoft)", west_folder, microsoft_command(prereq, catalog, west_folder))):
+        child = start_child(label, argv, env, folder)
+        stack.callback(guarded, problems, f"stop {label}", child.stop)
+        children.append(child)
+
+    deadline = time.monotonic() + STARTUP_BUDGET_SECONDS
+    east = await_ready(children[0], prereq.curl, "/tenant/1", deadline)
+    west = await_ready(children[1], prereq.curl, "", deadline)
+    log("both shards are serving R4 metadata; loading the collision corpus")
+
+    east_resources, west_resources = collision_corpus(east.base)
+    for endpoint, resources in ((east, east_resources), (west, west_resources)):
+        for resource in resources:
+            endpoint.put(resource)
+    verify(east, west)
+
+    if verify_only:
+        return 0  # main reports success once cleanup has finished and succeeded
+    print(json.dumps({"east": east.base, "west": west.base}), flush=True)
+    log("serving; press Ctrl+C to stop and clean up")
+    try:
+        while True:
+            for child in children:
+                if child.process.poll() is not None:
+                    raise LaunchError(f"{child.label} exited with code {child.process.returncode} after it was ready")
+            time.sleep(1)
+    except KeyboardInterrupt:
+        log("interrupted; stopping")
+        return 0
 
 
 @contextlib.contextmanager
@@ -485,6 +571,9 @@ def main(argv: list[str]) -> int:
         status = 1
     for problem in problems:
         log(problem)
+    if args.verify and status == 0 and not problems:
+        log("verified: Eli on east, Gus on west, cross-shard reference resolves; cleanup complete")
+        print(json.dumps({"verified": True}), flush=True)
     return status if not problems else (status or 3)
 
 
