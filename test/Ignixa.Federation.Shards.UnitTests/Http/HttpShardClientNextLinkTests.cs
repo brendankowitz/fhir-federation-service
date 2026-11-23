@@ -113,6 +113,66 @@ public sealed class HttpShardClientNextLinkTests
         shard.Server.Requests.ShouldBeEmpty();
     }
 
+    /// <summary>Queries with text but no parameter name: empty segments, or segments that start at the <c>=</c>.</summary>
+    public static TheoryData<string> UnnamedQueries =>
+    [
+        "&",
+        "=x",
+        "=x&=y&",
+    ];
+
+    /// <summary>Queries with at least one named parameter, in server order, spelled as the server wrote them.</summary>
+    public static TheoryData<string> NamedQueries =>
+    [
+        "a",
+        "a=",
+        "z=1&&=x&ct=Mg",
+        "%63t=Mg",
+        "ct=Mg&a=2&a=1&b=a+b%2fc|d",
+    ];
+
+    [Theory]
+    [MemberData(nameof(UnnamedQueries))]
+    public async Task NextWithoutANamedParameter_FailsThePageAndIsNeverRequested(string query)
+    {
+        ArgumentNullException.ThrowIfNull(query);
+        await using var shard = ShardHarness.Start();
+        shard.Server.Respond(ScriptedResponse.Json(shard.SarahPage(shard.Search + "?" + query)));
+
+        ShardCallException failure = await Should.ThrowAsync<ShardCallException>(() => shard.Client.SearchAsync(shard.SarahRequest(), Ct));
+
+        failure.Failure.ShouldBe(ShardCallFailure.InvalidNextLink);
+        failure.Message.ShouldNotContain("Sarah");
+        shard.Server.Requests.Count.ShouldBe(1);
+    }
+
+    [Theory]
+    [MemberData(nameof(UnnamedQueries))]
+    public async Task CursorWithoutANamedParameter_IsRejectedBeforeTheCredential(string query)
+    {
+        ArgumentNullException.ThrowIfNull(query);
+        await using var shard = ShardHarness.Start();
+
+        await Should.ThrowAsync<ArgumentException>(() => shard.Client.ContinueAsync(shard.Cursor("?" + query), Ct));
+
+        shard.Credentials.Calls.ShouldBe(0);
+        shard.Server.Requests.ShouldBeEmpty();
+    }
+
+    [Theory]
+    [MemberData(nameof(NamedQueries))]
+    public async Task NextWithANamedParameter_IsRedeemedVerbatim(string query)
+    {
+        ArgumentNullException.ThrowIfNull(query);
+        await using var shard = ShardHarness.Start();
+        shard.Server.Respond(ScriptedResponse.Json(shard.SarahPage("?" + query)), ScriptedResponse.Json(Searchsets.Page(self: null)));
+
+        ShardPage first = await shard.Client.SearchAsync(shard.SarahRequest(), Ct);
+        await shard.Client.ContinueAsync(first.Next!, Ct);
+
+        shard.Server.Requests[1].Target.ShouldBe("/fhir/Patient?" + query);
+    }
+
     [Theory]
     [InlineData("?name=Sarah&_count=10")]
     [InlineData("?_count=10&name=Sarah")]

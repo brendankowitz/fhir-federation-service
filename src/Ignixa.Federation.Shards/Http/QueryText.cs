@@ -33,6 +33,25 @@ internal static class QueryText
     }
 
     /// <summary>
+    /// Gets whether <paramref name="query"/> has a named parameter: some <c>&amp;</c>-separated segment that is neither empty
+    /// nor starts at its <c>=</c>. A query of only separators, or whose segments all lack a name, supplies nothing to
+    /// continue with. A name with an empty value counts; the text is not decoded, so the server's spelling is untouched.
+    /// </summary>
+    public static bool HasNamedParameter(ReadOnlySpan<char> query)
+    {
+        foreach (Range range in query.Split('&'))
+        {
+            ReadOnlySpan<char> segment = query[range];
+            if (!segment.IsEmpty && segment[0] != '=')
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
     /// Form-decodes a query into its <c>key=value</c> pairs. Empty segments are skipped; a segment without <c>=</c> has an
     /// empty value.
     /// </summary>

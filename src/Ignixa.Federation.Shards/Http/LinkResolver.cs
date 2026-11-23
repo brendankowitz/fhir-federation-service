@@ -15,7 +15,8 @@ namespace Ignixa.Federation.Shards.Http;
 /// <c>/{type}</c>. A relative <c>{type}?…</c> or <c>?…</c> link is read against the service base, the FHIR convention for
 /// relative references, rather than against the request URL, whose path differs for <c>_search</c>.</para>
 /// <para>Anything else — another scheme, credentials or escapes in the authority, a non-canonical port, dot segments,
-/// backslashes, a fragment, a missing or empty query, or text that is not visible ASCII — is not a continuation.</para>
+/// backslashes, a fragment, a query with no named parameter (missing, empty, only separators, or only unnamed segments), or
+/// text that is not visible ASCII — is not a continuation.</para>
 /// </remarks>
 internal sealed class LinkResolver
 {
@@ -55,7 +56,7 @@ internal sealed class LinkResolver
         }
 
         string query = link[(questionMark + 1)..];
-        if (query.Length == 0 || !QueryText.IsWireSafe(query))
+        if (!QueryText.IsWireSafe(query) || !QueryText.HasNamedParameter(query))
         {
             return null;
         }
