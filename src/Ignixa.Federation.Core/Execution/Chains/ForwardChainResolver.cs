@@ -91,7 +91,7 @@ public sealed class ForwardChainResolver
                 throw new ArgumentException("Every registry shard, and no other, needs a request bound.", nameof(requestBounds));
             }
 
-            // A POST-capable shard can be sent either method (see Target.PrimaryMethod), so it needs both ceilings; a GET-only
+            // A POST-capable shard can be sent either method (see ForwardChainPrimary), so it needs both ceilings; a GET-only
             // shard is only ever sent GET, and a POST ceiling for it would describe a request that is never made.
             if (shard.Profile.SupportsPostSearch != bound.MaxPostBodyBytes.HasValue)
             {
@@ -198,27 +198,12 @@ public sealed class ForwardChainResolver
         var streams = new List<ShardSearchRequest>(_targets.Length);
         foreach (Target target in _targets)
         {
-            var replacements = new Dictionary<int, string>(chains.Length);
-            foreach (PlannedOccurrence chain in chains)
+            if (!ForwardChainPrimary.TryBuild(plan, target.Shard, witnesses, Fits, out ShardSearchRequest? primary, out var refusal))
             {
-                int ordinal = chain.Occurrence.Ordinal;
-                ReferencePathCertification certified = chain.Hop!.Certifications[target.Shard.Id];
-                if (!ReferenceOrList.TryRender(witnesses[ordinal], target.Shard.Id, _registry, certified.OwnSideForms, certified.ForeignForms, out string? orList))
-                {
-                    return allowance.Refuse(ForwardChainRefusalReason.UnspellableReference, ordinal, target.Shard.Id);
-                }
-
-                replacements.Add(ordinal, orList);
+                return allowance.Refuse(refusal.Reason, refusal.Ordinal, target.Shard.Id);
             }
 
-            IReadOnlyList<ParameterOccurrence> parameters = plan.BuildBackendParameters(replacements);
-            ShardSearchMethod method = target.PrimaryMethod(parameters);
-            if (!target.Fits(plan.Type, parameters, Math.Min(pageSize, target.Shard.Profile.MaxCount), method))
-            {
-                return allowance.Refuse(ForwardChainRefusalReason.RequestTooLarge, -1, target.Shard.Id);
-            }
-
-            streams.Add(new ShardSearchRequest(target.Shard.Id, plan.Type, parameters, pageSize, method));
+            streams.Add(primary);
         }
 
         return new ForwardChainReady(
@@ -274,6 +259,10 @@ public sealed class ForwardChainResolver
 
         return plan.IncludeTotal ? (ForwardChainRefusalReason.Total, -1) : null;
     }
+
+    /// <summary>Gets whether <paramref name="request"/>, as first sent, fits its shard's trusted request bound.</summary>
+    private bool Fits(ShardSearchRequest request) =>
+        _byShard[request.Shard].Fits(request.Type, request.Parameters, request.PageSize, request.Method);
 
     /// <summary>Gets a chain's witness parameters: exactly the planned terminal, asking only for ids.</summary>
     private static ParameterOccurrence[] Witness(PlannedOccurrence chain) => [chain.Hop!.Terminal!, IdsOnly];
@@ -334,9 +323,7 @@ public sealed class ForwardChainResolver
                 }
             }
 
-            return new Drained(
-                [.. keys.OrderBy(k => _byShard[k.Shard].Shard.Ordinal).ThenBy(k => k.Id.Value, StringComparer.Ordinal)],
-                null);
+            return new Drained(ForwardChainPrimary.CanonicalOrder(_registry, keys), null);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -370,24 +357,6 @@ public sealed class ForwardChainResolver
 
         /// <summary>Gets how witness searches are sent: by POST when the profile supports it, else by GET (design spec §7.5).</summary>
         public ShardSearchMethod WitnessMethod { get; }
-
-        /// <summary>
-        /// Chooses how the primary search for <paramref name="parameters"/> is sent. A GET-only shard is sent GET. A POST-capable
-        /// shard is sent POST unless two pairs are equal after one form decode (key and value, case-sensitive): a POST backend may
-        /// collapse them, so the search goes by GET, which keeps every pair. The raw parameters are never altered.
-        /// </summary>
-        public ShardSearchMethod PrimaryMethod(IReadOnlyList<ParameterOccurrence> parameters)
-        {
-            if (!Shard.Profile.SupportsPostSearch)
-            {
-                return ShardSearchMethod.Get;
-            }
-
-            SearchQuery form = SearchQuery.ParseForm(QueryRewriter.Render(parameters)).Query
-                ?? throw new InvalidOperationException("The completed primary parameters are not valid form pairs.");
-            var decoded = new HashSet<(string Key, string Value)>();
-            return form.Occurrences.All(o => decoded.Add((o.Key, o.Value))) ? ShardSearchMethod.PostSearch : ShardSearchMethod.Get;
-        }
 
         /// <summary>
         /// Gets whether the complete initial request for <paramref name="parameters"/> with <c>_count</c> =

@@ -1,4 +1,5 @@
 using System.Diagnostics.CodeAnalysis;
+using System.Text;
 using Ignixa.Federation.Core.Identity;
 using Ignixa.Federation.Core.Search;
 using Ignixa.Federation.Core.Shards;
@@ -81,6 +82,56 @@ internal static class ReferenceOrList
         }
 
         orList = string.Join(',', values);
+        return true;
+    }
+
+    /// <summary>
+    /// Reads the alternative that starts at <paramref name="position"/> in a once-decoded OR list and undoes the FHIR escapes
+    /// <see cref="TryRender"/> writes. Reading stops at the first malformed alternative, so a caller can refuse a list before
+    /// reading the rest of it.
+    /// </summary>
+    /// <param name="orList">The decoded value.</param>
+    /// <param name="position">
+    /// Where the alternative starts, at most <c>orList.Length</c>; on success, where the next one starts, which is past the
+    /// end after the last alternative.
+    /// </param>
+    /// <param name="alternative">The unescaped alternative.</param>
+    /// <returns>
+    /// <see langword="false"/> when the alternative is empty, holds an unescaped <c>|</c> or <c>$</c>, escapes any character
+    /// but <c>, | $ \</c>, or ends in a lone backslash: nothing <see cref="TryRender"/> writes.
+    /// </returns>
+    public static bool TryReadAlternative(string orList, ref int position, [NotNullWhen(true)] out string? alternative)
+    {
+        alternative = null;
+        var text = new StringBuilder();
+        int end = position;
+        for (; end < orList.Length && orList[end] != ','; end++)
+        {
+            char c = orList[end];
+            if (c == '\\')
+            {
+                if (++end == orList.Length || orList[end] is not (',' or '|' or '$' or '\\'))
+                {
+                    return false;
+                }
+
+                c = orList[end];
+            }
+            else if (c is '|' or '$')
+            {
+                return false;
+            }
+
+            text.Append(c);
+        }
+
+        if (text.Length == 0)
+        {
+            return false;
+        }
+
+        position = end + 1;
+        alternative = text.ToString();
         return true;
     }
 

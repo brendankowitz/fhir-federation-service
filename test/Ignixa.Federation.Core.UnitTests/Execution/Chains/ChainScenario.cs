@@ -53,6 +53,16 @@ internal static class ChainScenario
     public static ShardRegistry GetOnlyEastRegistry() =>
         ShardRegistry.Create([TestShards.East(EastAlias).WithProfile(GetOnly.Name), TestShards.West()], [.. TestShards.Profiles, GetOnly]);
 
+    /// <summary>A POST-capable profile whose largest page is smaller than the default page size, so a primary count is clamped.</summary>
+    public static readonly BackendProfile SmallPost = new("SmallPost", SupportsPostSearch: true, MaxCount: 10, NextLinkRedemption.FollowGet, null);
+
+    /// <summary>East on <see cref="GetOnly"/> (GET, largest page 500) and west on <see cref="SmallPost"/> (POST, largest page 10), without aliases.</summary>
+    public static ShardRegistry MixedRegistry() =>
+        ShardRegistry.Create([TestShards.East().WithProfile(GetOnly.Name), TestShards.West().WithProfile(SmallPost.Name)], [.. TestShards.Profiles, GetOnly, SmallPost]);
+
+    /// <summary>The scenario's shards configured west first, so west has ordinal 0 and its stream comes first.</summary>
+    public static ShardRegistry WestFirstRegistry() => TestShards.Create(TestShards.West(), TestShards.East(EastAlias));
+
     /// <summary>Gets a bound of <paramref name="maxRequestBytes"/> for each method <paramref name="shard"/>'s profile can be sent.</summary>
     public static ShardRequestBound ProfileBound(ShardDescriptor shard, int maxRequestBytes = 1_000_000) =>
         new(maxRequestBytes, shard.Profile.SupportsPostSearch ? maxRequestBytes : null);
