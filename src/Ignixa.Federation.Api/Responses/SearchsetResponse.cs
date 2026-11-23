@@ -152,7 +152,8 @@ public static class SearchsetResponse
             writer.WriteEndObject();
             writer.WriteEndArray();
 
-            if (alternateBase is not null)
+            // An id of "." or ".." is a valid id but not addressable as a path segment, so it has no proxy path.
+            if (alternateBase is not null && key.Id.Value is not ("." or ".."))
             {
                 writer.WriteStartArray("link");
                 WriteLink(writer, "alternate", $"{alternateBase}/shards/{shard.Alias.Value}/{key.Type.Value}/{key.Id.Value}");

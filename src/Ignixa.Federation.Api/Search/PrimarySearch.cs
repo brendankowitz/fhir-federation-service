@@ -7,6 +7,7 @@ using Ignixa.Federation.Api.Authentication;
 using Ignixa.Federation.Api.Authorization;
 using Ignixa.Federation.Api.Budgets;
 using Ignixa.Federation.Api.Continuations;
+using Ignixa.Federation.Api.Reads;
 using Ignixa.Federation.Api.Responses;
 using Ignixa.Federation.Core.Configuration;
 using Ignixa.Federation.Core.Execution;
@@ -84,12 +85,16 @@ internal sealed class PrimarySearch
     private readonly FrozenDictionary<string, string> _shardRevisions;
     private readonly FrozenDictionary<ShardId, CountDialect>? _countDialects;
 
+    /// <summary>Gets the proxied read, built from the same enablement snapshot the search links and capability statement follow.</summary>
+    public ProxiedReads Reads { get; }
+
     private PrimarySearch(
         SearchHostSettings settings,
         SearchCapabilities capabilities,
         FederationOptions options,
         IShardClientFactory clients,
         FrozenDictionary<ShardId, CountDialect>? countDialects,
+        IShardReadBinding? readBinding,
         IDataProtectionProvider protection,
         TimeProvider time,
         int maxRequestLineBytes)
@@ -97,6 +102,7 @@ internal sealed class PrimarySearch
         _settings = settings;
         _capabilities = capabilities;
         _registry = capabilities.Registry;
+        Reads = new ProxiedReads(settings, _registry, options.ProxyReads ? readBinding : null);
         _limits = options.Limits;
         _timeouts = options.Timeouts;
         _planner = new SearchPlanner(capabilities, options.ChainResolution, options.Limits);
@@ -164,6 +170,7 @@ internal sealed class PrimarySearch
             options,
             clients,
             CaptureCountDialects(capabilities.Registry, services.GetService<IReadOnlyDictionary<ShardId, CountDialect>>()),
+            services.GetService<IShardReadBinding>(),
             services.GetRequiredService<IDataProtectionProvider>(),
             services.GetRequiredService<TimeProvider>(),
             services.GetRequiredService<IOptions<KestrelServerOptions>>().Value.Limits.MaxRequestLineSize);
@@ -605,7 +612,7 @@ internal sealed class PrimarySearch
         IResult response;
         try
         {
-            response = SearchsetResponse.Create(_registry, SelfLink(type, search.RawQuery), page.Matches, [], [], next);
+            response = SearchsetResponse.Create(_registry, SelfLink(type, search.RawQuery), page.Matches, [], [], next, Reads.AlternateBase);
         }
         catch (SearchsetEntryException ex) when (_registry.TryGetById(ex.Key.Shard, out ShardDescriptor? shard))
         {

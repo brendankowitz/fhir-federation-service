@@ -16,8 +16,9 @@ internal static class MetadataEndpoints
         }
 
         SearchCapabilities capabilities = app.Services.GetRequiredService<SearchCapabilities>();
+        bool proxiedReads = app.Services.GetRequiredService<PrimarySearch>().Reads.Enabled;
         DateTimeOffset publishedAt = app.Services.GetRequiredService<TimeProvider>().GetUtcNow();
-        byte[] statement = WriteStatement(settings.PublicBase, publishedAt, capabilities.Resources);
+        byte[] statement = WriteStatement(settings.PublicBase, publishedAt, capabilities.Resources, proxiedReads);
         app.MapGet("/metadata", (HttpRequest request) =>
         {
             if (request.Query.TryGetValue("_format", out var format))
@@ -38,7 +39,7 @@ internal static class MetadataEndpoints
         });
     }
 
-    private static byte[] WriteStatement(string publicBase, DateTimeOffset publishedAt, IReadOnlyList<ResourceSearchSupport> resources)
+    private static byte[] WriteStatement(string publicBase, DateTimeOffset publishedAt, IReadOnlyList<ResourceSearchSupport> resources, bool proxiedReads)
     {
         using var buffer = new MemoryStream();
         using (var json = new Utf8JsonWriter(buffer))
@@ -64,7 +65,7 @@ internal static class MetadataEndpoints
                 json.WriteStartArray("resource");
                 foreach (ResourceSearchSupport resource in resources)
                 {
-                    WriteResource(json, resource);
+                    WriteResource(json, resource, proxiedReads);
                 }
 
                 json.WriteEndArray();
@@ -78,12 +79,19 @@ internal static class MetadataEndpoints
         return buffer.ToArray();
     }
 
-    private static void WriteResource(Utf8JsonWriter json, ResourceSearchSupport resource)
+    private static void WriteResource(Utf8JsonWriter json, ResourceSearchSupport resource, bool proxiedReads)
     {
         json.WriteStartObject();
         json.WriteString("type", resource.Type.Value);
         // The planner can admit features that the current host does not execute.
         json.WriteStartArray("interaction");
+        if (proxiedReads)
+        {
+            json.WriteStartObject();
+            json.WriteString("code", "read");
+            json.WriteEndObject();
+        }
+
         json.WriteStartObject();
         json.WriteString("code", "search-type");
         json.WriteEndObject();

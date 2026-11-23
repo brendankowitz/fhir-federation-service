@@ -1,5 +1,6 @@
 using Ignixa.Federation.Api.Authentication;
 using Ignixa.Federation.Api.Budgets;
+using Ignixa.Federation.Api.Reads;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Http.Features;
@@ -26,7 +27,11 @@ internal static class PrimarySearchEndpoints
     /// <exception cref="InvalidOperationException">The <c>Federation:Host</c> section is present but invalid.</exception>
     public static WebApplicationBuilder AddPrimarySearch(this WebApplicationBuilder builder)
     {
-        builder.Services.Configure<RouteOptions>(o => o.SetParameterPolicy<ResourceTypeRouteConstraint>(ResourceTypeRouteConstraint.Name));
+        builder.Services.Configure<RouteOptions>(o =>
+        {
+            o.SetParameterPolicy<ResourceTypeRouteConstraint>(ResourceTypeRouteConstraint.Name);
+            o.SetParameterPolicy<ResourceIdRouteConstraint>(ResourceIdRouteConstraint.Name);
+        });
         if (SearchHostSettings.Read(builder.Configuration) is not { } settings)
         {
             return builder;
@@ -73,6 +78,16 @@ internal static class PrimarySearchEndpoints
         string route = "/{type:" + ResourceTypeRouteConstraint.Name + "}";
         app.MapGet(route, (HttpContext http, string type) => Serve(search, http, type, post: false)).WithMetadata(SearchEndpoint.Marker);
         app.MapPost(route + "/_search", (HttpContext http, string type) => Serve(search, http, type, post: true)).WithMetadata(SearchEndpoint.Marker);
+
+        // The proxied read is an owner-qualified read. It shares the search budget and signing check through the marker.
+        // The unqualified form is ambiguous across owners: it carries no marker, needs no authentication, and never looks anything up.
+        ProxiedReads? reads = search?.Reads;
+        app.MapGet(
+            "/shards/{alias}/{type:" + ResourceTypeRouteConstraint.Name + "}/{id}",
+            (HttpContext http, string alias, string type, string id) => ServeRead(search, http, alias, type, id)).WithMetadata(SearchEndpoint.Marker);
+        app.MapGet(
+            "/{type:" + ResourceTypeRouteConstraint.Name + "}/{id:" + ResourceIdRouteConstraint.Name + "}",
+            () => ProxiedReads.Ambiguous(reads?.Enabled == true));
         return app;
     }
 
@@ -103,6 +118,11 @@ internal static class PrimarySearchEndpoints
         search is null
             ? Task.FromResult(SearchOutcome.Unavailable("Search is not configured on this host."))
             : search.SearchAsync(http, type, post, http.Features.GetRequiredFeature<SearchRequest>());
+
+    private static Task<IResult> ServeRead(PrimarySearch? search, HttpContext http, string alias, string type, string id) =>
+        search is null
+            ? Task.FromResult(SearchOutcome.Unavailable("Search is not configured on this host."))
+            : search.Reads.ReadAsync(http, alias, type, id, http.Features.GetRequiredFeature<SearchRequest>());
 
     private sealed class SearchEndpoint
     {
