@@ -121,25 +121,36 @@ public sealed class ShardCapabilitySnapshot
             throw new ArgumentException("The required Patient search codes are a non-empty array of search codes.", nameof(requiredParameterCodes));
         }
 
-        if (!TryBindProofs(proofs, out List<ShardCapabilityProof>? bound))
+        if (!TryBindProofs(proofs, out _))
         {
             return false;
         }
 
+        return TryProjectPatientSearchCapabilities(requiredParameterCodes, out capabilities);
+    }
+
+    // Projects this snapshot's evidence without saying anything about proof or readiness. Catalog admission must
+    // validate that exact evidence and run its probes before releasing the resulting view.
+    internal bool TryProjectPatientSearchCapabilities(
+        ImmutableArray<string> requiredParameterCodes,
+        [NotNullWhen(true)] out SearchCapabilities? capabilities)
+    {
+        capabilities = null;
         var required = requiredParameterCodes.ToHashSet(StringComparer.Ordinal);
-        var shards = new List<ShardSearchCapability>(bound.Count);
-        foreach (ShardCapabilityProof proof in bound)
+        var shards = new List<ShardSearchCapability>(_registry.Shards.Count);
+        foreach (ShardDescriptor shard in _registry.Shards)
         {
-            if (!proof.Evidence.SearchableResources.TryGetValue(PatientType, out ResourceSearchEvidence? patient))
+            if (_shards[shard.Id].Evidence is not { } evidence
+                || !evidence.SearchableResources.TryGetValue(PatientType, out ResourceSearchEvidence? patient))
             {
                 return false;
             }
 
             shards.Add(new ShardSearchCapability(
-                proof.Shard.Id,
+                shard.Id,
                 [new ResourceSearchSupport(
                     PatientType,
-                    proof.Evidence.CommonSearchParameters.Concat(patient.SearchParameters)
+                    evidence.CommonSearchParameters.Concat(patient.SearchParameters)
                         .Where(parameter => required.Contains(parameter.Code))
                         .Select(ShardCapabilityBridge.MapParameter),
                     [],
@@ -189,6 +200,9 @@ public sealed class ShardCapabilitySnapshot
         bound = matched;
         return true;
     }
+
+    /// <summary>The descriptors of this snapshot's registry, in ordinal order.</summary>
+    internal IReadOnlyList<ShardDescriptor> Descriptors => _registry.Shards;
 
     internal ShardCapabilitySnapshot With(ShardId shard, ShardCapabilityEntry entry) => new(_registry, _shards.SetItem(shard, entry));
 }

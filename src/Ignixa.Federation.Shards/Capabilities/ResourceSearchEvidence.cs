@@ -14,13 +14,21 @@ public sealed class ResourceSearchEvidence
         ResourceType type,
         ImmutableArray<SearchParameterEvidence> searchParameters,
         ImmutableArray<SearchInclusion> includes,
-        ImmutableArray<SearchInclusion> revIncludes)
+        ImmutableArray<SearchInclusion> revIncludes,
+        bool advertisesRead)
     {
         Type = type;
         SearchParameters = searchParameters;
         Includes = includes;
         RevIncludes = revIncludes;
+        AdvertisesRead = advertisesRead;
     }
+
+    /// <summary>
+    /// Gets whether this server-mode resource also advertises an unmodified <c>read</c> interaction. A <c>read</c> carrying a
+    /// <c>modifierExtension</c>, <c>vread</c>, and an interaction of another resource or mode do not count. Advertised only.
+    /// </summary>
+    internal bool AdvertisesRead { get; }
 
     /// <summary>Gets the resource type.</summary>
     public ResourceType Type { get; }

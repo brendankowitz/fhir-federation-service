@@ -1,0 +1,33 @@
+{
+  "resourceType": "CapabilityStatement",
+  "kind": "instance",
+  "fhirVersion": "4.0.1",
+  "software": {
+    "name": "Ignixa FHIR Server",
+    "version": "0.6.83--no-branch-.22+Branch.-no-branch-.Sha.2f07ac88d655b3e8e87d41c39f6c2b4039b5a8d7.2f07ac88d655b3e8e87d41c39f6c2b4039b5a8d7"
+  },
+  "rest": [
+    {
+      "mode": "server",
+      "resource": [
+        {
+          "type": "Patient",
+          "interaction": [{ "code": "read" }, { "code": "search-type" }],
+          "searchParam": [
+            { "name": "name", "type": "string", "definition": "http://hl7.org/fhir/SearchParameter/Patient-name" },
+            { "name": "_id", "type": "token", "definition": "http://hl7.org/fhir/SearchParameter/Resource-id" },
+            { "name": "given", "type": "string", "definition": "http://hl7.org/fhir/SearchParameter/individual-given" },
+            { "name": "family", "type": "string", "definition": "http://hl7.org/fhir/SearchParameter/individual-family" }
+          ]
+        },
+        {
+          "type": "Observation",
+          "interaction": [{ "code": "read" }, { "code": "search-type" }],
+          "searchParam": [
+            { "name": "_id", "type": "token", "definition": "http://hl7.org/fhir/SearchParameter/Resource-id" }
+          ]
+        }
+      ]
+    }
+  ]
+}

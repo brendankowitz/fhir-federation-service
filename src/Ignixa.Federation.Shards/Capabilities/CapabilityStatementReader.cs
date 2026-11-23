@@ -150,23 +150,28 @@ public static class CapabilityStatementReader
                 throw Malformed(path, "The resource type is declared more than once.");
             }
 
-            if (AdvertisesSearchType(resource, path))
+            (bool searchType, bool read) = ReadInteractions(resource, path);
+            if (searchType)
             {
                 RejectModifierExtension(resource, path);
                 searchable.Add(type, new ResourceSearchEvidence(
                     type,
                     ReadSearchParameters(resource, path),
                     ReadInclusions(resource, "searchInclude", path),
-                    ReadInclusions(resource, "searchRevInclude", path)));
+                    ReadInclusions(resource, "searchRevInclude", path),
+                    read));
             }
         }
 
         return searchable.ToImmutable();
     }
 
-    private static bool AdvertisesSearchType(JsonElement resource, string path)
+    // Whether the resource advertises search-type, and whether it advertises an unmodified read. A read that carries a
+    // modifierExtension may mean anything, so it grants nothing, but it is not malformed: the reader does not consume it.
+    private static (bool SearchType, bool Read) ReadInteractions(JsonElement resource, string path)
     {
-        bool advertises = false;
+        bool searchType = false;
+        bool read = false;
         foreach ((JsonElement interaction, string interactionPath) in Elements(resource, "interaction", path))
         {
             if (interaction.ValueKind != JsonValueKind.Object)
@@ -174,26 +179,34 @@ public static class CapabilityStatementReader
                 throw Malformed(interactionPath, "An interaction entry is not an object.");
             }
 
-            if (RequiredString(interaction, "code", interactionPath) == "search-type")
+            switch (RequiredString(interaction, "code", interactionPath))
             {
-                RejectModifierExtension(interaction, interactionPath);
-                advertises = true;
+                case "search-type":
+                    RejectModifierExtension(interaction, interactionPath);
+                    searchType = true;
+                    break;
+                case "read":
+                    read |= !HasModifierExtension(interaction);
+                    break;
             }
         }
 
-        return advertises;
+        return (searchType, read);
     }
 
     // Unlike an extension, a modifierExtension may change what its element means, so evidence cannot be taken from an
     // element that carries one. Callers check only the structures they consume; an empty array modifies nothing.
     private static void RejectModifierExtension(JsonElement element, string path)
     {
-        if (element.TryGetProperty("modifierExtension", out JsonElement modifier)
-            && !(modifier.ValueKind == JsonValueKind.Array && modifier.GetArrayLength() == 0))
+        if (HasModifierExtension(element))
         {
             throw Malformed(path, "modifierExtension is not supported.");
         }
     }
+
+    private static bool HasModifierExtension(JsonElement element) =>
+        element.TryGetProperty("modifierExtension", out JsonElement modifier)
+        && !(modifier.ValueKind == JsonValueKind.Array && modifier.GetArrayLength() == 0);
 
     private static ImmutableArray<SearchParameterEvidence> ReadSearchParameters(JsonElement owner, string ownerPath)
     {

@@ -85,6 +85,24 @@ public static class ShardCapabilityAdmission
             return null;
         }
 
+        if (!await RunProbesAsync(client, shard, probeType, evidence, cancellationToken).ConfigureAwait(false))
+        {
+            return null;
+        }
+
+        return ReferenceEquals(refresher.EvidenceFor(shard), evidence)
+            ? new ShardCapabilityProof(shard, evidence, certification)
+            : null;
+    }
+
+    // Both admission paths run the same probes against the evidence their caller has already checked.
+    internal static async Task<bool> RunProbesAsync(
+        HttpShardClient client,
+        ShardDescriptor shard,
+        ResourceType probeType,
+        ShardCapabilityEvidence evidence,
+        CancellationToken cancellationToken)
+    {
         foreach (ShardSearchMethod method in MethodsOffered(shard))
         {
             StrictHandlingProbeResult strict = await StrictHandlingProbe
@@ -92,7 +110,7 @@ public static class ShardCapabilityAdmission
                 .ConfigureAwait(false);
             if (!strict.IsProven)
             {
-                return null;
+                return false;
             }
 
             LastUpdatedReplayProbeResult replay = await LastUpdatedReplayProbe
@@ -100,14 +118,12 @@ public static class ShardCapabilityAdmission
                 .ConfigureAwait(false);
             if (!replay.IsObserved)
             {
-                return null;
+                return false;
             }
         }
 
         cancellationToken.ThrowIfCancellationRequested();
-        return ReferenceEquals(refresher.EvidenceFor(shard), evidence)
-            ? new ShardCapabilityProof(shard, evidence, certification)
-            : null;
+        return true;
     }
 
     private static IEnumerable<ShardSearchMethod> MethodsOffered(ShardDescriptor shard)

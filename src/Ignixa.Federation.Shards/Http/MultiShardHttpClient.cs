@@ -179,10 +179,15 @@ public sealed class MultiShardHttpClient : IShardClient, IDisposable
     public HttpShardClient GetClient(ShardDescriptor shard)
     {
         ArgumentNullException.ThrowIfNull(shard);
+        return FindClient(shard)
+            ?? throw new ArgumentException("The descriptor is not one of this router's registered shards.", nameof(shard));
+    }
+
+    /// <summary>The client bound to exactly this descriptor instance, or <see langword="null"/> when the router was built over another.</summary>
+    internal HttpShardClient? FindClient(ShardDescriptor shard)
+    {
         ThrowIfDisposed();
-        return _clients.TryGetValue(shard.Id, out HttpShardClient? client) && client.IsFor(shard)
-            ? client
-            : throw new ArgumentException("The descriptor is not one of this router's registered shards.", nameof(shard));
+        return _clients.TryGetValue(shard.Id, out HttpShardClient? client) && client.IsFor(shard) ? client : null;
     }
 
     /// <summary>
