@@ -115,6 +115,8 @@ public sealed class PrimarySearchRevIncludeTests
 
         refused.StatusCode.ShouldBe(HttpStatusCode.NotImplemented);
         refused.IssueCode.ShouldBe("not-supported");
+        refused.Json.GetProperty("resourceType").GetString().ShouldBe("OperationOutcome");
+        refused.Link("next").ShouldBeNull();
         host.Shards.Views.ShouldBeEmpty();
         host.Shards.Calls.ShouldBeEmpty();
     }
@@ -130,6 +132,9 @@ public sealed class PrimarySearchRevIncludeTests
         SearchResult refused = await unbound.FollowAsync(next);
 
         refused.StatusCode.ShouldBe(HttpStatusCode.NotImplemented);
+        refused.IssueCode.ShouldBe("not-supported");
+        refused.Json.GetProperty("resourceType").GetString().ShouldBe("OperationOutcome");
+        refused.Link("next").ShouldBeNull();
         unbound.Shards.Views.ShouldBeEmpty();
         unbound.Shards.Calls.ShouldBeEmpty();
     }
@@ -558,25 +563,32 @@ public sealed class PrimarySearchRevIncludeTests
         result.Link("next").ShouldBeNull();
     }
 
-    [Fact]
-    public async Task ANullResultIsInsufficientEvidenceNotEmptyIncludes_NotSupportedInitiallyAndRestartWhenRedeemed()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task InsufficientEvidenceIsABadRequestInitiallyAndRequiresARestartOnReplay(bool post)
     {
         using var ring = new IsolatedKeyRing();
         var resolver = new ScriptedRevIncludeResolver();
         using SearchHost host = Start(resolver, s => s.Protection = ring.CreateProvider());
-        SearchResult first = await SendAsync(host, false, Paged);
+        SearchResult first = await SendAsync(host, post, Paged);
         first.StatusCode.ShouldBe(HttpStatusCode.OK);
         string next = first.Link("next").ShouldNotBeNull();
         resolver.Script = _ => Task.FromResult<RevIncludePageResult?>(null);
 
         SearchResult redeemed = await host.FollowAsync(next);
-        SearchResult initial = await SendAsync(host, false, Paged);
+        SearchResult initial = await SendAsync(host, post, Paged);
 
         redeemed.StatusCode.ShouldBe(HttpStatusCode.Gone);
-        initial.StatusCode.ShouldBe(HttpStatusCode.NotImplemented);
+        redeemed.IssueCode.ShouldBe("not-found");
+        initial.StatusCode.ShouldBe(HttpStatusCode.BadRequest);
         initial.IssueCode.ShouldBe("not-supported");
-        initial.Body.ShouldNotContain("Bundle");
-        redeemed.Body.ShouldNotContain("Bundle");
+        foreach (SearchResult refused in new[] { initial, redeemed })
+        {
+            refused.Json.GetProperty("resourceType").GetString().ShouldBe("OperationOutcome");
+            refused.Json.TryGetProperty("entry", out _).ShouldBeFalse();
+            refused.Link("next").ShouldBeNull();
+        }
     }
 
     private static ShardEntry ConditionEntry() => new(

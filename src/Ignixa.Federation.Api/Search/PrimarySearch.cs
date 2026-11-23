@@ -687,7 +687,7 @@ internal sealed class PrimarySearch
     /// <remarks>
     /// The resolver is never asked when no requested source type is readable or the page has no match; a denied type is
     /// reported by one fixed outcome whatever the data holds. A <see langword="null"/> result is insufficient evidence, not
-    /// an empty include set: unsupported when first requested, a restart when a redeemed token's replan no longer certifies it.
+    /// an empty include set: a 400 not-supported outcome for a new search, or a 410 restart for a continuation.
     /// </remarks>
     private async Task<StagedIncludes> StageIncludesAsync(RevIncludeStage stage, UnsortedPage page, IShardClient client, RequestBudget budget, bool redeemed)
     {
@@ -712,7 +712,9 @@ internal sealed class PrimarySearch
             budget.Checkpoint();
             if (result is null)
             {
-                return StagedIncludes.Refused(redeemed ? SearchOutcome.Gone() : UnsupportedShape());
+                return StagedIncludes.Refused(redeemed
+                    ? SearchOutcome.Gone()
+                    : SearchOutcome.NotSupported(StatusCodes.Status400BadRequest, "The required reverse-include reference forms are not certified."));
             }
 
             if (!stage.Accepts(result, _limits.MaxIncludesPerPage, page.Matches))
