@@ -50,9 +50,35 @@ public sealed class PrototypeBackendAdmission
     /// <see langword="false"/> once any shard's evidence has been replaced, even by a successful refetch with identical
     /// content, which needs a new admission. A failed refresh keeps the evidence, so this stays <see langword="true"/>.
     /// </returns>
-    public bool IsCurrent()
+    public bool IsCurrent() => IsCurrentIn(_refresher.Current);
+
+    /// <summary>
+    /// Runs <paramref name="install"/> once, only if this admission is still current, with no refresh publication able to
+    /// interleave between that check and the end of the action.
+    /// </summary>
+    /// <param name="install">
+    /// Swaps already prepared state in. It runs on the calling thread while refresh publication waits, so it must be a short,
+    /// nonblocking, synchronous swap of state built beforehand: no probes, network or other I/O, view construction, request
+    /// work, or awaiting. It must not re-enter this admission or the refresher, or wait for a refresh to publish: a refresh
+    /// cannot publish until the action returns. The caller trusts it; nothing here rolls back what it did.
+    /// </param>
+    /// <returns>
+    /// <see langword="true"/> if the action ran to completion. <see langword="false"/> if the evidence had already been
+    /// replaced, in which case the action never runs. Evidence retained through a failed refresh stays eligible.
+    /// </returns>
+    /// <exception cref="ArgumentNullException"><paramref name="install"/> is <see langword="null"/>.</exception>
+    /// <exception cref="Exception">Whatever <paramref name="install"/> throws propagates unchanged; later refreshes and commits proceed.</exception>
+    /// <remarks>
+    /// Currency can change as soon as this returns: what holds is that no publication landed between the check and the
+    /// action, not that the installed state stays current. <see cref="IsCurrent"/> remains a lock-free observation that
+    /// guarantees nothing about what follows it.
+    /// </remarks>
+    public bool TryCommitIfCurrent(Action install)
     {
-        ShardCapabilitySnapshot snapshot = _refresher.Current;
-        return _admitted.All(admitted => ReferenceEquals(snapshot.Shards[admitted.Shard].Evidence, admitted.Evidence));
+        ArgumentNullException.ThrowIfNull(install);
+        return _refresher.TryCommitIfCurrent(IsCurrentIn, install);
     }
+
+    private bool IsCurrentIn(ShardCapabilitySnapshot snapshot) =>
+        _admitted.All(admitted => ReferenceEquals(snapshot.Shards[admitted.Shard].Evidence, admitted.Evidence));
 }

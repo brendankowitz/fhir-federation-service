@@ -400,6 +400,147 @@ public sealed class PrototypeBackendCatalogTests
         await Should.ThrowAsync<OperationCanceledException>(() => admission);
     }
 
+    [Fact]
+    public async Task TryCommitIfCurrent_RunsTheActionOnceAndReturnsTrue_WhileTheEvidenceIsPublished()
+    {
+        await using PrototypeRig rig = await PrototypeRig.StartAsync();
+        rig.SucceedEverywhere();
+        PrototypeBackendAdmission admission = (await rig.AdmitAsync(Ct)).ShouldNotBeNull();
+        int installs = 0;
+
+        bool committed = admission.TryCommitIfCurrent(() => installs++);
+
+        committed.ShouldBeTrue();
+        installs.ShouldBe(1);
+        admission.IsCurrent().ShouldBeTrue("committing changes nothing the refresher publishes");
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task TryCommitIfCurrent_IsFalseAndNeverRunsTheAction_WhenEitherShardsEvidenceWasReplaced(bool retainWest)
+    {
+        await using PrototypeRig rig = await PrototypeRig.StartAsync();
+        rig.SucceedEverywhere();
+        PrototypeBackendAdmission admission = (await rig.AdmitAsync(Ct)).ShouldNotBeNull();
+        await RefreshOnlyOneAdvertisementAsync(rig, retainWest);
+        int installs = 0;
+
+        bool committed = admission.TryCommitIfCurrent(() => installs++);
+
+        committed.ShouldBeFalse();
+        installs.ShouldBe(0);
+    }
+
+    [Fact]
+    public async Task TryCommitIfCurrent_StaysEligible_WhenAFailedRefreshRetainedTheExactEvidence()
+    {
+        await using PrototypeRig rig = await PrototypeRig.StartAsync();
+        rig.SucceedEverywhere();
+        PrototypeBackendAdmission admission = (await rig.AdmitAsync(Ct)).ShouldNotBeNull();
+        rig.EastRoutes.Advertisement = ScriptedResponse.Status(503);
+        rig.WestRoutes.Advertisement = ScriptedResponse.Status(503);
+        await rig.RefreshAsync();
+        rig.Refresher.Current.IsDegraded.ShouldBeTrue();
+        int installs = 0;
+
+        bool committed = admission.TryCommitIfCurrent(() => installs++);
+
+        committed.ShouldBeTrue();
+        installs.ShouldBe(1);
+    }
+
+    [Fact]
+    public async Task TryCommitIfCurrent_PropagatesTheSameException_AndStrandsNeitherLaterCommitsNorRefresh()
+    {
+        await using PrototypeRig rig = await PrototypeRig.StartAsync();
+        rig.SucceedEverywhere();
+        PrototypeBackendAdmission admission = (await rig.AdmitAsync(Ct)).ShouldNotBeNull();
+        var failure = new InvalidOperationException("the swap failed");
+
+        InvalidOperationException thrown = Should.Throw<InvalidOperationException>(() => admission.TryCommitIfCurrent(() => throw failure));
+
+        thrown.ShouldBeSameAs(failure);
+        int installs = 0;
+        admission.TryCommitIfCurrent(() => installs++).ShouldBeTrue("a failed action leaves the admission eligible and the gate free");
+        installs.ShouldBe(1);
+        await rig.RefreshAsync();
+        admission.TryCommitIfCurrent(() => installs++).ShouldBeFalse("the refresh was not stranded behind the failed action");
+        installs.ShouldBe(1);
+    }
+
+    [Fact]
+    public async Task TryCommitIfCurrent_RejectsANullAction()
+    {
+        await using PrototypeRig rig = await PrototypeRig.StartAsync();
+        rig.SucceedEverywhere();
+        PrototypeBackendAdmission admission = (await rig.AdmitAsync(Ct)).ShouldNotBeNull();
+
+        Should.Throw<ArgumentNullException>(() => admission.TryCommitIfCurrent(null!));
+    }
+
+    [Fact]
+    public async Task ARefreshThatHasFetched_CannotPublishWhileAnInstallRuns_ButPublishesAfterItsRelease()
+    {
+        TimeSpan bound = TimeSpan.FromSeconds(15);
+        var armed = 0;
+        var fetchesStarted = 0;
+        var firstFetched = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var secondStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        await using PrototypeRig rig = await PrototypeRig.StartAsync(fetch: router => async (shard, cancellationToken) =>
+        {
+            // Once armed, the sweep's first fetch is east's and its second is west's, which only starts after east publishes.
+            int ordinal = Volatile.Read(ref armed) == 1 ? Interlocked.Increment(ref fetchesStarted) : 0;
+            if (ordinal == 2)
+            {
+                secondStarted.TrySetResult();
+            }
+
+            ShardCapabilityEvidence evidence = await router.GetClient(shard).GetCapabilitiesAsync(cancellationToken);
+            if (ordinal == 1)
+            {
+                firstFetched.TrySetResult();
+            }
+
+            return evidence;
+        });
+        rig.SucceedEverywhere();
+        PrototypeBackendAdmission admission = (await rig.AdmitAsync(Ct)).ShouldNotBeNull();
+        ShardCapabilitySnapshot before = rig.Refresher.Current;
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        Volatile.Write(ref armed, 1);
+
+        Task<bool> commit;
+        try
+        {
+            commit = Task.Run(
+                () => admission.TryCommitIfCurrent(() =>
+                {
+                    entered.SetResult();
+                    release.Task.Wait(bound).ShouldBeTrue("the test releases the install");
+                }),
+                Ct);
+            await entered.Task.WaitAsync(bound, Ct);
+            rig.Time.Advance(TimeSpan.FromMinutes(10));
+            await firstFetched.Task.WaitAsync(bound, Ct);
+            Task winner = await Task.WhenAny(secondStarted.Task, Task.Delay(TimeSpan.FromMilliseconds(250), Ct));
+
+            winner.ShouldNotBeSameAs(secondStarted.Task, "east's fetched result must wait for the install before it is published");
+            rig.Refresher.Current.ShouldBeSameAs(before);
+            admission.IsCurrent().ShouldBeTrue("nothing was published while the install ran");
+        }
+        finally
+        {
+            release.TrySetResult();
+        }
+
+        (await commit.WaitAsync(bound, Ct)).ShouldBeTrue();
+        await secondStarted.Task.WaitAsync(bound, Ct);
+        await Watchdog.EventuallyAsync(() => !admission.IsCurrent(), "the waiting publication to land once the install ended");
+        admission.TryCommitIfCurrent(() => throw new InvalidOperationException("stale")).ShouldBeFalse();
+    }
+
     private static async Task RefreshOnlyOneAdvertisementAsync(PrototypeRig rig, bool retainWest)
     {
         var (retainedRoutes, retained, replaced) = retainWest

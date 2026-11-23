@@ -8,7 +8,9 @@ namespace Ignixa.Federation.Shards.Capabilities.Refresh;
 /// Refreshes registered shard advertisements on startup and on a ten-minute schedule (design spec §9.1).
 /// </summary>
 /// <remarks>
-/// <para>One loop writes; any thread reads <see cref="Current"/> without locking. Fetches run one at a time, in registry
+/// <para>One loop writes; any thread reads <see cref="Current"/> without locking. Publication itself takes a private gate
+/// that an admission's commit also holds (see <see cref="PrototypeBackendAdmission.TryCommitIfCurrent"/>), so a commit
+/// never interleaves with a publication. Fetches run one at a time, in registry
 /// order, including during startup: a global cap of one is deliberate, so a slow sweep delays later shards rather than
 /// fanning out. Each fetch is published as soon as it ends.</para>
 /// <para>Sweeps never overlap. The clock starts when <see cref="RunAsync"/> starts, so a sweep that outlasts the interval
@@ -23,6 +25,7 @@ public sealed class ShardCapabilityRefresher
     private readonly ShardRegistry _registry;
     private readonly ShardCapabilityFetch _fetch;
     private readonly TimeProvider _timeProvider;
+    private readonly Lock _publication = new();
     private ShardCapabilitySnapshot _current;
     private int _running;
 
@@ -56,6 +59,24 @@ public sealed class ShardCapabilityRefresher
         _registry.TryGetById(shard.Id, out ShardDescriptor? registered) && ReferenceEquals(registered, shard)
             ? Current.Shards[shard.Id].Evidence
             : null;
+
+    /// <summary>
+    /// Checks <paramref name="isCurrent"/> against one snapshot and runs <paramref name="install"/> while no refresh can
+    /// publish; see <see cref="PrototypeBackendAdmission.TryCommitIfCurrent"/> for what the action may do.
+    /// </summary>
+    internal bool TryCommitIfCurrent(Predicate<ShardCapabilitySnapshot> isCurrent, Action install)
+    {
+        lock (_publication)
+        {
+            if (!isCurrent(Current))
+            {
+                return false;
+            }
+
+            install();
+            return true;
+        }
+    }
 
     /// <summary>Runs sweeps until <paramref name="stoppingToken"/> is cancelled.</summary>
     /// <param name="stoppingToken">Stops the loop, including a fetch in progress.</param>
@@ -106,9 +127,14 @@ public sealed class ShardCapabilityRefresher
                 entry = new ShardCapabilityEntry(Current.Shards[shard.Id].Evidence, e.Failure);
             }
 
-            // Check again in case the fetch completed despite cancellation.
-            stoppingToken.ThrowIfCancellationRequested();
-            Volatile.Write(ref _current, Current.With(shard.Id, entry));
+            // Fetching and classification are done; only the publication waits on the gate. The shutdown check follows the
+            // wait, immediately before publishing, so a result fetched despite cancellation (or while a commit held the gate
+            // across a shutdown) is still discarded.
+            lock (_publication)
+            {
+                stoppingToken.ThrowIfCancellationRequested();
+                Volatile.Write(ref _current, Current.With(shard.Id, entry));
+            }
         }
     }
 }
