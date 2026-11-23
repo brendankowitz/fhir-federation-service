@@ -100,6 +100,9 @@ internal sealed class PrimarySearch
     /// <summary>Gets the proxied read, built from the same enablement snapshot the search links and capability statement follow.</summary>
     public ProxiedReads Reads { get; }
 
+    /// <summary>Gets whether this search can execute admitted paged <c>_revinclude</c> requests.</summary>
+    internal bool ExecutesReverseIncludes => _revIncludes is not null;
+
     private PrimarySearch(
         SearchHostSettings settings,
         SearchCapabilities capabilities,

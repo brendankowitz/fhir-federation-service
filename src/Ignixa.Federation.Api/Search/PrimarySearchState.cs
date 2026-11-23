@@ -84,7 +84,8 @@ internal sealed class PrimarySearchState : IHealthCheck, IFederationCapabilityPu
 
         PrimarySearch search = PrimarySearch.Create(_services, _settings, options, capabilities, readableTypes);
         DateTimeOffset publishedAt = _services.GetRequiredService<TimeProvider>().GetUtcNow();
-        byte[] statement = MetadataEndpoints.WriteStatement(_settings.PublicBase, publishedAt, capabilities.Resources, search.Reads);
+        byte[] statement = MetadataEndpoints.WriteStatement(
+            _settings.PublicBase, publishedAt, capabilities.Resources, search.Reads, search.ExecutesReverseIncludes);
         return new Ready(search, statement, isCurrent);
     }
 

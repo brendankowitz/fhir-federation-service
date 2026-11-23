@@ -48,8 +48,14 @@ internal static class MetadataEndpoints
     /// <param name="publishedAt">The statement's date.</param>
     /// <param name="resources">The resources the view supports.</param>
     /// <param name="proxiedReads">The shared eligibility; a resource is given the <c>read</c> interaction exactly when it serves the type.</param>
+    /// <param name="executesReverseIncludes">Whether the prepared search executes the view's admitted reverse includes.</param>
     /// <returns>The serialized statement.</returns>
-    internal static byte[] WriteStatement(string publicBase, DateTimeOffset publishedAt, IReadOnlyList<ResourceSearchSupport> resources, ProxiedReads proxiedReads)
+    internal static byte[] WriteStatement(
+        string publicBase,
+        DateTimeOffset publishedAt,
+        IReadOnlyList<ResourceSearchSupport> resources,
+        ProxiedReads proxiedReads,
+        bool executesReverseIncludes)
     {
         using var buffer = new MemoryStream();
         using (var json = new Utf8JsonWriter(buffer))
@@ -75,7 +81,7 @@ internal static class MetadataEndpoints
                 json.WriteStartArray("resource");
                 foreach (ResourceSearchSupport resource in resources)
                 {
-                    WriteResource(json, resource, proxiedReads);
+                    WriteResource(json, resource, proxiedReads, executesReverseIncludes);
                 }
 
                 json.WriteEndArray();
@@ -89,7 +95,8 @@ internal static class MetadataEndpoints
         return buffer.ToArray();
     }
 
-    private static void WriteResource(Utf8JsonWriter json, ResourceSearchSupport resource, ProxiedReads proxiedReads)
+    private static void WriteResource(
+        Utf8JsonWriter json, ResourceSearchSupport resource, ProxiedReads proxiedReads, bool executesReverseIncludes)
     {
         json.WriteStartObject();
         json.WriteString("type", resource.Type.Value);
@@ -106,6 +113,17 @@ internal static class MetadataEndpoints
         json.WriteString("code", "search-type");
         json.WriteEndObject();
         json.WriteEndArray();
+
+        if (executesReverseIncludes && resource.SearchRevIncludes.Count != 0)
+        {
+            json.WriteStartArray("searchRevInclude");
+            foreach (string value in resource.SearchRevIncludes)
+            {
+                json.WriteStringValue(value);
+            }
+
+            json.WriteEndArray();
+        }
 
         if (resource.Parameters.Count != 0)
         {

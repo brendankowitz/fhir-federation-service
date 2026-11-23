@@ -1,17 +1,55 @@
 using System.Globalization;
 using System.Net;
 using System.Text.Json;
+using Ignixa.Federation.Api.Search;
 using Ignixa.Federation.Core.Identity;
 using Ignixa.Federation.Core.Search;
 using Ignixa.Federation.Core.Shards;
 using Ignixa.Federation.Tests.Integration.Search;
 using Ignixa.Specification.ValueSets.Normative;
+using Microsoft.Extensions.DependencyInjection;
 using Shouldly;
 
 namespace Ignixa.Federation.Tests.Integration.Metadata;
 
 public sealed class MetadataEndpointTests
 {
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task PublishesAdmittedReverseIncludesOnlyWhenResolverIsRegistered(bool registerResolver)
+    {
+        using var host = SearchHost.Start(setup =>
+        {
+            setup.Capabilities = SearchWorld.Capabilities(revInclude: true, organizationInclude: true, conditionRevInclude: true);
+            if (registerResolver)
+            {
+                setup.ConfigureServices = services =>
+                    services.AddSingleton<IRevIncludePageResolver>(new ScriptedRevIncludeResolver());
+            }
+        });
+
+        using HttpResponseMessage response = await GetAsync(host, "/metadata");
+        response.StatusCode.ShouldBe(HttpStatusCode.OK);
+        using JsonDocument document = await ReadAsync(response);
+        JsonElement[] resources = [.. document.RootElement.GetProperty("rest").EnumerateArray().ShouldHaveSingleItem()
+            .GetProperty("resource").EnumerateArray()];
+        JsonElement patient = resources.Single(r => r.GetProperty("type").GetString() == "Patient");
+        bool advertisesReverseIncludes = patient.TryGetProperty("searchRevInclude", out JsonElement reverseIncludes);
+        advertisesReverseIncludes.ShouldBe(registerResolver);
+        if (registerResolver)
+        {
+            reverseIncludes.EnumerateArray().Select(i => i.GetString()).ShouldBe(["Condition:subject", "Observation:subject"]);
+            patient.EnumerateObject().Select(p => p.Name).Where(name => name is "searchRevInclude" or "searchParam")
+                .ShouldBe(["searchRevInclude", "searchParam"]);
+        }
+
+        patient.TryGetProperty("searchInclude", out _).ShouldBeFalse();
+        resources.Single(r => r.GetProperty("type").GetString() == "Observation")
+            .TryGetProperty("searchRevInclude", out _).ShouldBeFalse();
+        host.Shards.Views.ShouldBeEmpty();
+    }
+
     [Fact]
     public async Task ConfiguredHostPublishesOnlyCommonSearchCapabilitiesWithoutCallingShards()
     {
