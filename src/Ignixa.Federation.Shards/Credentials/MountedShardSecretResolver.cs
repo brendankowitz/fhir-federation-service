@@ -12,10 +12,10 @@ namespace Ignixa.Federation.Shards.Credentials;
 /// <remarks>
 /// <para><b>Operator contract.</b> The root is a dedicated, local, read-only directory that only the operator can change:
 /// the operator controls the root, its ancestors, the name map and every leaf. Each leaf is a regular file holding exactly
-/// one secret. A symbolic link or other reparse point, a directory, a special file (device, pipe, socket), a network or
-/// pseudo file system and a mount of a single file are all outside the contract. The resolver refuses a leaf that
-/// reports itself as a directory or reparse point, before it opens it. That check is a best-effort guard against operator
-/// mistakes. It is <b>not</b> a race-safe provenance guarantee: the file is opened afterwards by path, the platform's open
+/// one secret. A symbolic link or other reparse point, a directory, a special file (device, pipe, socket), a network file
+/// system (including a mapped drive), a pseudo file system and a mount of a single file are all outside the contract.
+/// The resolver refuses a leaf that reports itself as a directory or reparse point before opening it. This best-effort
+/// guard against operator mistakes is <b>not</b> a race-safe provenance guarantee: the file is opened afterwards by path, the platform's open
 /// follows whatever is there at that moment, hard links and a directory that a writer can change are undetectable, and no
 /// claim is made that an arbitrary special file can be safely inspected. Do not point this at a directory an attacker can
 /// write. A secret-store volume that publishes leaves as links (some orchestrators do) must be projected into the dedicated
@@ -177,24 +177,29 @@ public sealed class MountedShardSecretResolver : IShardSecretResolver
 
     private static string NormalizeRoot(string root)
     {
-        // Windows also treats network and device paths as fully qualified. Require the ordinary drive form instead.
-        bool supportedRoot = OperatingSystem.IsWindows()
-            ? root.Length >= 3 && char.IsAsciiLetter(root[0]) && root[1] == ':' && root[2] is '\\' or '/'
-            : Path.IsPathFullyQualified(root);
+        bool windows = OperatingSystem.IsWindows();
+        bool supportedRoot = windows ? HasWindowsDriveRoot(root) : Path.IsPathFullyQualified(root);
         if (!supportedRoot || root.Any(char.IsControl))
         {
             throw RootRefused();
         }
 
+        string normalized;
         try
         {
-            return Path.GetFullPath(root);
+            normalized = Path.GetFullPath(root);
         }
         catch (Exception ex) when (ex is ArgumentException or NotSupportedException or IOException)
         {
             throw RootRefused();
         }
+
+        // Windows normalization can turn a drive-rooted spelling into a DOS device path.
+        return windows && !HasWindowsDriveRoot(normalized) ? throw RootRefused() : normalized;
     }
+
+    private static bool HasWindowsDriveRoot(string path) =>
+        path.Length >= 3 && char.IsAsciiLetter(path[0]) && path[1] == ':' && path[2] is '\\' or '/';
 
     private static ArgumentException RootRefused() =>
         new("The mount root must be a fully qualified local directory path.", "rootDirectory");

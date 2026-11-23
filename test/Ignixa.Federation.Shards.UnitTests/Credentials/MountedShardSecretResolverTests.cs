@@ -140,7 +140,13 @@ public sealed class MountedShardSecretResolverTests : IDisposable
     [InlineData("\\\\.\\C:\\dir")]
     [InlineData("\\??\\C:\\synthetic-mount")]
     [InlineData("C:synthetic-mount")]
-    public void AWindowsRootThatIsNotDriveRootedIsRefused(string root)
+    [InlineData("C:\\NUL")]
+    [InlineData("C:\\dir\\NUL")]
+    [InlineData("1:\\synthetic-mount")]
+    [InlineData("ab\\synthetic-mount")]
+    [InlineData("C:")]
+    [InlineData("\uFF23:\\synthetic-mount")]
+    public void AWindowsRootThatIsNotAnOrdinaryDrivePathIsRefused(string root)
     {
         Assert.SkipUnless(OperatingSystem.IsWindows(), "Drive, UNC and device roots are Windows path forms.");
 
