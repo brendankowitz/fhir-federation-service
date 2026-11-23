@@ -1,4 +1,5 @@
 #:project ../src/Ignixa.Federation.Core/Ignixa.Federation.Core.csproj
+#:project ../samples/Ignixa.Federation.SampleClient/Ignixa.Federation.SampleClient.csproj
 #:property PublishAot=false
 
 using System.Collections;
@@ -9,8 +10,10 @@ using Ignixa.Federation.Core.Configuration;
 var output = args[0];
 var source = $"https://github.com/brendankowitz/fhir-federation-service/blob/{args[1]}";
 var core = "src/Ignixa.Federation.Core";
-var comments = XDocument.Load(Path.ChangeExtension(typeof(FederationOptions).Assembly.Location, ".xml"))
+static Dictionary<string, XElement> LoadComments(Assembly assembly) =>
+    XDocument.Load(Path.ChangeExtension(assembly.Location, ".xml"))
     .Descendants("member").ToDictionary(e => (string)e.Attribute("name")!);
+var comments = LoadComments(typeof(FederationOptions).Assembly);
 
 string Render(XNode node) => node switch
 {
@@ -29,7 +32,7 @@ config.WriteLine($"""
     # Configuration reference
 
     These are defaults of new **Core options objects**, not a dump of a running host.
-    See [operator instructions](operator.md) for which settings are bound.
+    See [binding and validation](binding.md) for which settings are bound.
     Array index `0` below stands for any configured shard.
     [Options and validators]({source}/{core}/Configuration/FederationOptionsValidator.cs) · [registry checks]({source}/{core}/Shards/ShardRegistry.cs).
 
@@ -63,16 +66,27 @@ void WriteOptions(Type type, object defaults, string prefix)
 
 using var contracts = File.CreateText(Path.Combine(output, "contracts.md"));
 contracts.WriteLine("# Shard API reference\n\nThese are .NET integration contracts, **not HTTP routes**. Signatures and summaries come from the Core assembly's XML documentation.");
-foreach (var type in new[] { typeof(Ignixa.Federation.Core.Shards.IShardClient), typeof(Ignixa.Federation.Core.Shards.ShardRegistry) })
+WriteTypes(contracts, [typeof(Ignixa.Federation.Core.Shards.IShardClient), typeof(Ignixa.Federation.Core.Shards.ShardRegistry)], comments, $"{core}/Shards");
+
+var sample = Assembly.Load("Ignixa.Federation.SampleClient");
+string[] clientTypes = ["FederationClient", "FederationClientOptions", "ShardReadOptions", "SearchPage", "FederatedEntry", "EntryMode", "SearchResultSet", "OperationIssue", "FederationRequestException", "SearchExpiredException", "LinkRejectedException"];
+using var client = File.CreateText(Path.Combine(output, "client-api.md"));
+client.WriteLine("# Sample client API reference\n\nThese are internal types in the [sample source](" + source + "/samples/Ignixa.Federation.SampleClient/Ignixa.Federation.SampleClient.csproj), not a published SDK. See [using the CLI and sample code](sample-client.md) for complete examples. This reference lists members with XML summaries; consult each source link for the full declaration.");
+WriteTypes(client, clientTypes.Select(name => sample.GetType($"{sample.GetName().Name}.{name}", throwOnError: true)!), LoadComments(sample), "samples/Ignixa.Federation.SampleClient");
+
+void WriteTypes(TextWriter writer, IEnumerable<Type> types, Dictionary<string, XElement> xml, string folder)
 {
-    var name = type.FullName!;
-    var publicMembers = type.GetMembers(BindingFlags.DeclaredOnly | BindingFlags.Public | BindingFlags.Instance | BindingFlags.Static)
-        .Select(member => member.Name).ToHashSet(StringComparer.Ordinal);
-    contracts.WriteLine($"\n## {type.Name}\n\n[Source]({source}/{core}/Shards/{type.Name}.cs)\n\n{Summary(comments[$"T:{name}"])}");
-    foreach (var (id, member) in comments.Where(kv => kv.Key[2..].StartsWith(name + ".", StringComparison.Ordinal)))
+    foreach (var type in types)
     {
-        var signature = id[(name.Length + 3)..];
-        if (publicMembers.Contains(signature.Split('(')[0]))
-            contracts.WriteLine($"\n- `{signature}` — {Summary(member)}");
+        var name = type.FullName!;
+        var publicMembers = type.GetMembers(BindingFlags.DeclaredOnly | BindingFlags.Public | BindingFlags.Instance | BindingFlags.Static)
+            .Select(member => member.Name).ToHashSet(StringComparer.Ordinal);
+        writer.WriteLine($"\n## {type.Name}\n\n[Source]({source}/{folder}/{type.Name}.cs)\n\n{Summary(xml[$"T:{name}"])}");
+        foreach (var (id, member) in xml.Where(kv => kv.Key[2..].StartsWith(name + ".", StringComparison.Ordinal)))
+        {
+            var signature = id[(name.Length + 3)..];
+            if (publicMembers.Contains(signature.Split('(')[0]) && member.Element("summary") is not null)
+                writer.WriteLine($"\n- `{signature}` — {Summary(member)}");
+        }
     }
 }

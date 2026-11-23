@@ -203,5 +203,3 @@ Report vulnerabilities privately. See [SECURITY.md](SECURITY.md).
 ## License
 
 Ignixa Federation is released under the [MIT License](LICENSE).
-
-[Server and client documentation](https://brendankowitz.github.io/fhir-federation-service/)

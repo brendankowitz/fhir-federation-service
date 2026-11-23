@@ -9,8 +9,9 @@ try {
     if (Test-Path $stage) { Remove-Item -LiteralPath $stage -Recurse -Force }
     New-Item -Path $stage -ItemType Directory -Force | Out-Null
     Copy-Item docs/site/docfx.json, docs/site/toc.yml $stage
-    foreach ($page in @('docs/site/index.md', 'docs/site/operator.md', 'docs/site/status.md', 'docs/guides/client-developer-guide.md')) {
-        (Get-Content $page -Raw).Replace('/REVISION', "/$revision") |
+    $pages = @(Get-ChildItem -File docs/site/*.md) + @(Get-Item docs/guides/client-developer-guide.md)
+    foreach ($page in $pages) {
+        (Get-Content $page -Raw).Replace('/REVISION', "/$revision").Replace('](../site/', '](') |
             Set-Content (Join-Path $stage (Split-Path $page -Leaf)) -NoNewline
     }
     & $Dotnet tool restore
