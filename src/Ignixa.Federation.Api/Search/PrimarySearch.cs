@@ -107,6 +107,7 @@ internal sealed class PrimarySearch
         IShardClientFactory clients,
         FrozenDictionary<ShardId, CountDialect>? countDialects,
         IShardReadBinding? readBinding,
+        IReadOnlySet<ResourceType>? readableTypes,
         IRevIncludePageResolver? revIncludes,
         IDistributedForwardSearch? forward,
         IDataProtectionProvider protection,
@@ -118,7 +119,12 @@ internal sealed class PrimarySearch
         _settings = settings;
         _capabilities = capabilities;
         _registry = capabilities.Registry;
-        Reads = new ProxiedReads(settings, _registry, options.ProxyReads ? readBinding : null, capabilities.Resources.Select(resource => resource.Type));
+        IEnumerable<ResourceType> searchable = capabilities.Resources.Select(resource => resource.Type);
+        Reads = new ProxiedReads(
+            settings,
+            _registry,
+            options.ProxyReads ? readBinding : null,
+            readableTypes is null ? searchable : searchable.Where(readableTypes.Contains));
         _limits = options.Limits;
         _timeouts = options.Timeouts;
         _planner = new SearchPlanner(capabilities, options.ChainResolution, options.Limits);
@@ -150,12 +156,21 @@ internal sealed class PrimarySearch
     /// <param name="settings">The validated host settings.</param>
     /// <param name="options">The <c>Federation</c> options bound from the startup snapshot; checked here against the view's profiles.</param>
     /// <param name="capabilities">The view this search plans against; the same instance the capability statement describes.</param>
+    /// <param name="readableTypes">
+    /// The proven-readable types that limit the owner-qualified read to searchable types in the set, or <see langword="null"/>
+    /// to serve every searchable type.
+    /// </param>
     /// <returns>The search.</returns>
     /// <exception cref="InvalidOperationException">
     /// No transport is registered, the <c>Federation</c> options are invalid, or its shards do not describe
     /// exactly the view's registry. Messages carry only configuration paths.
     /// </exception>
-    public static PrimarySearch Create(IServiceProvider services, SearchHostSettings settings, FederationOptions options, SearchCapabilities capabilities)
+    public static PrimarySearch Create(
+        IServiceProvider services,
+        SearchHostSettings settings,
+        FederationOptions options,
+        SearchCapabilities capabilities,
+        IReadOnlySet<ResourceType>? readableTypes = null)
     {
         IShardClientFactory clients = services.GetService<IShardClientFactory>()
             ?? throw new InvalidOperationException("Search is configured but no shard transport (IShardClientFactory) is registered.");
@@ -187,6 +202,7 @@ internal sealed class PrimarySearch
             clients,
             CaptureCountDialects(capabilities.Registry, services.GetService<IReadOnlyDictionary<ShardId, CountDialect>>()),
             services.GetService<IShardReadBinding>(),
+            readableTypes,
             services.GetService<IRevIncludePageResolver>(),
             services.GetService<IDistributedForwardSearch>(),
             services.GetRequiredService<IDataProtectionProvider>(),

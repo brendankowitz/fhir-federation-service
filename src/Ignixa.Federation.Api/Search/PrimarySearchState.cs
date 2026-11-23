@@ -1,5 +1,6 @@
 using Ignixa.Federation.Api.Metadata;
 using Ignixa.Federation.Core.Configuration;
+using Ignixa.Federation.Core.Identity;
 using Ignixa.Federation.Core.Search;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
 
@@ -65,9 +66,13 @@ internal sealed class PrimarySearchState : IHealthCheck, IFederationCapabilityPu
     /// </summary>
     /// <param name="capabilities">The view to build from.</param>
     /// <param name="isCurrent">The evidence that the view is still the one to serve; see <see cref="Current"/> for its contract.</param>
+    /// <param name="readableTypes">
+    /// The types with proven owner-qualified reads, or <see langword="null"/> for a static or manual view, whose searchable
+    /// types are all readable. The read serves only searchable types in this set, frozen into the bundle.
+    /// </param>
     /// <returns>The prepared bundle; <see cref="Install"/> makes it visible.</returns>
     /// <exception cref="InvalidOperationException">Search cannot be built (see <see cref="PrimarySearch.Create"/>); nothing is installed.</exception>
-    internal Ready Prepare(SearchCapabilities capabilities, Func<bool> isCurrent)
+    internal Ready Prepare(SearchCapabilities capabilities, Func<bool> isCurrent, IReadOnlySet<ResourceType>? readableTypes = null)
     {
         // Bound per build from the startup copy, so a malformed value fails here rather than when the host starts.
         var options = new FederationOptions();
@@ -77,7 +82,7 @@ internal sealed class PrimarySearchState : IHealthCheck, IFederationCapabilityPu
             snapshot.Bind(options);
         }
 
-        PrimarySearch search = PrimarySearch.Create(_services, _settings, options, capabilities);
+        PrimarySearch search = PrimarySearch.Create(_services, _settings, options, capabilities, readableTypes);
         DateTimeOffset publishedAt = _services.GetRequiredService<TimeProvider>().GetUtcNow();
         byte[] statement = MetadataEndpoints.WriteStatement(_settings.PublicBase, publishedAt, capabilities.Resources, search.Reads);
         return new Ready(search, statement, isCurrent);

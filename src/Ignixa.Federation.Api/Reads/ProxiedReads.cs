@@ -49,7 +49,7 @@ internal sealed class ProxiedReads
     /// <param name="settings">The validated host settings.</param>
     /// <param name="registry">The current tenant's registry.</param>
     /// <param name="binding">The registered binding when the proxy is enabled by configuration; otherwise <see langword="null"/>.</param>
-    /// <param name="publishedTypes">The resource types of the view's published type intersection, the only types the read serves.</param>
+    /// <param name="publishedTypes">The view's published types that the read serves: all of them, or only those also proven readable.</param>
     public ProxiedReads(SearchHostSettings settings, ShardRegistry registry, IShardReadBinding? binding, IEnumerable<ResourceType> publishedTypes)
     {
         _settings = settings;
