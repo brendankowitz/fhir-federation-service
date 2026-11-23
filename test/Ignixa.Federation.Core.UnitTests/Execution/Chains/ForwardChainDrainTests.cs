@@ -220,6 +220,52 @@ public sealed class ForwardChainDrainTests
         client.InFlight.ShouldBe(0);
     }
 
+    [Fact]
+    public async Task CallerCancellationWhileJoiningSpeculation_WinsOverTheWitnessFailure()
+    {
+        ShardRegistry registry = Registry();
+        var client = new FakeShardClient();
+        using var caller = CancellationTokenSource.CreateLinkedTokenSource(Token);
+        var siblingStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var joinStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseSibling = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var gateTimeout = TimeSpan.FromSeconds(10);
+
+        client.OnSearch(East, async (_, _) =>
+        {
+            await siblingStarted.Task.WaitAsync(gateTimeout, Token);
+            return Witness(East, Practitioner, null, "wrong-type");
+        });
+        client.OnSearch(West, async (_, ct) =>
+        {
+            using CancellationTokenRegistration registration = ct.Register(() => joinStarted.TrySetResult());
+            siblingStarted.SetResult();
+            await releaseSibling.Task;
+            return Witness(West, Patient, null);
+        });
+
+        var limits = new LimitOptions { MaxParallelBackendCalls = 2 };
+        var timeouts = new TimeoutOptions { ChainSubquery = TimeSpan.FromMinutes(1), BackendCall = TimeSpan.FromMinutes(1) };
+        Task<ForwardChainResolution> resolving = Resolver(client, registry, limits, timeouts)
+            .ResolveAsync(Plan(registry, Chain), caller.Token);
+        try
+        {
+            // Cleanup cancels the speculative token before waiting for the still-running sibling.
+            await joinStarted.Task.WaitAsync(gateTimeout, Token);
+            await caller.CancelAsync().WaitAsync(gateTimeout, Token);
+            resolving.IsCompleted.ShouldBeFalse();
+        }
+        finally
+        {
+            releaseSibling.TrySetResult();
+        }
+
+        OperationCanceledException thrown = await Should.ThrowAsync<OperationCanceledException>(
+            () => resolving.WaitAsync(gateTimeout, Token));
+        thrown.CancellationToken.ShouldBe(caller.Token);
+        client.InFlight.ShouldBe(0);
+    }
+
     [Theory]
     [InlineData(LateOutcome.Cancelled)]
     [InlineData(LateOutcome.Page)]

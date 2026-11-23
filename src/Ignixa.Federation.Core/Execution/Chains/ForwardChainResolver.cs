@@ -91,7 +91,7 @@ public sealed class ForwardChainResolver
     /// asks for, without <c>_count</c> among the parameters), fits the transport. It is given every witness request before
     /// any is sent and every primary request after the witness searches; a <see langword="false"/> refuses the plan with
     /// <see cref="ForwardChainRefusalReason.RequestTooLarge"/>. It must be pure and safe to call concurrently; an exception
-    /// it throws propagates to the caller of <see cref="ResolveAsync"/>.
+    /// it throws propagates to the caller of <see cref="ResolveAsync"/> unless the caller has cancelled.
     /// </param>
     /// <exception cref="ArgumentNullException">A required argument is <see langword="null"/>.</exception>
     /// <exception cref="ArgumentOutOfRangeException">A limit or timeout is not positive.</exception>
@@ -158,9 +158,18 @@ public sealed class ForwardChainResolver
         }
 
         cancellationToken.ThrowIfCancellationRequested();
-        ForwardChainResolution resolution = await ResolveCoreAsync(plan, readableTypes, new Allowance(fetchBudget, payloadByteBudget), cancellationToken);
+        ForwardChainResolution resolution;
+        try
+        {
+            resolution = await ResolveCoreAsync(plan, readableTypes, new Allowance(fetchBudget, payloadByteBudget), cancellationToken);
+        }
+        catch (Exception) when (cancellationToken.IsCancellationRequested)
+        {
+            // A witness failure can be pending while the drain joins speculative calls.
+            cancellationToken.ThrowIfCancellationRequested();
+            throw;
+        }
 
-        // Every witness call has ended by now; a caller that cancelled meanwhile receives its cancellation, not an outcome.
         cancellationToken.ThrowIfCancellationRequested();
         return resolution;
     }
