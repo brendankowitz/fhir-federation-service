@@ -143,7 +143,9 @@ version 15.0 instance) and `sqlcmd` on `PATH`, and the built artifacts above. Th
 `FedProto…` LocalDB instances and `FedProtoWest_…` catalogs and read the real inventory before and after, so run
 them only on a machine where that is acceptable. The acceptance tests use
 an independent `curl` witness to read the shards, then check teardown against canary LocalDB instances and
-Developer catalogs.
+Developer catalogs. On timeout, the test harness asks its launcher to stop and gives it up to 750 seconds
+to finish in-flight work and clean up before force-stopping it. A forced stop fails the test and reports that
+cleanup may be incomplete.
 
 ```powershell
 # Default: no SQL or data access

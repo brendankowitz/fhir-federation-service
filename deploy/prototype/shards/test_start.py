@@ -155,29 +155,48 @@ def preserved_signals():
             signal.signal(sig, handler)
 
 
-LAUNCHER_STOP_SECONDS = 120  # bounded graceful teardown: the launcher's own cleanup stops hosts and removes SQL state
+# Allow in-flight verification (4 x 75s), two host stops (2 x 2 x 15s), west probe/drop (2 x 60s),
+# east list/stop/delete (30 + 90 + 90s), directory retries (4s), and process overhead.
+LAUNCHER_STOP_SECONDS = 750
 
 
 def stop_launcher(proc):
-    """Give the launcher time to clean up its resources; force only the process this test holds a handle to."""
-    if proc.poll() is not None:
-        return
+    """Request shutdown and return the exit code, forcing only the owned launcher after the full grace period."""
+    status = proc.poll()
+    if status is not None:
+        return status
+    signal_failure = None
     try:
         proc.send_signal(signal.CTRL_BREAK_EVENT)
     except OSError as error:
-        if proc.poll() is not None:
-            return  # it exited between the check and the signal
-        reason = error
-    else:
+        # A failed signal does not tell us whether the launcher is already cleaning up.
+        signal_failure = error
+    try:
+        return proc.wait(timeout=LAUNCHER_STOP_SECONDS)
+    except subprocess.TimeoutExpired as timeout:
+        status = proc.poll()
+        if status is not None:
+            return status
         try:
-            proc.wait(timeout=LAUNCHER_STOP_SECONDS)
-            return
-        except subprocess.TimeoutExpired as error:
-            reason = error
-    if proc.poll() is None:
-        proc.kill()
-        proc.wait(timeout=30)
-        raise RuntimeError(f"launcher {proc.pid} was force-stopped; shard cleanup may be incomplete") from reason
+            proc.kill()
+            proc.wait(timeout=30)
+        except (OSError, subprocess.TimeoutExpired) as error:
+            raise RuntimeError(f"could not force-stop launcher {proc.pid}; shard cleanup may be incomplete") from error
+        raise RuntimeError(f"launcher {proc.pid} was force-stopped; shard cleanup may be incomplete") from (signal_failure or timeout)
+
+
+def run_launcher_verify(timeout=900):
+    """Run the resource-owning verify mode without pipe backpressure or timeout-induced automatic kills."""
+    args = launcher_args("--verify")
+    with tempfile.TemporaryFile(mode="w+t") as stdout, tempfile.TemporaryFile(mode="w+t") as stderr:
+        proc = subprocess.Popen(args, stdout=stdout, stderr=stderr, creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
+        try:
+            status = proc.wait(timeout=timeout)
+        finally:
+            stop_launcher(proc)
+        stdout.seek(0)
+        stderr.seek(0)
+        return subprocess.CompletedProcess(args, status, stdout.read(), stderr.read())
 
 
 class RunningLauncher:
@@ -207,10 +226,9 @@ class RunningLauncher:
         return self._stderr.read().decode(errors="replace")
 
     def interrupt(self):
-        self.proc.send_signal(signal.CTRL_BREAK_EVENT)
-        return self.wait()
+        return stop_launcher(self.proc)
 
-    def wait(self, timeout=180):
+    def wait(self, timeout=LAUNCHER_STOP_SECONDS):
         try:
             return self.proc.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
@@ -1149,6 +1167,40 @@ class StartupInterruptTests(unittest.TestCase):
 
 
 class LauncherTeardownTests(unittest.TestCase):
+    def test_slow_cleanup_finishes_without_force_even_if_the_stop_signal_fails(self):
+        for signal_failure in (False, True):
+            with self.subTest(signal_failure=signal_failure):
+                proc = mock.Mock(pid=1)
+                proc.send_signal.side_effect = OSError("signalling failed") if signal_failure else None
+                elapsed = 0
+                stopped = False
+                cleanup_ends_at = 690  # up to 300s in-flight verification plus both hosts and both databases
+                exit_code = 130
+                proc.poll.side_effect = lambda: exit_code if stopped or elapsed >= cleanup_ends_at else None
+
+                def kill():
+                    nonlocal stopped
+                    stopped = True
+
+                def wait(*, timeout):
+                    nonlocal elapsed
+                    if stopped:
+                        return 1
+                    elapsed = min(elapsed + timeout, cleanup_ends_at)
+                    if elapsed < cleanup_ends_at:
+                        raise subprocess.TimeoutExpired("launcher", timeout)
+                    return exit_code
+
+                proc.kill.side_effect = kill
+                proc.wait.side_effect = wait
+                try:
+                    result = stop_launcher(proc)
+                except RuntimeError as error:
+                    self.fail(f"force-stopped a launcher still within its cleanup budget: {error}")
+                self.assertEqual(exit_code, result)
+                self.assertEqual(cleanup_ends_at, elapsed)
+                proc.kill.assert_not_called()
+
     def test_close_gives_the_owned_launcher_a_bounded_grace_period_before_force(self):
         timeout = subprocess.TimeoutExpired("launcher", LAUNCHER_STOP_SECONDS)
         for graceful_result in (0, timeout):
@@ -1170,20 +1222,32 @@ class LauncherTeardownTests(unittest.TestCase):
                 self.assertEqual(expected, proc.mock_calls)
                 self.assertTrue(proc.stdout.closed and run._stderr.closed)
 
-    def test_signal_error_does_not_skip_stopping_a_still_running_launcher(self):
-        for exited in (True, False):
-            with self.subTest(exited=exited):
-                proc = mock.Mock(pid=1)
-                proc.poll.return_value = None
-                proc.send_signal.side_effect = OSError("signalling failed")
-                if exited:
-                    proc.poll.side_effect = [None, 0]
-                    stop_launcher(proc)
-                    proc.kill.assert_not_called()
-                else:
-                    with self.assertRaisesRegex(RuntimeError, "cleanup may be incomplete"):
-                        stop_launcher(proc)
-                    proc.kill.assert_called_once_with()
+    def test_signal_error_can_force_only_after_the_launcher_exhausts_its_grace_period(self):
+        proc = mock.Mock(pid=1)
+        proc.poll.return_value = None
+        proc.send_signal.side_effect = OSError("signalling failed")
+        proc.wait.side_effect = [subprocess.TimeoutExpired("launcher", LAUNCHER_STOP_SECONDS), 1]
+        with self.assertRaisesRegex(RuntimeError, "cleanup may be incomplete"):
+            stop_launcher(proc)
+        self.assertEqual(
+            [mock.call.poll(), mock.call.send_signal(signal.CTRL_BREAK_EVENT), mock.call.wait(timeout=LAUNCHER_STOP_SECONDS),
+             mock.call.poll(), mock.call.kill(), mock.call.wait(timeout=30)],
+            proc.mock_calls)
+
+    def test_verify_timeout_waits_for_cleanup_before_raising_the_original_timeout(self):
+        proc = mock.Mock(pid=1)
+        proc.poll.return_value = None
+        timed_out = subprocess.TimeoutExpired("launcher", 1)
+        proc.wait.side_effect = [timed_out, 130]
+        with mock.patch.object(subprocess, "Popen", return_value=proc) as launch:
+            with self.assertRaises(subprocess.TimeoutExpired) as raised:
+                run_launcher_verify(timeout=1)
+        self.assertIs(timed_out, raised.exception)
+        self.assertIn("--verify", launch.call_args.args[0])
+        self.assertTrue(launch.call_args.kwargs["creationflags"] & subprocess.CREATE_NEW_PROCESS_GROUP)
+        proc.send_signal.assert_called_once_with(signal.CTRL_BREAK_EVENT)
+        self.assertEqual([mock.call(timeout=1), mock.call(timeout=LAUNCHER_STOP_SECONDS)], proc.wait.call_args_list)
+        proc.kill.assert_not_called()
 
     def test_a_launcher_that_cannot_be_started_leaves_no_open_handle(self):
         handle = io.BytesIO()
@@ -1421,7 +1485,7 @@ class NativeAcceptanceTests(unittest.TestCase):
             self.assertIn(canary_catalog, databases)
             for attempt in (1, 2):
                 with self.subTest(attempt=attempt):
-                    done = subprocess.run(launcher_args("--verify"), capture_output=True, text=True, timeout=900)
+                    done = run_launcher_verify()
                     self.assertEqual(0, done.returncode, done.stderr[-800:])
                     lines = done.stdout.splitlines()
                     self.assertEqual(1, len(lines), done.stdout)
@@ -1447,7 +1511,7 @@ class NativeAcceptanceTests(unittest.TestCase):
             self.assertEqual(1, len(victims), "expected exactly this launcher's Microsoft child")
             self.assertEqual(1, len(owned_hosts(rows, IGNIXA_DLL, run.proc.pid)), "expected exactly this launcher's Ignixa child")
             os.kill(victims[0], signal.SIGTERM)  # a pid proven to be this test's own launcher's child
-            self.assertNotEqual(0, run.wait(timeout=120))
+            self.assertNotEqual(0, run.wait())
             self.assertIn("exited", run.stderr())
         finally:
             run.close()
@@ -1497,21 +1561,15 @@ class NativeAcceptanceTests(unittest.TestCase):
                             hosts = dotnet_processes()
                             self.assertEqual([], owned_hosts(hosts, IGNIXA_DLL, proc.pid) + owned_hosts(hosts, MICROSOFT_DLL, proc.pid),
                                              "no host may have started at the west barrier")
-                        proc.send_signal(signal.CTRL_BREAK_EVENT)  # this launcher's own process group only
-                        self.assertEqual(130, proc.wait(timeout=240))
+                        self.assertEqual(130, stop_launcher(proc))
                         self.assertEqual("", proc.stdout.read(), "no endpoint may be advertised")
                     finally:
-                        if proc.poll() is None:
-                            # A failed check must still let the launcher clean up what it holds; kill is the last resort.
-                            proc.send_signal(signal.CTRL_BREAK_EVENT)
-                            try:
-                                proc.wait(timeout=240)
-                            except subprocess.TimeoutExpired:
-                                proc.kill()
-                                proc.wait(timeout=30)
-                        reader.join(timeout=30)
-                        proc.stdout.close()
-                        proc.stderr.close()
+                        try:
+                            stop_launcher(proc)
+                        finally:
+                            reader.join(timeout=30)
+                            proc.stdout.close()
+                            proc.stderr.close()
                     self.assertNotIn("Traceback", "".join(lines))
                 self.assertEqual(instances, localdb_instances())
                 self.assertEqual(databases, developer_databases())
