@@ -87,6 +87,18 @@ internal static class SearchWorld
     /// Whether <c>Organization</c> is searchable by <c>name</c> and <c>Patient.organization:Organization</c> is certified for native
     /// forward chains.
     /// </param>
+    /// <param name="revInclude">
+    /// Whether to certify <c>Observation.subject:Patient</c> for <c>_revinclude</c> source searches under the registry's version and
+    /// advertise <c>Patient</c>'s <c>searchRevInclude</c> <c>Observation:subject</c>.
+    /// </param>
+    /// <param name="organizationInclude">
+    /// Whether <c>Patient.organization:Organization</c> is certified for <c>_include</c> extraction and advertised, so a
+    /// true include is a valid but unexecuted request.
+    /// </param>
+    /// <param name="conditionRevInclude">
+    /// Whether <c>Condition.subject:Patient</c> is a second <c>_revinclude</c> source, advertised on <c>Patient</c>, so a request can
+    /// mix an authorized and a denied include type. Used together with <paramref name="revInclude"/>.
+    /// </param>
     public static SearchCapabilities Capabilities(
         bool patientName = true,
         IEnumerable<string>? exactCountShapes = null,
@@ -97,7 +109,10 @@ internal static class SearchWorld
         ShardRegistry? registry = null,
         bool forwardChain = false,
         bool distributedForward = false,
-        bool organizationForward = false)
+        bool organizationForward = false,
+        bool revInclude = false,
+        bool organizationInclude = false,
+        bool conditionRevInclude = false)
     {
         registry ??= Registry;
         List<SearchParameterSupport> patientParameters =
@@ -110,7 +125,7 @@ internal static class SearchWorld
             patientParameters.Add(new("name", SearchParamType.String, null));
         }
 
-        if (organizationMissing || organizationForward)
+        if (organizationMissing || organizationForward || organizationInclude)
         {
             patientParameters.Add(new("organization", SearchParamType.Reference, null));
         }
@@ -133,13 +148,19 @@ internal static class SearchWorld
             subject |= ReferencePathOperations.DistributedForward;
         }
 
+        if (revInclude)
+        {
+            subject |= ReferencePathOperations.RevIncludeSearch;
+        }
+
         if (subject != ReferencePathOperations.None)
         {
             observationParameters.Add(new("subject", SearchParamType.Reference, null));
             ReferencePath subjectPath = new(ResourceType.Parse("Observation"), "subject", ResourceType.Parse("Patient"));
-            paths.Add(distributedForward
+            paths.Add(distributedForward || revInclude
                 ? new(subjectPath, subject, ReferenceSearchForms.Relative, ReferenceSearchForms.CanonicalAbsolute, registry.Version,
-                    ["Observation?@Observation.subject:Patient"])
+                    distributedForward ? ["Observation?@Observation.subject:Patient"] : null,
+                    revInclude ? "Observation?@Observation.subject:Patient" : null)
                 : new(subjectPath, subject, ReferenceSearchForms.None, ReferenceSearchForms.None));
         }
 
@@ -149,20 +170,48 @@ internal static class SearchWorld
         ];
         if (patient)
         {
-            resources.Insert(0, new(ResourceType.Parse("Patient"), patientParameters, [], []));
+            List<string> revIncludes = [];
+            if (revInclude)
+            {
+                revIncludes.Add("Observation:subject");
+            }
+
+            if (conditionRevInclude)
+            {
+                revIncludes.Add("Condition:subject");
+            }
+
+            resources.Insert(0, new(ResourceType.Parse("Patient"), patientParameters, organizationInclude ? ["Patient:organization"] : [], revIncludes));
         }
 
-        if (organizationForward)
+        if (conditionRevInclude)
         {
-            resources.Add(new(ResourceType.Parse("Organization"), [new("name", SearchParamType.String, null)], [], []));
+            resources.Add(new(ResourceType.Parse("Condition"),
+                [new("_id", SearchParamType.Token, null), new("subject", SearchParamType.Reference, null)], [], []));
+            paths.Add(new(new ReferencePath(ResourceType.Parse("Condition"), "subject", ResourceType.Parse("Patient")),
+                ReferencePathOperations.RevIncludeSearch, ReferenceSearchForms.Relative, ReferenceSearchForms.CanonicalAbsolute,
+                registry.Version, null, "Condition?@Condition.subject:Patient"));
+        }
+
+        if (organizationForward || organizationInclude)
+        {
+            List<SearchParameterSupport> organizationParameters = [new("name", SearchParamType.String, null)];
+            if (organizationInclude)
+            {
+                organizationParameters.Add(new("_id", SearchParamType.Token, null));
+            }
+
+            resources.Add(new(ResourceType.Parse("Organization"), organizationParameters, [], []));
+            ReferencePathOperations organization = (organizationForward ? ReferencePathOperations.NativeForward : ReferencePathOperations.None)
+                | (organizationInclude ? ReferencePathOperations.IncludeExtraction : ReferencePathOperations.None);
             paths.Add(new(new ReferencePath(ResourceType.Parse("Patient"), "organization", ResourceType.Parse("Organization")),
-                ReferencePathOperations.NativeForward, ReferenceSearchForms.None, ReferenceSearchForms.None));
+                organization, ReferenceSearchForms.None, ReferenceSearchForms.None));
         }
 
         SearchCertification Certify(IEnumerable<string> countShapes) => new(
             new Dictionary<SearchParamType, IReadOnlyCollection<string>> { [SearchParamType.String] = ["exact"], [SearchParamType.Reference] = ["missing"] },
             [SearchParamType.String, SearchParamType.Token],
-            distributedForward ? [SearchParamType.String, SearchParamType.Token, SearchParamType.Reference] : [SearchParamType.String, SearchParamType.Token],
+            distributedForward || revInclude || conditionRevInclude ? [SearchParamType.String, SearchParamType.Token, SearchParamType.Reference] : [SearchParamType.String, SearchParamType.Token],
             countShapes,
             paths);
 

@@ -36,7 +36,9 @@ namespace Ignixa.Federation.Api.Search;
 /// target type. Native forward chains do not combine with reverse chains in one search.
 /// Ordinary count-only searches require exact shape proof and an explicit dialect for each shard. Count-only searches
 /// with admitted distributed reverse chains resolve witnesses and then count every owner's generated request through the
-/// same exact executor, within the remaining physical allowance. Other chains, includes, sort and paged totals are not executed.
+/// same exact executor, within the remaining physical allowance. Ordinary unsorted paged <c>_revinclude</c> is staged by
+/// the optional <see cref="IRevIncludePageResolver"/> from exactly the emitted page; it does not combine with a chain, a
+/// total, a count, a sort or <c>_include</c>. Other chains, includes, sort and paged totals are not executed.
 /// </para>
 /// <para>
 /// <b>Continuations.</b> A token carries the stored original raw query and the executor's snapshot. Redemption
@@ -89,6 +91,7 @@ internal sealed class PrimarySearch
     private readonly int _maxRequestLineBytes;
     private readonly FrozenDictionary<string, string> _shardRevisions;
     private readonly FrozenDictionary<ShardId, CountDialect>? _countDialects;
+    private readonly IRevIncludePageResolver? _revIncludes;
 
     /// <summary>Gets the proxied read, built from the same enablement snapshot the search links and capability statement follow.</summary>
     public ProxiedReads Reads { get; }
@@ -100,10 +103,12 @@ internal sealed class PrimarySearch
         IShardClientFactory clients,
         FrozenDictionary<ShardId, CountDialect>? countDialects,
         IShardReadBinding? readBinding,
+        IRevIncludePageResolver? revIncludes,
         IDataProtectionProvider protection,
         TimeProvider time,
         int maxRequestLineBytes)
     {
+        _revIncludes = revIncludes;
         _settings = settings;
         _capabilities = capabilities;
         _registry = capabilities.Registry;
@@ -132,6 +137,8 @@ internal sealed class PrimarySearch
     /// to <see cref="CountDialect"/> for that view. A missing or invalid map disables count execution, including distributed
     /// reverse-chain counts. It also gates paged reverse-chain entry and continuation redemption: those paths only need the
     /// executor's explicit dialect map wired, to measure generated requests, and never execute counts.
+    /// Paged <c>_revinclude</c> additionally requires an explicitly registered <see cref="IRevIncludePageResolver"/>;
+    /// without one such a search is a valid but unsupported request.
     /// </remarks>
     /// <param name="services">The application services.</param>
     /// <param name="settings">The validated host settings.</param>
@@ -176,6 +183,7 @@ internal sealed class PrimarySearch
             clients,
             CaptureCountDialects(capabilities.Registry, services.GetService<IReadOnlyDictionary<ShardId, CountDialect>>()),
             services.GetService<IShardReadBinding>(),
+            services.GetService<IRevIncludePageResolver>(),
             services.GetRequiredService<IDataProtectionProvider>(),
             services.GetRequiredService<TimeProvider>(),
             services.GetRequiredService<IOptions<KestrelServerOptions>>().Value.Limits.MaxRequestLineSize);
@@ -334,9 +342,16 @@ internal sealed class PrimarySearch
             return UnsupportedShape();
         }
 
+        // Fixed by grants and plan, so a host without the resolver refuses before any client or shard exists.
+        RevIncludeStage? includes = RevIncludeStage.Create(plan, access);
+        if (includes is not null && _revIncludes is null)
+        {
+            return UnsupportedShape();
+        }
+
         if (sources.Length == 0)
         {
-            return await ExecuteAsync(type, binding, prepared, predecessor: null, resumeFrom: null, budget);
+            return await ExecuteAsync(type, binding, prepared, predecessor: null, resumeFrom: null, budget, includes: includes);
         }
 
         return _countDialects is { } dialects
@@ -567,7 +582,14 @@ internal sealed class PrimarySearch
                 : SearchOutcome.Invalid("The continuation is not valid.");
         }
 
-        return await ExecuteAsync(type, binding, prepared, predecessor, snapshot.Continuation, budget);
+        // Genuine plan, proof or registry drift was decided above; a host that cannot stage includes is merely unconfigured.
+        RevIncludeStage? includes = RevIncludeStage.Create(plan, access);
+        if (includes is not null && _revIncludes is null)
+        {
+            return UnsupportedShape();
+        }
+
+        return await ExecuteAsync(type, binding, prepared, predecessor, snapshot.Continuation, budget, includes: includes);
     }
 
     /// <summary>Runs the shards for one page, links its successor, and materializes the response within the deadline.</summary>
@@ -580,15 +602,25 @@ internal sealed class PrimarySearch
         UnsortedContinuation? resumeFrom,
         RequestBudget budget,
         IShardClient? client = null,
-        int? remainingFetches = null)
+        int? remainingFetches = null,
+        RevIncludeStage? includes = null)
     {
         // A request whose deadline passed while its body was read or planned never reaches a shard.
         budget.Checkpoint();
-        var executor = new UnsortedPageExecutor(client ?? _clients.CreateClient(_capabilities, budget), _registry, _limits.MaxParallelBackendCalls);
+        client ??= _clients.CreateClient(_capabilities, budget);
+        var executor = new UnsortedPageExecutor(client, _registry, _limits.MaxParallelBackendCalls);
         UnsortedPage page = await executor.ExecuteAsync(search.Streams, search.PageSize, resumeFrom, remainingFetches ?? FetchAllowance, budget.Token);
 
         // A page that exceeded the cost budget is too costly, not a page with an unlinkable successor.
         budget.Checkpoint();
+
+        // The page is complete here: its includes are staged from exactly its matches, before any successor is issued.
+        StagedIncludes staged = includes is null ? StagedIncludes.None : await StageIncludesAsync(includes, page, client, budget, predecessor is not null);
+        if (staged.Refusal is { } refusal)
+        {
+            return refusal;
+        }
+
         Uri? next = null;
         long? nextDeadlineTicks = null;
         if (page.Next is { } continuation)
@@ -627,7 +659,7 @@ internal sealed class PrimarySearch
         IResult response;
         try
         {
-            response = SearchsetResponse.Create(_registry, SelfLink(type, search.RawQuery), page.Matches, [], [], next, Reads.AlternateBase);
+            response = SearchsetResponse.Create(_registry, SelfLink(type, search.RawQuery), page.Matches, staged.Includes, staged.Outcomes, next, Reads.AlternateBase);
         }
         catch (SearchsetEntryException ex) when (_registry.TryGetById(ex.Key.Shard, out ShardDescriptor? shard))
         {
@@ -648,6 +680,69 @@ internal sealed class PrimarySearch
 
     private static IResult NextTooLarge() =>
         SearchOutcome.Unavailable("The next page cannot be linked: its continuation does not fit in a link this server accepts.");
+
+    /// <summary>
+    /// Resolves the reverse includes of exactly the emitted page, on the request's own client and within what its budget has left.
+    /// </summary>
+    /// <remarks>
+    /// The resolver is never asked when no requested source type is readable or the page has no match; a denied type is
+    /// reported by one fixed outcome whatever the data holds. A <see langword="null"/> result is insufficient evidence, not
+    /// an empty include set: unsupported when first requested, a restart when a redeemed token's replan no longer certifies it.
+    /// </remarks>
+    private async Task<StagedIncludes> StageIncludesAsync(RevIncludeStage stage, UnsortedPage page, IShardClient client, RequestBudget budget, bool redeemed)
+    {
+        List<ReadOnlyMemory<byte>> outcomes = [];
+        IReadOnlyList<ShardEntry> entries = [];
+        if (stage.Sources.Count != 0 && page.Matches.Count != 0)
+        {
+            int remaining = (int)Math.Max(0, FetchAllowance - Math.Max(budget.BackendCalls, page.Fetches));
+            RevIncludePageResult? result = await _revIncludes!.ResolveAsync(
+                stage.Plan,
+                page.Matches,
+                stage.Readable,
+                client,
+                _registry,
+                _limits.MaxParallelBackendCalls,
+                _clients.FitsSearchRequest,
+                _limits.MaxIncludesPerPage,
+                remaining,
+                budget.Token);
+
+            // Work the resolver did past the budget is too costly, not a page.
+            budget.Checkpoint();
+            if (result is null)
+            {
+                return StagedIncludes.Refused(redeemed ? SearchOutcome.Gone() : UnsupportedShape());
+            }
+
+            if (!stage.Accepts(result, _limits.MaxIncludesPerPage))
+            {
+                return StagedIncludes.Refused(SearchOutcome.Error(
+                    StatusCodes.Status502BadGateway, "exception", "The included resources cannot be served."));
+            }
+
+            entries = result.Includes;
+            if (result.Truncated)
+            {
+                outcomes.Add(IncludeOutcomes.Incomplete);
+            }
+        }
+
+        if (stage.Denied)
+        {
+            outcomes.Add(IncludeOutcomes.Suppressed);
+        }
+
+        return new StagedIncludes(entries, outcomes, null);
+    }
+
+    /// <summary>The includes and outcomes of one page, or the refusal that replaces it.</summary>
+    private sealed record StagedIncludes(IReadOnlyList<ShardEntry> Includes, IReadOnlyList<ReadOnlyMemory<byte>> Outcomes, IResult? Refusal)
+    {
+        public static StagedIncludes None { get; } = new([], [], null);
+
+        public static StagedIncludes Refused(IResult refusal) => new([], [], refusal);
+    }
 
     /// <summary>
     /// Whether a client following <paramref name="next"/> would get past this server's own ingress: the query limit
@@ -787,11 +882,24 @@ internal sealed class PrimarySearch
         }
 
         var revisions = new SortedDictionary<string, string>(StringComparer.Ordinal);
+        bool revIncluded = false;
+        bool chained = false;
         foreach (PlannedOccurrence occurrence in plan.Occurrences)
         {
             switch (occurrence.Kind, occurrence.Action)
             {
                 case (OccurrenceKind.Control, OccurrenceAction.Remove):
+                    break;
+                case (OccurrenceKind.RevInclude, OccurrenceAction.Remove):
+                    // The caller's grants decide later which sources run; every requested source reference is pinned
+                    // regardless, because the planner consulted it for all of them.
+                    revIncluded = true;
+                    ReferenceHop included = occurrence.Hop!;
+                    if (!Pin(included.Path.Source, included.Path.Code))
+                    {
+                        return false;
+                    }
+
                     break;
                 case (OccurrenceKind.Predicate, OccurrenceAction.Keep):
                     if (!Pin(plan.Type, occurrence.Occurrence.Key))
@@ -801,6 +909,7 @@ internal sealed class PrimarySearch
 
                     break;
                 case (OccurrenceKind.ReverseChain, OccurrenceAction.Replace):
+                    chained = true;
                     ReferenceHop hop = occurrence.Hop!;
                     if (!Pin(hop.Path.Source, hop.Path.Code)
                         || !Pin(hop.Path.Source, WebUtility.UrlDecode(hop.Terminal!.Key))
@@ -811,6 +920,7 @@ internal sealed class PrimarySearch
 
                     break;
                 case (OccurrenceKind.ForwardChain, OccurrenceAction.Keep):
+                    chained = true;
                     // A passthrough hop has no Terminal, so the terminal definition comes from the planned decoded key: the
                     // text after the dot of the one depth-one chain (the planner admitted no deeper path).
                     ReferenceHop forward = occurrence.Hop!;
@@ -827,6 +937,12 @@ internal sealed class PrimarySearch
                 default:
                     return false;
             }
+        }
+
+        // A reverse include next to any chain would need the chain's own evidence and joins; it is not combined.
+        if (revIncluded && chained)
+        {
+            return false;
         }
 
         ShardSearchRequest[] streams = [];
