@@ -78,6 +78,15 @@ internal static class SearchWorld
     /// <param name="withoutExactCountProof">The shard with no exact-count proof, if any.</param>
     /// <param name="reverseChain">Whether to certify the fixture's Observation subject path.</param>
     /// <param name="registry">The test registry or the default two-shard registry.</param>
+    /// <param name="forwardChain">Whether to certify <c>Observation.subject:Patient</c> for native (Passthrough) forward chains.</param>
+    /// <param name="distributedForward">
+    /// Whether to certify <c>Observation.subject:Patient</c> for distributed forward chains too, with the reference alternatives
+    /// that make the planner admit such a chain.
+    /// </param>
+    /// <param name="organizationForward">
+    /// Whether <c>Organization</c> is searchable by <c>name</c> and <c>Patient.organization:Organization</c> is certified for native
+    /// forward chains.
+    /// </param>
     public static SearchCapabilities Capabilities(
         bool patientName = true,
         IEnumerable<string>? exactCountShapes = null,
@@ -85,8 +94,12 @@ internal static class SearchWorld
         bool patient = true,
         string? withoutExactCountProof = null,
         bool reverseChain = false,
-        ShardRegistry? registry = null)
+        ShardRegistry? registry = null,
+        bool forwardChain = false,
+        bool distributedForward = false,
+        bool organizationForward = false)
     {
+        registry ??= Registry;
         List<SearchParameterSupport> patientParameters =
         [
             new("_id", SearchParamType.Token, null),
@@ -97,19 +110,37 @@ internal static class SearchWorld
             patientParameters.Add(new("name", SearchParamType.String, null));
         }
 
-        if (organizationMissing)
+        if (organizationMissing || organizationForward)
         {
             patientParameters.Add(new("organization", SearchParamType.Reference, null));
         }
 
         List<SearchParameterSupport> observationParameters = [new("_id", SearchParamType.Token, null), new("code", SearchParamType.Token, null)];
         List<ReferencePathCertification> paths = [];
+        ReferencePathOperations subject = ReferencePathOperations.None;
         if (reverseChain)
         {
+            subject |= ReferencePathOperations.DistributedReverse | ReferencePathOperations.NativeReverse;
+        }
+
+        if (forwardChain)
+        {
+            subject |= ReferencePathOperations.NativeForward;
+        }
+
+        if (distributedForward)
+        {
+            subject |= ReferencePathOperations.DistributedForward;
+        }
+
+        if (subject != ReferencePathOperations.None)
+        {
             observationParameters.Add(new("subject", SearchParamType.Reference, null));
-            paths.Add(new(new ReferencePath(ResourceType.Parse("Observation"), "subject", ResourceType.Parse("Patient")),
-                ReferencePathOperations.DistributedReverse | ReferencePathOperations.NativeReverse,
-                ReferenceSearchForms.None, ReferenceSearchForms.None));
+            ReferencePath subjectPath = new(ResourceType.Parse("Observation"), "subject", ResourceType.Parse("Patient"));
+            paths.Add(distributedForward
+                ? new(subjectPath, subject, ReferenceSearchForms.Relative, ReferenceSearchForms.CanonicalAbsolute, registry.Version,
+                    ["Observation?@Observation.subject:Patient"])
+                : new(subjectPath, subject, ReferenceSearchForms.None, ReferenceSearchForms.None));
         }
 
         List<ResourceSearchSupport> resources =
@@ -120,14 +151,21 @@ internal static class SearchWorld
         {
             resources.Insert(0, new(ResourceType.Parse("Patient"), patientParameters, [], []));
         }
+
+        if (organizationForward)
+        {
+            resources.Add(new(ResourceType.Parse("Organization"), [new("name", SearchParamType.String, null)], [], []));
+            paths.Add(new(new ReferencePath(ResourceType.Parse("Patient"), "organization", ResourceType.Parse("Organization")),
+                ReferencePathOperations.NativeForward, ReferenceSearchForms.None, ReferenceSearchForms.None));
+        }
+
         SearchCertification Certify(IEnumerable<string> countShapes) => new(
             new Dictionary<SearchParamType, IReadOnlyCollection<string>> { [SearchParamType.String] = ["exact"], [SearchParamType.Reference] = ["missing"] },
             [SearchParamType.String, SearchParamType.Token],
-            [SearchParamType.String, SearchParamType.Token],
+            distributedForward ? [SearchParamType.String, SearchParamType.Token, SearchParamType.Reference] : [SearchParamType.String, SearchParamType.Token],
             countShapes,
             paths);
 
-        registry ??= Registry;
         return new SearchCapabilities(
             registry,
             registry.Shards.Select(s => new ShardSearchCapability(s.Id, resources,

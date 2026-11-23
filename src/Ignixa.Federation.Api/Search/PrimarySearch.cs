@@ -30,7 +30,10 @@ namespace Ignixa.Federation.Api.Search;
 /// </summary>
 /// <remarks>
 /// <para>
-/// <b>Scope.</b> Unsorted pages without a total support ordinary predicates and certified distributed reverse chains.
+/// <b>Scope.</b> Unsorted pages without a total support ordinary predicates, certified distributed reverse chains and
+/// depth-one native forward chains the operator listed as passthrough paths. A passthrough forward chain keeps its raw
+/// occurrences and each owner joins locally, as an operator promise for that path only; the caller must be able to read the
+/// target type. Native forward chains do not combine with reverse chains in one search.
 /// Ordinary count-only searches require exact shape proof and an explicit dialect for each shard. Count-only searches
 /// with admitted distributed reverse chains resolve witnesses and then count every owner's generated request through the
 /// same exact executor, within the remaining physical allowance. Other chains, includes, sort and paged totals are not executed.
@@ -42,7 +45,9 @@ namespace Ignixa.Federation.Api.Search;
 /// bytes or an inconsistent dependency manifest are 400, all before any shard call. An anchor found missing during
 /// replay is 410 only while the request budget is live. Each admitted predicate pins its resolved definition's revision
 /// (<see cref="ResolvedDefinitionRevisions.GetResolvedDefinitionRevision"/>), independent of the discovery projection;
-/// only those definitions are compared. Reverse-chain continuations also pin the witness definitions and all discovery
+/// only those definitions are compared. A forward chain pins its source reference and its target terminal definitions,
+/// and redemption plans it again: a path no longer certified natively is 410, and the target-type permission is rechecked.
+/// Reverse-chain continuations also pin the witness definitions and all discovery
 /// shards, recheck source-type permission, and replay frozen owner streams without repeating witness discovery.
 /// A staged page with an already expired next link is 410 with no Bundle.
 /// A next link that would not fit this server's own query or request-line
@@ -312,6 +317,11 @@ internal sealed class PrimarySearch
             return ReverseDenied();
         }
 
+        if (!ForwardTargets(plan).All(access.CanRead))
+        {
+            return ForwardDenied();
+        }
+
         if (plan.CountOnly && plan.Occurrences.All(o => (o.Kind, o.Action) is
             (OccurrenceKind.Control, OccurrenceAction.Remove) or (OccurrenceKind.Predicate, OccurrenceAction.Keep)
             or (OccurrenceKind.ReverseChain, OccurrenceAction.Replace)))
@@ -514,6 +524,11 @@ internal sealed class PrimarySearch
         if (!sources.All(access.CanRead))
         {
             return ReverseDenied();
+        }
+
+        if (!ForwardTargets(plan).All(access.CanRead))
+        {
+            return ForwardDenied();
         }
 
         bool reverse = sources.Length != 0;
@@ -795,6 +810,20 @@ internal sealed class PrimarySearch
                     }
 
                     break;
+                case (OccurrenceKind.ForwardChain, OccurrenceAction.Keep):
+                    // A passthrough hop has no Terminal, so the terminal definition comes from the planned decoded key: the
+                    // text after the dot of the one depth-one chain (the planner admitted no deeper path).
+                    ReferenceHop forward = occurrence.Hop!;
+                    string key = occurrence.Occurrence.Key;
+                    if (reverse
+                        || forward.Mode != ChainResolutionMode.Passthrough
+                        || !Pin(forward.Path.Source, forward.Path.Code)
+                        || !Pin(forward.Path.Target, key[(key.IndexOf('.', StringComparison.Ordinal) + 1)..]))
+                    {
+                        return false;
+                    }
+
+                    break;
                 default:
                     return false;
             }
@@ -825,6 +854,16 @@ internal sealed class PrimarySearch
 
     private static ResourceType[] ReverseSources(QueryPlan plan) =>
         [.. plan.Occurrences.Where(o => o.Kind == OccurrenceKind.ReverseChain).Select(o => o.Hop!.Path.Source).Distinct()];
+
+    /// <summary>The target types of native forward chains, which every shard joins locally and the caller must be able to read.</summary>
+    private static ResourceType[] ForwardTargets(QueryPlan plan) =>
+        [.. plan.Occurrences
+            .Where(o => o is { Kind: OccurrenceKind.ForwardChain, Action: OccurrenceAction.Keep, Hop.Mode: ChainResolutionMode.Passthrough })
+            .Select(o => o.Hop!.Path.Target)
+            .Distinct()];
+
+    private static IResult ForwardDenied() =>
+        SearchOutcome.Error(StatusCodes.Status403Forbidden, "forbidden", "The caller may not search a resource type on the forward-chain path.");
 
     private static IResult ReverseDenied() =>
         SearchOutcome.Error(StatusCodes.Status403Forbidden, "forbidden", "The caller may not search a resource type on the reverse-chain path.");
