@@ -169,9 +169,22 @@ public sealed class CatalogBackendHostTests
     public void CatalogMode_WithABlankOrInvalidMode_FailsStartupBeforeAnyShardIsContacted(string mode) =>
         AssertFailsStartup(ModeKey, mode, "Federation:Backend:Mode", setup => { });
 
-    [Fact]
-    public void CatalogMode_WithAnObject_FailsStartupBeforeAnyShardIsContacted() =>
-        AssertFailsStartup("Federation:Backend:Mode:Kind", PrototypeCatalog, ModeKey, setup => { });
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void CatalogMode_WithModeChildren_RejectsModeBeforeCheckingHost(bool hasScalar)
+    {
+        string failure = AssertFailsStartup("Federation:Backend:Mode:Kind", "should-not-be-echoed", $"{ModeKey} is invalid.", setup =>
+        {
+            setup.Unconfigure();
+            if (hasScalar)
+            {
+                setup.Settings[ModeKey] = PrototypeCatalog;
+            }
+        });
+
+        failure.ShouldNotContain("should-not-be-echoed");
+    }
 
     [Fact]
     public void CatalogMode_FailureNamesTheSettingAndNeverEchoesAnInvalidValue()

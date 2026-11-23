@@ -2,7 +2,7 @@ namespace Ignixa.Federation.Api.Search;
 
 /// <summary>
 /// Whether the host opts in to the proof-backed prototype catalog: only an explicit
-/// <c>Federation:Backend:Mode=PrototypeCatalog</c> does. Nothing is ever inferred from the registered services.
+/// scalar <c>Federation:Backend:Mode=PrototypeCatalog</c> does. Nothing is ever inferred from the registered services.
 /// </summary>
 /// <remarks>
 /// Only the presence of the mode key makes a selection explicit, including a null, blank or structured value.
@@ -33,7 +33,8 @@ internal static class CatalogBackendSelection
             return false;
         }
 
-        return string.Equals(mode.Value, PrototypeCatalog, StringComparison.Ordinal)
+        // Layered configuration can expose both a value and children for the same key.
+        return string.Equals(mode.Value, PrototypeCatalog, StringComparison.Ordinal) && !mode.GetChildren().Any()
             ? true
             : throw new InvalidOperationException($"{ModePath} is invalid.");
     }
