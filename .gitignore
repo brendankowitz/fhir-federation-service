@@ -7,6 +7,7 @@ docs/site/node_modules/
 docs/site/.astro/
 docs/site/dist/
 docs/site/src/content/docs/generated/
+docs/site/public/architecture/
 
 # Test and coverage output
 TestResults/

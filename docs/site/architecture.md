@@ -12,9 +12,9 @@ The gateway is a read-only FHIR R4 search endpoint in front of independent serve
 
 The gateway combines **search results**, not indexes. Each participating FHIR server searches its own data. The client gets one searchset and can use an entry’s `fullUrl` to identify the resource at its owner.
 
-[![A client searches through the broker. Each FHIR server has its own API, index and storage; a match points back to its server.](public/architecture/fhir-federated-querying-at-scale.svg)](public/architecture/fhir-federated-querying-at-scale.svg)
+[![A client searches through the broker. Each FHIR server has its own API, index and storage; a match points back to its server.](../../assets/architecture/fhir-federated-querying-at-scale.svg)](../../assets/architecture/fhir-federated-querying-at-scale.svg)
 
-[Open the querying-at-scale diagram at full size](public/architecture/fhir-federated-querying-at-scale.svg). The figure’s **128 TB per shard × 8 = 1.024 PB** is illustrative nominal database capacity, not measured usable storage, latency or throughput.
+[Open the querying-at-scale diagram at full size](../../assets/architecture/fhir-federated-querying-at-scale.svg). The figure’s **128 TB per shard × 8 = 1.024 PB** is illustrative nominal database capacity, not measured usable storage, latency or throughput.
 
 ## Follow one search
 
@@ -37,9 +37,9 @@ For the components required to produce a generation, see [Host and backend bindi
 
 The design sketch below extends the search model with placement rules, ingest and export workers, a job queue and bulk file storage. **Those are proposed capabilities, not supported gateway operations.** The implemented gateway serves read-only search and eligible owner-qualified reads. It does not accept writes, assign incoming resources to shards, or coordinate bulk imports and exports.
 
-[![Proposed design: a query broker handles interactive searches, while separate ingest and export workers coordinate shard jobs and object storage.](public/architecture/fhir-federation-coordination.svg)](public/architecture/fhir-federation-coordination.svg)
+[![Proposed design: a query broker handles interactive searches, while separate ingest and export workers coordinate shard jobs and object storage.](../../assets/architecture/fhir-federation-coordination.svg)](../../assets/architecture/fhir-federation-coordination.svg)
 
-[Open the proposed coordination diagram at full size](public/architecture/fhir-federation-coordination.svg). For what callers can actually send today, use the [search support matrix](status.md).
+[Open the proposed coordination diagram at full size](../../assets/architecture/fhir-federation-coordination.svg). For what callers can actually send today, use the [search support matrix](status.md).
 
 [design]: ../superpowers/specs/2026-11-19-fhir-federation-service-design.md
 [entries]: ../../test/Ignixa.Federation.Tests.Integration/Responses/SearchsetResponseTests.cs

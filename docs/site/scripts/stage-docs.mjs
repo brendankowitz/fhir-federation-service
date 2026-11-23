@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { rewriteLinks } from './rewrite-links.mjs';
@@ -18,6 +18,9 @@ const pages = [
 ];
 const routes = new Map(pages.map(path => [path, base + basename(path, '.md') + '/']));
 const dest = join(site, 'src/content/docs/generated');
+const figures = join(site, 'public/architecture');
+rmSync(figures, { recursive: true, force: true });
+mkdirSync(figures, { recursive: true });
 rmSync(dest, { recursive: true, force: true });
 mkdirSync(dest, { recursive: true });
 
@@ -38,6 +41,10 @@ for (const page of pages) {
     const stat = statSync(path, { throwIfNoEntry: false });
     if (!stat || segments[0] === '..') throw new Error(`${page}: missing source target ${url}`);
     const encoded = segments.map(encodeURIComponent).join('/');
+    if (dirname(path) === join(root, 'assets/architecture') && path.endsWith('.svg')) {
+      copyFileSync(path, join(figures, basename(path)));
+      return base + 'architecture/' + encodeURIComponent(basename(path)) + suffix;
+    }
     if (encoded.startsWith('docs/site/public/')) return base + encoded.slice('docs/site/public/'.length) + suffix;
     return `${repo}/${stat.isDirectory() ? 'tree' : 'blob'}/${revision}/${encoded}${suffix}`;
   });

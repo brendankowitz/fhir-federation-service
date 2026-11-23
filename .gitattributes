@@ -1,5 +1,6 @@
 * text=auto
 *.sh eol=lf
+assets/architecture/*.svg eol=lf
 *.cs diff=csharp
 
 *.png binary

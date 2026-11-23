@@ -26,3 +26,5 @@ Edit published topics in `docs/site/*.md`, the [client landing page](guides/clie
 Configuration defaults and shard contracts come from Core; the sample API reference comes from the SampleClient assembly and its XML comments, not a supported SDK package. Edit those sources, not the ignored `src/content/docs/generated/` files. Old `.html` bookmarks redirect to the canonical routes and retain their fragments; `tools/legacy-docs-urls.json` records the public URL contract.
 
 PRs build but never deploy. Main publishes the validated artifact to the [project Pages site](https://brendankowitz.github.io/fhir-federation-service/) when the repository administrator has selected **Settings → Pages → Build and deployment → Source: GitHub Actions**. After enabling this, run the Documentation workflow on `main` if it has already built.
+
+Edit the shared [architecture diagrams](../assets/architecture/) at the repository root. Link to them with relative Markdown paths so GitHub renders the originals; the site build copies the referenced SVGs to `/fhir-federation-service/architecture/` without modifying them.
