@@ -167,8 +167,8 @@ samples/
   Ignixa.Federation.SampleClient/   Standalone wire-contract client
 src/
   Ignixa.Federation.Core/     Domain logic, no HTTP or hosting
-  Ignixa.Federation.Shards/   HTTP access to backends
-  Ignixa.Federation.Api/      ASP.NET Core host
+  Ignixa.Federation.Shards/   Backend transport (HTTPS implementation in review)
+  Ignixa.Federation.Api/      ASP.NET Core host (health endpoints on main)
 test/
   Ignixa.Federation.Core.UnitTests/
   Ignixa.Federation.Shards.UnitTests/
