@@ -1,10 +1,5 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
-  <!--
-    Isolated project: it builds from a tree with no root Directory.Build.props, Directory.Packages.props,
-    or solution. Versions are explicit and central package management is off, so a later root
-    integration (p1) can adopt or replace these without a restore conflict.
-  -->
   <PropertyGroup>
     <TargetFramework>net11.0</TargetFramework>
     <OutputType>Exe</OutputType>
@@ -13,7 +8,6 @@
     <IsPackable>false</IsPackable>
     <IsTestProject>true</IsTestProject>
     <UseMicrosoftTestingPlatformRunner>true</UseMicrosoftTestingPlatformRunner>
-    <ManagePackageVersionsCentrally>false</ManagePackageVersionsCentrally>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <RootNamespace>Ignixa.Federation.Tests.BackendContracts</RootNamespace>
   </PropertyGroup>
@@ -23,8 +17,8 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="xunit.v3" Version="4.0.3" />
-    <PackageReference Include="Testcontainers" Version="4.17.0" />
+    <PackageReference Include="xunit.v3" />
+    <PackageReference Include="Testcontainers" />
   </ItemGroup>
 
 </Project>
