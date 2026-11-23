@@ -1,3 +1,4 @@
+using System.Net;
 using System.Text.Json.Nodes;
 
 namespace Ignixa.Federation.Tests.BackendContracts;
@@ -35,6 +36,23 @@ public sealed class BackendEvidenceTests
 
         Assert.Equal(BackendFailureKind.Startup, failure.Kind);
         Assert.DoesNotContain("Do not print", failure.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Metadata_probe_reports_the_http_status_but_not_the_error_body()
+    {
+        const string UntrustedBody = "untrusted diagnostic body";
+        using var server = new LoopbackFhirServer();
+        using var client = new BackendHttpClient(server.BaseAddress);
+        CancellationToken cancellationToken = TestContext.Current.CancellationToken;
+        Task<CapturedRequest> served = server.ServeOnceAsync(UntrustedBody, cancellationToken, (int)HttpStatusCode.ServiceUnavailable);
+
+        var failure = await Assert.ThrowsAsync<BackendEvidenceException>(() => client.GetSoftwareIdentityAsync(cancellationToken));
+
+        Assert.Equal(BackendFailureKind.Startup, failure.Kind);
+        Assert.Contains("HTTP 503", failure.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain(UntrustedBody, failure.Message, StringComparison.Ordinal);
+        Assert.StartsWith("GET /metadata ", (await served).RequestLine, StringComparison.Ordinal);
     }
 
     private const string LocalQueryDescription = "subject=<own base>/Patient/dup";

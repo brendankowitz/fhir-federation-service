@@ -1,5 +1,6 @@
 using System.Diagnostics.CodeAnalysis;
 using System.Security.Cryptography;
+using System.Text;
 using Docker.DotNet;
 using Docker.DotNet.Models;
 using DotNet.Testcontainers.Builders;
@@ -27,6 +28,7 @@ internal sealed class MicrosoftFhirSqlBackend : IAsyncDisposable
     private const ushort ServerContainerPort = 8080;
     private const string SqlAlias = "sql";
     private const string SqlReadyMessage = "SQL Server is now ready for client connections";
+    private const int LogByteLimit = 12 * 1024;
 
     private static readonly TimeSpan StartupBudget = TimeSpan.FromMinutes(12);
     private static readonly TimeSpan ServerReadyBudget = TimeSpan.FromMinutes(5);
@@ -61,11 +63,12 @@ internal sealed class MicrosoftFhirSqlBackend : IAsyncDisposable
     public static async Task<MicrosoftFhirSqlBackend> StartAsync(BackendSeed seed, CancellationToken cancellationToken)
     {
         var backend = new MicrosoftFhirSqlBackend();
+        string password = NewSqlPassword();
         using var budget = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         budget.CancelAfter(StartupBudget);
         try
         {
-            await backend.StartCoreAsync(seed, budget.Token);
+            await backend.StartCoreAsync(seed, password, budget.Token);
             return backend;
         }
         catch (Exception e)
@@ -80,6 +83,8 @@ internal sealed class MicrosoftFhirSqlBackend : IAsyncDisposable
             };
             string? sqlState = await DescribeContainerAsync("SQL", backend._sqlName);
             string? serverState = await DescribeContainerAsync("FHIR", backend._serverName);
+            await WriteContainerLogsAsync("FHIR", backend._serverName, password);
+            await WriteContainerLogsAsync("SQL", backend._sqlName, password);
             string? cleanupFailure = await backend.CleanUpAsync();
             string[] details = [.. new[] { sqlState, serverState, cleanupFailure }.OfType<string>()];
             if (details.Length > 0)
@@ -88,6 +93,53 @@ internal sealed class MicrosoftFhirSqlBackend : IAsyncDisposable
             }
 
             throw failure;
+        }
+    }
+
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types",
+        Justification = "A failed log read must not block cleanup or expose Docker exception details.")]
+    private static async Task WriteContainerLogsAsync(string label, string? name, string password)
+    {
+        if (name is null)
+        {
+            return;
+        }
+
+        using var budget = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        try
+        {
+            using DockerClient docker = new DockerClientBuilder().WithEndpoint(DockerEndpoint).Build();
+            using MultiplexedStream logs = await docker.Containers.GetContainerLogsAsync(
+                name, new ContainerLogsParameters { ShowStdout = true, ShowStderr = true, Tail = "60" }, budget.Token);
+            var bytes = new byte[LogByteLimit];
+            int length = 0;
+            while (length < bytes.Length)
+            {
+                MultiplexedStream.ReadResult result = await logs.ReadOutputAsync(bytes, length, bytes.Length - length, budget.Token);
+                if (result.EOF)
+                {
+                    break;
+                }
+
+                length += result.Count;
+            }
+
+            bool truncated = length == bytes.Length;
+            if (truncated)
+            {
+                // Don't print a partial final line that could end mid-credential.
+                length = bytes.AsSpan().LastIndexOf((byte)'\n') + 1;
+            }
+
+            string text = Encoding.UTF8.GetString(bytes, 0, length);
+            string printable = string.Concat(text.Where(c => c == '\n' || (!char.IsControl(c) && c is not '\u2028' and not '\u2029')));
+            printable = printable.Replace(password, "[redacted]", StringComparison.Ordinal);
+            string lines = string.Join('\n', printable.Split('\n', StringSplitOptions.RemoveEmptyEntries).Select(line => $"[{label}] {line}"));
+            await Console.Error.WriteLineAsync($"[{label} startup log tail{(truncated ? ", truncated" : string.Empty)}]\n{lines}");
+        }
+        catch (Exception e)
+        {
+            await Console.Error.WriteLineAsync($"[{label} startup logs unavailable: {e.GetType().Name}]");
         }
     }
 
@@ -181,12 +233,10 @@ internal sealed class MicrosoftFhirSqlBackend : IAsyncDisposable
         }
     }
 
-    private async Task StartCoreAsync(BackendSeed seed, CancellationToken cancellationToken)
+    private async Task StartCoreAsync(BackendSeed seed, string password, CancellationToken cancellationToken)
     {
         // Avoid giving a helper container the host Docker socket. Delete the owned resources ourselves.
         string runId = Guid.NewGuid().ToString("N");
-        string password = NewSqlPassword();
-
         INetwork network = await RunPhaseAsync(
             BackendFailureKind.Prerequisite,
             "creating the private Docker network (is a Docker engine reachable?)",
@@ -285,6 +335,8 @@ internal sealed class MicrosoftFhirSqlBackend : IAsyncDisposable
     {
         using var phase = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         phase.CancelAfter(ServerReadyBudget);
+        string probeUrl = $"{LocalBaseUrl}metadata";
+        string lastFailure = "no probe completed.";
         try
         {
             while (true)
@@ -293,12 +345,16 @@ internal sealed class MicrosoftFhirSqlBackend : IAsyncDisposable
                 {
                     throw new BackendEvidenceException(
                         BackendFailureKind.Startup,
-                        $"the FHIR container stopped before it was ready (state {server.State}). Container output is not shown because it can contain the connection string.");
+                        $"the FHIR container stopped before {probeUrl} was ready (state {server.State}). Last probe: {lastFailure}");
                 }
 
-                if (await Client.GetSoftwareIdentityAsync(phase.Token) is { } identity)
+                try
                 {
-                    return identity;
+                    return await Client.GetSoftwareIdentityAsync(phase.Token);
+                }
+                catch (BackendEvidenceException e) when (e.Kind == BackendFailureKind.Startup)
+                {
+                    lastFailure = e.Detail;
                 }
 
                 await Task.Delay(PollInterval, phase.Token);
@@ -308,7 +364,7 @@ internal sealed class MicrosoftFhirSqlBackend : IAsyncDisposable
         {
             throw new BackendEvidenceException(
                 BackendFailureKind.Startup,
-                $"the FHIR server did not answer metadata within {ServerReadyBudget.TotalMinutes:0} minutes.");
+                $"{probeUrl} was not ready within {ServerReadyBudget.TotalMinutes:0} minutes. Last probe: {lastFailure}");
         }
     }
 

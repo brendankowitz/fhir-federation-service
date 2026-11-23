@@ -309,7 +309,9 @@ Every failure starts with a tag, so a missing prerequisite is never mistaken for
 Reports identify the backend using the bounded `software.name` and `software.version` fields from
 `GET /metadata`, not the image tag. Search diagnostics contain only reserved ids, counts, status
 codes, and exception type names. Startup failures may also report container state and exit code.
-Reports do not contain container logs, response bodies, endpoints, or credentials.
+On fixture startup failure, the harness reports the loopback metadata URL and last probe error and
+prints bounded tails from the two disposable containers before removing them. The generated SQL
+password is redacted. Probe response bodies are not printed.
 
 Before any case runs, the fixture waits until all five seeded Observations are returned by an `_id` search.
 If readiness times out, it reports the last sanitized observation: why a response was incomplete, or how

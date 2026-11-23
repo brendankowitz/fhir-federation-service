@@ -40,22 +40,28 @@ internal sealed class BackendHttpClient : IDisposable
         _http.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/fhir+json"));
     }
 
-    public async Task<string?> GetSoftwareIdentityAsync(CancellationToken cancellationToken)
+    public async Task<string> GetSoftwareIdentityAsync(CancellationToken cancellationToken)
     {
         try
         {
             using HttpResponseMessage response = await _http.GetAsync(new Uri("metadata", UriKind.Relative), cancellationToken);
-            return response.StatusCode == HttpStatusCode.OK
-                ? ReadSoftwareIdentity(await response.Content.ReadAsStringAsync(cancellationToken))
-                : null;
+            if (response.StatusCode != HttpStatusCode.OK)
+            {
+                throw new BackendEvidenceException(BackendFailureKind.Startup, $"metadata returned HTTP {(int)response.StatusCode}.");
+            }
+
+            return ReadSoftwareIdentity(await response.Content.ReadAsStringAsync(cancellationToken));
         }
-        catch (HttpRequestException)
+        catch (HttpRequestException e)
         {
-            return null;
+            string socketError = e.InnerException is System.Net.Sockets.SocketException socket
+                ? $" ({socket.SocketErrorCode})"
+                : string.Empty;
+            throw new BackendEvidenceException(BackendFailureKind.Startup, $"metadata request failed: {e.HttpRequestError}{socketError}.");
         }
         catch (TaskCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
-            return null;
+            throw new BackendEvidenceException(BackendFailureKind.Startup, "metadata request timed out.");
         }
     }
 
