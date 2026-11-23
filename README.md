@@ -15,17 +15,17 @@
 
 ---
 
-> **Project status.** Core search planning and execution components are implemented and covered by scripted unit tests. The authenticated search API and verified HTTPS shard backend are still in review ([#17](https://github.com/brendankowitz/fhir-federation-service/pull/17), [#19](https://github.com/brendankowitz/fhir-federation-service/pull/19)). On `main`, the API still serves health checks only; it does not yet expose federated search or connect the Core components to live shards. This is early implementation work, not a production-ready release. The [design spec](docs/superpowers/specs/2026-11-19-fhir-federation-service-design.md) defines intended behavior; the [status table](#project-status-by-capability) distinguishes implemented, in-review, and planned work.
+> **Project status.** Core search planning and execution components are implemented and covered by scripted unit tests. The authenticated search API has merged ([#17](https://github.com/brendankowitz/fhir-federation-service/pull/17)); the verified HTTPS shard backend remains in review ([#19](https://github.com/brendankowitz/fhir-federation-service/pull/19)). The earlier scaffold served health checks only. The merged API needs host configuration, a capability view, and a request-metered shard client to serve searches; the stock host does not supply a production shard transport. This is early implementation work, not a production-ready release. The [design spec](docs/superpowers/specs/2026-11-19-fhir-federation-service-design.md) defines intended behavior; the [status table](#project-status-by-capability) distinguishes implemented, in-review, and planned work.
 
 ---
 
 ## Overview
 
-Ignixa Federation is being built to present N FHIR R4 servers, called shards, as one read-only search endpoint. A client will send an ordinary FHIR search to the federation, which will send it to the shards, merge the answers, and return one `searchset` Bundle with paging links. The Core planner and execution stages exist, but the API does not wire them into a search endpoint on `main`.
+Ignixa Federation is being built to present N FHIR R4 servers, called shards, as one read-only search endpoint. A configured host can fan out supported searches, merge the answers, and return a `searchset` Bundle with paging links. The merged API uses the Core planner and unsorted executor; not every Core execution stage is wired into HTTP.
 
 Large datasets outgrow a single FHIR server and its single write primary. Splitting the data across servers fixes the storage limit but leaves every client to query each server and combine the results. The federation does that work once, in one place, with defined behaviour for paging, ordering, and failure.
 
-The v1 service is designed to be read-only: it will never write to a shard, and a request it cannot answer completely will fail rather than return a partial Bundle. These are design guarantees, not yet end-to-end behavior of the current host.
+The v1 service is designed to be read-only: it will never write to a shard, and a request it cannot answer completely will fail rather than return a partial Bundle. End-to-end behavior with live shards still depends on the backend integration.
 
 ![Conceptual federated search: a client queries a gateway that fans out to independent FHIR servers and merges their results](assets/architecture/fhir-federated-querying-at-scale.svg)
 
@@ -41,11 +41,14 @@ The components below describe what is implemented in Core and what remains in re
 * Unsorted and `_lastUpdated` sorted page executors, exact federated count execution, and page-scoped include / reverse-include execution.
 * Distributed forward-chain and depth-one reverse-chain (`_has`) resolution.
 
-These are Core capabilities, not API features yet. In particular, `Api` does not call `ForwardChainResolver`, `RevIncludePageExecutor`, or `SortedPageExecutor`.
+The API uses some Core capabilities, but does not directly call `ForwardChainResolver`, `RevIncludePageExecutor`, or `SortedPageExecutor`. Distributed forward chains and reverse includes require optional host-provided strategies; sorted HTTP pages are not implemented.
+
+### Implemented in the API
+
+* Authenticated read-only FHIR R4 search routes, `/metadata`, and inline HTTP continuations ([#17](https://github.com/brendankowitz/fhir-federation-service/pull/17)). Redis continuation storage is a separate component; HTTP paging does not use it.
 
 ### In review
 
-* Authenticated read-only FHIR R4 search routes, `/metadata`, and Redis-backed continuation storage ([#17](https://github.com/brendankowitz/fhir-federation-service/pull/17)).
 * Verified HTTPS shard access and shard configuration ([#19](https://github.com/brendankowitz/fhir-federation-service/pull/19)).
 
 FHIR R4 is the only certified release today. The VP1 follow-up will make search version-provider based, selected by `Federation:Version`.
@@ -61,7 +64,7 @@ FHIR R4 is the only certified release today. The VP1 follow-up will make search 
 | 🔎 Forward include, reverse include, distributed forward chains, and `_has` | Done ([#13](https://github.com/brendankowitz/fhir-federation-service/pull/13), [#15](https://github.com/brendankowitz/fhir-federation-service/pull/15), [#18](https://github.com/brendankowitz/fhir-federation-service/pull/18)) | [§7.5](docs/superpowers/specs/2026-11-19-fhir-federation-service-design.md#75-chains-and-_has-depth-1), [§7.6](docs/superpowers/specs/2026-11-19-fhir-federation-service-design.md#76-includes-and-revincludes-targeted-per-page) |
 | 🧭 Sorted `_lastUpdated` page executor | Done ([#16](https://github.com/brendankowitz/fhir-federation-service/pull/16)) | [§7.3](docs/superpowers/specs/2026-11-19-fhir-federation-service-design.md#73-merge-sorted) |
 | 🧭 Exact federated count execution | Done ([#14](https://github.com/brendankowitz/fhir-federation-service/pull/14)) | [§7.1](docs/superpowers/specs/2026-11-19-fhir-federation-service-design.md#71-primary-search-and-emission-order), [§7.2](docs/superpowers/specs/2026-11-19-fhir-federation-service-design.md#72-count-only) |
-| 🛡️ Authenticated FHIR R4 search API, `/metadata`, and Redis continuations | In review ([#17](https://github.com/brendankowitz/fhir-federation-service/pull/17)) | [§5](docs/superpowers/specs/2026-11-19-fhir-federation-service-design.md#5-request-surface), [§7.4](docs/superpowers/specs/2026-11-19-fhir-federation-service-design.md#74-continuation-tokens), [§9](docs/superpowers/specs/2026-11-19-fhir-federation-service-design.md#9-capabilities), [§10](docs/superpowers/specs/2026-11-19-fhir-federation-service-design.md#10-security) |
+| 🛡️ Authenticated FHIR R4 search API, `/metadata`, and inline HTTP continuations; separate Redis continuation component | Done ([#17](https://github.com/brendankowitz/fhir-federation-service/pull/17)); Redis is not wired to HTTP paging | [§5](docs/superpowers/specs/2026-11-19-fhir-federation-service-design.md#5-request-surface), [§7.4](docs/superpowers/specs/2026-11-19-fhir-federation-service-design.md#74-continuation-tokens), [§9](docs/superpowers/specs/2026-11-19-fhir-federation-service-design.md#9-capabilities), [§10](docs/superpowers/specs/2026-11-19-fhir-federation-service-design.md#10-security) |
 | 🛡️ Verified HTTPS shard backend and configuration | In review ([#19](https://github.com/brendankowitz/fhir-federation-service/pull/19)) | [§6.2](docs/superpowers/specs/2026-11-19-fhir-federation-service-design.md#62-backend-strictness-fail-closed-on-dropped-filters), [§9.2](docs/superpowers/specs/2026-11-19-fhir-federation-service-design.md#92-backend-profiles), [§10.2](docs/superpowers/specs/2026-11-19-fhir-federation-service-design.md#102-backend-credentials) |
 | 💻 Sample client | Done ([#8](https://github.com/brendankowitz/fhir-federation-service/pull/8)); scripted tests only | [samples/README.md](samples/README.md) |
 | 🧪 Live backend compatibility and differential federation tests | Planned | [§15](docs/superpowers/specs/2026-11-19-fhir-federation-service-design.md#15-testing) |
@@ -71,7 +74,7 @@ FHIR R4 is the only certified release today. The VP1 follow-up will make search 
 
 ## Architecture
 
-`Core` contains the domain contracts, planner, and execution components, with no HTTP code. On `main`, `Shards` has the shard activity instrumentation but not the verified HTTP client. `Api` currently maps only health endpoints; its search pipeline and shard client are not wired.
+`Core` contains the domain contracts, planner, and execution components, with no HTTP code. The merged `Api` maps search and metadata routes, but needs a capability view and shard client factory supplied by the host. The verified HTTP client remains in review. The diagram below depicts the **earlier health-only scaffold**: its references to `main` and an unwired search path describe that older snapshot, not the merged API.
 
 ```mermaid
 flowchart LR
@@ -85,11 +88,11 @@ flowchart LR
   Client -. follows fullUrl .-> ShardA
 ```
 
-The `Core` components are exercised with scripted clients, not live shard servers. The dotted path is not a running search flow on `main`. See [docs/architecture](docs/architecture/README.md) for the design diagram and the spec for the complete target architecture.
+The `Core` components are exercised with scripted clients, not live shard servers. See [docs/architecture](docs/architecture/README.md) for the design diagram and the spec for the complete target architecture.
 
 ## How a search runs
 
-This is the target flow for a sorted search across two shards, not a request the current host can serve. The sorted executor exists in `Core`, but the API does not call it; `ForwardChainResolver` and `RevIncludePageExecutor` are likewise not wired into the API. The unsorted executor is also a Core component, not an exposed search route. See [§7.1](docs/superpowers/specs/2026-11-19-fhir-federation-service-design.md#71-primary-search-and-emission-order), [§7.3](docs/superpowers/specs/2026-11-19-fhir-federation-service-design.md#73-merge-sorted), and [§7.4](docs/superpowers/specs/2026-11-19-fhir-federation-service-design.md#74-continuation-tokens) for intended behavior.
+This is the target flow for a sorted search across two shards, not a request the current host can serve. The sorted executor exists in `Core`, but the API does not call it; `ForwardChainResolver` and `RevIncludePageExecutor` are likewise not called directly. The merged API can execute supported unsorted searches when its required host bindings are supplied. See [§7.1](docs/superpowers/specs/2026-11-19-fhir-federation-service-design.md#71-primary-search-and-emission-order), [§7.3](docs/superpowers/specs/2026-11-19-fhir-federation-service-design.md#73-merge-sorted), and [§7.4](docs/superpowers/specs/2026-11-19-fhir-federation-service-design.md#74-continuation-tokens) for intended behavior.
 
 ```mermaid
 sequenceDiagram
@@ -143,7 +146,7 @@ curl http://localhost:5201/health/live
 curl http://localhost:5201/health/ready
 ```
 
-The sample client builds with the solution. Print its usage with `dotnet run --project samples/Ignixa.Federation.SampleClient -c Release -- --help`; its tests run with `dotnet test --project test/Ignixa.Federation.SampleClient.UnitTests/Ignixa.Federation.SampleClient.UnitTests.csproj -c Release`. The host on `main` does not serve searches yet, so the sample cannot run against a live federation. See [samples/README.md](samples/README.md).
+The sample client builds with the solution. Print its usage with `dotnet run --project samples/Ignixa.Federation.SampleClient -c Release -- --help`; its tests run with `dotnet test --project test/Ignixa.Federation.SampleClient.UnitTests/Ignixa.Federation.SampleClient.UnitTests.csproj -c Release`. A live federation requires the host bindings and a shard transport; the stock host does not provide a production transport. See [samples/README.md](samples/README.md).
 
 Docker instructions are in [deploy/README.md](deploy/README.md).
 
@@ -201,7 +204,7 @@ samples/
 src/
   Ignixa.Federation.Core/     Domain logic, no HTTP or hosting
   Ignixa.Federation.Shards/   Backend transport (HTTPS implementation in review)
-  Ignixa.Federation.Api/      ASP.NET Core host (health endpoints on main)
+  Ignixa.Federation.Api/      ASP.NET Core host (search and health endpoints)
 test/
   Ignixa.Federation.Core.UnitTests/
   Ignixa.Federation.Shards.UnitTests/
