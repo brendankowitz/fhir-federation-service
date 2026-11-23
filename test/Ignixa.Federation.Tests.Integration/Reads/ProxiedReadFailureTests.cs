@@ -56,6 +56,36 @@ public sealed class ProxiedReadFailureTests
         result.Body.ShouldNotContain("east\"");
     }
 
+    [Theory]
+    [InlineData(ShardFailureReason.Timeout, 504)]
+    [InlineData(ShardFailureReason.Failed, 502)]
+    public async Task NeededShardFailure_NamesTheSelectedOwner_NotTheShardTheExceptionClaims(ShardFailureReason reason, int status)
+    {
+        var binding = Returning(_ => throw new ShardFailureException(ShardId.Parse("west"), reason, null));
+        using var host = ProxiedReadTests.Start(binding);
+
+        ReadResponse result = await ReadResponse.GetAsync(host, Dup, host.Token());
+
+        result.Status.ShouldBe(status);
+        result.Body.ShouldContain("k7q2");
+        result.Body.ShouldNotContain("p9xm");
+        result.Body.ShouldNotContain("unknown");
+    }
+
+    [Fact]
+    public async Task CircuitOpen_NamesTheSelectedOwner_NotTheShardTheExceptionClaims()
+    {
+        var binding = Returning(_ => throw new ShardReadCircuitOpenException(ShardId.Parse("west")));
+        using var host = ProxiedReadTests.Start(binding);
+
+        ReadResponse result = await ReadResponse.GetAsync(host, Dup, host.Token());
+
+        result.Status.ShouldBe(503);
+        result.Body.ShouldContain("k7q2");
+        result.Body.ShouldNotContain("p9xm");
+        result.Body.ShouldNotContain("unknown");
+    }
+
     [Fact]
     public async Task CircuitOpen_IsUnavailable_ForThisReadOnly()
     {
@@ -73,18 +103,33 @@ public sealed class ProxiedReadFailureTests
     }
 
     [Fact]
-    public async Task AnyOtherBindingFailure_IsASanitizedBadGateway()
+    public async Task AnUnexpectedBindingDefect_IsNotMapped_ItReachesHostErrorHandling()
     {
         var binding = Returning(_ => throw new InvalidOperationException("backend said: https://fhir-east.example.org/secret"));
         using var host = ProxiedReadTests.Start(binding);
 
         ReadResponse result = await ReadResponse.GetAsync(host, Dup, host.Token());
 
-        result.Status.ShouldBe(502);
-        result.IssueCode.ShouldBe("exception");
-        result.IsCleanFailure.ShouldBeTrue();
-        result.Body.ShouldNotContain("secret");
-        result.Body.ShouldNotContain("fhir-east");
+        // The host's own handler answers (500), not this route's 502 OperationOutcome for a named shard.
+        result.Status.ShouldBe(500);
+        result.Body.ShouldNotContain("OperationOutcome");
+        result.Body.ShouldNotContain("k7q2");
+    }
+
+    [Fact]
+    public async Task AnUnexpectedBindingDefect_StillYieldsToACostBreach()
+    {
+        var binding = Returning(call =>
+        {
+            Should.Throw<RequestTooCostlyException>(() => call.Budget.OnResponseBytesConsumed(long.MaxValue));
+            throw new InvalidOperationException("defect");
+        });
+        using var host = ProxiedReadTests.Start(binding, setup => setup.Settings["Federation:Limits:MaxResponseBytes"] = "10");
+
+        ReadResponse result = await ReadResponse.GetAsync(host, Dup, host.Token());
+
+        result.Status.ShouldBe(400);
+        result.IssueCode.ShouldBe("too-costly");
     }
 
     [Fact]

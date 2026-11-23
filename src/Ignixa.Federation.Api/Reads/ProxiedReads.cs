@@ -24,9 +24,11 @@ namespace Ignixa.Federation.Api.Reads;
 /// <para>
 /// <b>Order.</b> Budget and signing freshness, authentication, the caller's type grant, enablement, the query, the
 /// alias (resolved in this tenant's registry only), the id, and only then the binding, which receives the validated
-/// registry and key, the budget and its token and nothing from the caller. A cost breach, caller cancellation and the
-/// deadline are all checked before any result is returned and outrank every backend outcome; the status, headers and
-/// body are written only for a result that survived that last checkpoint.
+/// registry and key, the budget and its token and nothing from the caller. Only the binding's documented failures are
+/// mapped, each naming the selected alias; anything else is a defect and propagates to the host's error handling. A cost
+/// breach, caller cancellation and the deadline are all checked before any result is returned or exception leaves, and
+/// outrank every backend outcome; the status, headers and body are written only for a result that survived that last
+/// checkpoint.
 /// </para>
 /// <para>Thread-safe: immutable after construction.</para>
 /// </remarks>
@@ -80,15 +82,12 @@ internal sealed class ProxiedReads
         {
             try
             {
-                IResult result = await ServeAsync(http, alias, ResourceType.Parse(type), id, request);
-                budget.Checkpoint();
-                return result;
+                return await ServeAsync(http, alias, ResourceType.Parse(type), id, request);
             }
-            catch
+            finally
             {
-                // A stop (cost, caller, deadline) outranks whatever the backend reported or threw.
+                // A stop (cost, caller, deadline) outranks whatever was returned or thrown, including an unexpected defect.
                 budget.Checkpoint();
-                throw;
             }
         }
         catch (RequestTooCostlyException)
@@ -99,28 +98,6 @@ internal sealed class ProxiedReads
         {
             http.Response.Headers.Remove(HeaderNames.WWWAuthenticate);
             return SearchOutcome.TimedOut();
-        }
-        catch (OperationCanceledException) when (!http.RequestAborted.IsCancellationRequested)
-        {
-            // Not the caller's and the budget is clean: a backend call's own timeout.
-            return SearchOutcome.Error(StatusCodes.Status504GatewayTimeout, "timeout", "The owning shard did not respond in time.");
-        }
-        catch (ShardFailureException ex)
-        {
-            string owner = _registry.TryGetById(ex.Shard, out ShardDescriptor? shard) ? shard.Alias.Value : "unknown";
-            return ex.Reason == ShardFailureReason.Timeout
-                ? SearchOutcome.Error(StatusCodes.Status504GatewayTimeout, "timeout", $"Shard {owner} did not respond in time.")
-                : SearchOutcome.Error(StatusCodes.Status502BadGateway, "exception", $"Shard {owner} failed.");
-        }
-        catch (ShardReadCircuitOpenException ex)
-        {
-            string owner = _registry.TryGetById(ex.Shard, out ShardDescriptor? shard) ? shard.Alias.Value : "unknown";
-            return SearchOutcome.Unavailable($"Shard {owner} is temporarily unavailable.");
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            // The binding contract forbids anything else; whatever it was, none of it reaches the caller.
-            return SearchOutcome.Error(StatusCodes.Status502BadGateway, "exception", "The owning shard failed.");
         }
     }
 
@@ -168,7 +145,28 @@ internal sealed class ProxiedReads
         }
 
         var key = new ResourceKey(shard.Id, type, resourceId);
-        ShardReadResult? read = await _binding.ReadAsync(_registry, key, budget, budget.Token);
+        ShardReadResult? read;
+        try
+        {
+            read = await _binding.ReadAsync(_registry, key, budget, budget.Token);
+        }
+        catch (ShardFailureException ex)
+        {
+            // Only the selected alias is named: the exception's own shard identity and text are not trusted to reach the caller.
+            return ex.Reason == ShardFailureReason.Timeout
+                ? SearchOutcome.Error(StatusCodes.Status504GatewayTimeout, "timeout", $"Shard {shard.Alias.Value} did not respond in time.")
+                : BadGateway(shard);
+        }
+        catch (ShardReadCircuitOpenException)
+        {
+            return SearchOutcome.Unavailable($"Shard {shard.Alias.Value} is temporarily unavailable.");
+        }
+        catch (OperationCanceledException) when (!http.RequestAborted.IsCancellationRequested)
+        {
+            // Not the caller's; a cost, caller or deadline stop still outranks it at the checkpoint. A backend call's own timeout.
+            return SearchOutcome.Error(StatusCodes.Status504GatewayTimeout, "timeout", $"Shard {shard.Alias.Value} did not respond in time.");
+        }
+
         if (read is null)
         {
             return BadGateway(shard);
