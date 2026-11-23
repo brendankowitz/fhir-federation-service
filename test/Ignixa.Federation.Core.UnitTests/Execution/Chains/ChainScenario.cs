@@ -40,6 +40,7 @@ internal static class ChainScenario
         "Observation?code=a%2Bb&@Observation.subject:Patient&code=a%2Bb",
         "Observation?code=a%7Cb&@Observation.subject:Patient&@Observation.subject:Patient",
         "Observation?code=abc&@Observation.subject:Patient&code=abc",
+        "Observation?code=a%20b&@Observation.subject:Patient",
     ];
 
     public static IReadOnlySet<ResourceType> AllReadable { get; } = new HashSet<ResourceType> { Patient, Observation, Practitioner };
@@ -114,6 +115,13 @@ internal static class ChainScenario
             registry.Shards.ToDictionary(s => s.Id, s => bound?.Invoke(s) ?? ProfileBound(s)),
             limits ?? new LimitOptions(),
             timeouts ?? new TimeoutOptions());
+
+    /// <summary>Creates a resolver that measures every first-sent request with the host's <paramref name="fitsRequest"/>.</summary>
+    public static ForwardChainResolver Resolver(
+        IShardClient client,
+        ShardRegistry registry,
+        Func<ShardSearchRequest, bool> fitsRequest) =>
+        new(client, registry, new LimitOptions(), new TimeoutOptions(), fitsRequest);
 
     public static Task<ForwardChainResolution> ResolveAsync(
         this ForwardChainResolver resolver,

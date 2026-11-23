@@ -18,12 +18,12 @@ namespace Ignixa.Federation.Core.Execution.Chains;
 /// <remarks>
 /// <para>
 /// Before any request is sent the resolver authorizes the searched type and every type a chain searches, in either mode,
-/// refuses semantics this stage does not execute, and measures every witness request against its shard's
-/// <see cref="ShardRequestBound"/>. Chains then resolve one at a time in ordinal order, so a chain with no witness proves the
-/// result empty without searching later chains. Each primary request is measured before it is exposed.
+/// refuses semantics this stage does not execute, and hands every witness request, exactly as it will be sent, to the fit
+/// predicate. Chains then resolve one at a time in ordinal order, so a chain with no witness proves the result empty
+/// without searching later chains. Each primary request is measured, as first sent, before any is exposed.
 /// </para>
 /// <para>
-/// The configured limits and request bounds are snapshotted at construction. The resolver holds no per-request state, so
+/// The configured limits and the fit predicate are snapshotted at construction. The resolver holds no per-request state, so
 /// one instance may resolve concurrent plans; each resolution owns its calls and joins them before it returns or throws.
 /// </para>
 /// </remarks>
@@ -33,16 +33,21 @@ public sealed class ForwardChainResolver
 
     private readonly IShardClient _client;
     private readonly ShardRegistry _registry;
-    private readonly Target[] _targets; // In registry order, which orders witness searches and primary streams.
-    private readonly Dictionary<ShardId, Target> _byShard;
+    private readonly Func<ShardSearchRequest, bool> _fits;
     private readonly int _maxChainKeys;
     private readonly int _maxParallelBackendCalls;
     private readonly TimeSpan _chainSubquery;
 
-    /// <summary>Initializes a new instance of the <see cref="ForwardChainResolver"/> class.</summary>
+    /// <summary>
+    /// Initializes a new instance of the <see cref="ForwardChainResolver"/> class that measures requests against
+    /// operator-trusted byte ceilings.
+    /// </summary>
     /// <param name="client">The client every witness search is sent through.</param>
     /// <param name="registry">The registry this resolver serves; a plan must have been made against this very instance.</param>
-    /// <param name="requestBounds">One operator-trusted bound per registry shard, and no other; copied.</param>
+    /// <param name="requestBounds">
+    /// One operator-trusted bound per registry shard, and no other; copied. A request fits when its complete initial form
+    /// body (POST) or verbatim request-target (GET), with <c>_count</c>, is within the bound for its method.
+    /// </param>
     /// <param name="limits">
     /// The limits; <see cref="LimitOptions.MaxChainKeys"/> and <see cref="LimitOptions.MaxParallelBackendCalls"/> are read
     /// once and must be positive.
@@ -63,12 +68,45 @@ public sealed class ForwardChainResolver
         IReadOnlyDictionary<ShardId, ShardRequestBound> requestBounds,
         LimitOptions limits,
         TimeoutOptions timeouts)
+        : this(client, registry, limits, timeouts, BoundsFit(registry, requestBounds))
+    {
+    }
+
+    /// <summary>
+    /// Initializes a new instance of the <see cref="ForwardChainResolver"/> class that measures requests with the host's
+    /// fit predicate (design spec §7.5).
+    /// </summary>
+    /// <param name="client">The client every witness search is sent through.</param>
+    /// <param name="registry">The registry this resolver serves; a plan must have been made against this very instance.</param>
+    /// <param name="limits">
+    /// The limits; <see cref="LimitOptions.MaxChainKeys"/> and <see cref="LimitOptions.MaxParallelBackendCalls"/> are read
+    /// once and must be positive.
+    /// </param>
+    /// <param name="timeouts">
+    /// The timeouts; <see cref="TimeoutOptions.ChainSubquery"/> bounds each chain's witness searches and
+    /// <see cref="TimeoutOptions.BackendCall"/> each call. Both are read once and must be positive.
+    /// </param>
+    /// <param name="fitsRequest">
+    /// Whether a request, exactly as first sent (its shard, type, method, ordered verbatim parameters and the page size it
+    /// asks for, without <c>_count</c> among the parameters), fits the transport. It is given every witness request before
+    /// any is sent and every primary request after the witness searches; a <see langword="false"/> refuses the plan with
+    /// <see cref="ForwardChainRefusalReason.RequestTooLarge"/>. It must be pure and safe to call concurrently; an exception
+    /// it throws propagates to the caller of <see cref="ResolveAsync"/>.
+    /// </param>
+    /// <exception cref="ArgumentNullException">A required argument is <see langword="null"/>.</exception>
+    /// <exception cref="ArgumentOutOfRangeException">A limit or timeout is not positive.</exception>
+    public ForwardChainResolver(
+        IShardClient client,
+        ShardRegistry registry,
+        LimitOptions limits,
+        TimeoutOptions timeouts,
+        Func<ShardSearchRequest, bool> fitsRequest)
     {
         ArgumentNullException.ThrowIfNull(client);
         ArgumentNullException.ThrowIfNull(registry);
-        ArgumentNullException.ThrowIfNull(requestBounds);
         ArgumentNullException.ThrowIfNull(limits);
         ArgumentNullException.ThrowIfNull(timeouts);
+        ArgumentNullException.ThrowIfNull(fitsRequest);
         _maxChainKeys = limits.MaxChainKeys;
         _maxParallelBackendCalls = limits.MaxParallelBackendCalls;
         _chainSubquery = timeouts.ChainSubquery;
@@ -78,32 +116,7 @@ public sealed class ForwardChainResolver
         ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(_chainSubquery, TimeSpan.Zero, nameof(timeouts));
         ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(backendCall, TimeSpan.Zero, nameof(timeouts));
 
-        if (requestBounds.Count != registry.Shards.Count)
-        {
-            throw new ArgumentException("Every registry shard, and no other, needs a request bound.", nameof(requestBounds));
-        }
-
-        _byShard = [];
-        foreach (ShardDescriptor shard in registry.Shards)
-        {
-            if (!requestBounds.TryGetValue(shard.Id, out ShardRequestBound? bound) || bound is null)
-            {
-                throw new ArgumentException("Every registry shard, and no other, needs a request bound.", nameof(requestBounds));
-            }
-
-            // A POST-capable shard can be sent either method (see ForwardChainPrimary), so it needs both ceilings; a GET-only
-            // shard is only ever sent GET, and a POST ceiling for it would describe a request that is never made.
-            if (shard.Profile.SupportsPostSearch != bound.MaxPostBodyBytes.HasValue)
-            {
-                throw new ArgumentException(
-                    $"Shard '{shard.Id}': a request bound carries a POST body ceiling exactly when the profile supports POST search.",
-                    nameof(requestBounds));
-            }
-
-            _byShard.Add(shard.Id, new Target(shard, bound));
-        }
-
-        _targets = [.. registry.Shards.Select(s => _byShard[s.Id])];
+        _fits = fitsRequest;
         _client = new DeadlineShardClient(client, backendCall);
         _registry = registry;
     }
@@ -164,23 +177,26 @@ public sealed class ForwardChainResolver
         }
 
         int pageSize = plan.PageSize!.Value; // Refuse rejected a count-only plan.
-        // With reverse chains refused, the replaced occurrences are exactly the distributed forward chains.
+        // With reverse chains refused, the replaced occurrences are exactly the distributed forward chains. Each chain's
+        // witness requests are built once, in registry order, so the requests measured are the very ones drained.
         PlannedOccurrence[] chains = [.. plan.Occurrences.Where(o => o.ReplacementKey is not null)];
-        foreach (PlannedOccurrence chain in chains)
+        ShardSearchRequest[][] witnessRequests = [.. chains.Select(WitnessRequests)];
+        for (int i = 0; i < chains.Length; i++)
         {
-            foreach (Target target in _targets)
+            foreach (ShardSearchRequest witness in witnessRequests[i])
             {
-                if (!target.Fits(chain.Hop!.Path.Target, Witness(chain), target.Shard.Profile.MaxCount, target.WitnessMethod))
+                if (!_fits(witness))
                 {
-                    return allowance.Refuse(ForwardChainRefusalReason.RequestTooLarge, chain.Occurrence.Ordinal, target.Shard.Id);
+                    return allowance.Refuse(ForwardChainRefusalReason.RequestTooLarge, chains[i].Occurrence.Ordinal, witness.Shard);
                 }
             }
         }
 
         var witnesses = new Dictionary<int, IReadOnlyList<ResourceKey>>();
-        foreach (PlannedOccurrence chain in chains)
+        for (int i = 0; i < chains.Length; i++)
         {
-            Drained drained = await DrainAsync(chain, allowance, cancellationToken);
+            PlannedOccurrence chain = chains[i];
+            Drained drained = await DrainAsync(chain, witnessRequests[i], allowance, cancellationToken);
             int ordinal = chain.Occurrence.Ordinal;
             if (drained.Refusal is { } refusal)
             {
@@ -195,12 +211,12 @@ public sealed class ForwardChainResolver
             witnesses.Add(ordinal, drained.Keys);
         }
 
-        var streams = new List<ShardSearchRequest>(_targets.Length);
-        foreach (Target target in _targets)
+        var streams = new List<ShardSearchRequest>(_registry.Shards.Count);
+        foreach (ShardDescriptor shard in _registry.Shards)
         {
-            if (!ForwardChainPrimary.TryBuild(plan, target.Shard, witnesses, Fits, out ShardSearchRequest? primary, out var refusal))
+            if (!ForwardChainPrimary.TryBuild(plan, shard, witnesses, _fits, out ShardSearchRequest? primary, out var refusal))
             {
-                return allowance.Refuse(refusal.Reason, refusal.Ordinal, target.Shard.Id);
+                return allowance.Refuse(refusal.Reason, refusal.Ordinal, shard.Id);
             }
 
             streams.Add(primary);
@@ -260,27 +276,88 @@ public sealed class ForwardChainResolver
         return plan.IncludeTotal ? (ForwardChainRefusalReason.Total, -1) : null;
     }
 
-    /// <summary>Gets whether <paramref name="request"/>, as first sent, fits its shard's trusted request bound.</summary>
-    private bool Fits(ShardSearchRequest request) =>
-        _byShard[request.Shard].Fits(request.Type, request.Parameters, request.PageSize, request.Method);
-
-    /// <summary>Gets a chain's witness parameters: exactly the planned terminal, asking only for ids.</summary>
-    private static ParameterOccurrence[] Witness(PlannedOccurrence chain) => [chain.Hop!.Terminal!, IdsOnly];
+    /// <summary>
+    /// Builds a chain's witness request for every shard in registry order: exactly the planned terminal, asking only for ids,
+    /// for the shard's largest page, by POST when the profile supports it and else by GET (design spec §7.5).
+    /// </summary>
+    private ShardSearchRequest[] WitnessRequests(PlannedOccurrence chain)
+    {
+        ParameterOccurrence[] parameters = [chain.Hop!.Terminal!, IdsOnly];
+        return
+        [
+            .. _registry.Shards.Select(s => new ShardSearchRequest(
+                s.Id,
+                chain.Hop.Path.Target,
+                parameters,
+                s.Profile.MaxCount,
+                s.Profile.SupportsPostSearch ? ShardSearchMethod.PostSearch : ShardSearchMethod.Get)),
+        ];
+    }
 
     /// <summary>
-    /// Searches one distributed chain's target on every shard and drains every page, within the chain deadline, the key cap
-    /// and the request's budgets.
+    /// Adapts operator-trusted byte ceilings to a fit predicate: the complete initial request with <c>_count</c> must fit
+    /// the ceiling for its method, the form body for POST, or the verbatim request-target (the canonical base path,
+    /// <c>/Type?</c> and every raw pair, as transport writes it) for GET.
     /// </summary>
-    private async Task<Drained> DrainAsync(PlannedOccurrence chain, Allowance allowance, CancellationToken cancellationToken)
+    private static Func<ShardSearchRequest, bool> BoundsFit(ShardRegistry registry, IReadOnlyDictionary<ShardId, ShardRequestBound> requestBounds)
     {
-        ResourceType type = chain.Hop!.Path.Target;
-        ParameterOccurrence[] witness = Witness(chain);
-        ShardStream[] streams =
-        [
-            .. _targets.Select(t => new ShardStream(
-                new ShardSearchRequest(t.Shard.Id, type, witness, t.Shard.Profile.MaxCount, t.WitnessMethod),
-                t.Shard)),
-        ];
+        ArgumentNullException.ThrowIfNull(registry);
+        ArgumentNullException.ThrowIfNull(requestBounds);
+        if (requestBounds.Count != registry.Shards.Count)
+        {
+            throw new ArgumentException("Every registry shard, and no other, needs a request bound.", nameof(requestBounds));
+        }
+
+        var bounds = new Dictionary<ShardId, (ShardDescriptor Shard, ShardRequestBound Bound)>();
+        foreach (ShardDescriptor shard in registry.Shards)
+        {
+            if (!requestBounds.TryGetValue(shard.Id, out ShardRequestBound? bound) || bound is null)
+            {
+                throw new ArgumentException("Every registry shard, and no other, needs a request bound.", nameof(requestBounds));
+            }
+
+            // A POST-capable shard can be sent either method (see ForwardChainPrimary), so it needs both ceilings; a GET-only
+            // shard is only ever sent GET, and a POST ceiling for it would describe a request that is never made.
+            if (shard.Profile.SupportsPostSearch != bound.MaxPostBodyBytes.HasValue)
+            {
+                throw new ArgumentException(
+                    $"Shard '{shard.Id}': a request bound carries a POST body ceiling exactly when the profile supports POST search.",
+                    nameof(requestBounds));
+            }
+
+            bounds.Add(shard.Id, (shard, bound));
+        }
+
+        return request =>
+        {
+            (ShardDescriptor shard, ShardRequestBound bound) = bounds[request.Shard];
+            string query = QueryRewriter.Render(request.Parameters);
+            query = query.Length == 0 ? $"_count={request.PageSize}" : $"{query}&_count={request.PageSize}";
+            if (request.Method == ShardSearchMethod.PostSearch)
+            {
+                return Encoding.UTF8.GetByteCount(query) <= bound.MaxPostBodyBytes!.Value; // Only POST-capable shards are sent POST.
+            }
+
+            // The registry's canonical base is https with no terminal slash, so its path is whatever follows the authority.
+            // Nothing is decoded or re-escaped: System.Uri would decode escaped unreserved characters and expand a raw '|'.
+            string baseUrl = shard.CanonicalBaseUrl;
+            int path = baseUrl.IndexOf('/', Uri.UriSchemeHttps.Length + "://".Length, StringComparison.Ordinal);
+            string target = $"{(path < 0 ? string.Empty : baseUrl[path..])}/{request.Type.Value}?{query}";
+            return Encoding.UTF8.GetByteCount(target) <= bound.MaxGetTargetBytes;
+        };
+    }
+
+    /// <summary>
+    /// Searches one distributed chain's target on every shard with its measured <paramref name="requests"/>, in registry
+    /// order, and drains every page, within the chain deadline, the key cap and the request's budgets.
+    /// </summary>
+    private async Task<Drained> DrainAsync(
+        PlannedOccurrence chain,
+        ShardSearchRequest[] requests,
+        Allowance allowance,
+        CancellationToken cancellationToken)
+    {
+        ShardStream[] streams = [.. requests.Zip(_registry.Shards, (r, s) => new ShardStream(r, s))];
 
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         deadline.CancelAfter(_chainSubquery);
@@ -338,46 +415,6 @@ public sealed class ForwardChainResolver
         {
             await scheduler.DisposeAsync();
             allowance.Fetches -= scheduler.Started;
-        }
-    }
-
-    /// <summary>A shard and its trusted request bounds.</summary>
-    private sealed class Target
-    {
-        public Target(ShardDescriptor shard, ShardRequestBound bound)
-        {
-            Shard = shard;
-            Bound = bound;
-            WitnessMethod = shard.Profile.SupportsPostSearch ? ShardSearchMethod.PostSearch : ShardSearchMethod.Get;
-        }
-
-        public ShardDescriptor Shard { get; }
-
-        public ShardRequestBound Bound { get; }
-
-        /// <summary>Gets how witness searches are sent: by POST when the profile supports it, else by GET (design spec §7.5).</summary>
-        public ShardSearchMethod WitnessMethod { get; }
-
-        /// <summary>
-        /// Gets whether the complete initial request for <paramref name="parameters"/> with <c>_count</c> =
-        /// <paramref name="count"/> fits the ceiling for <paramref name="method"/>: the form body for POST, or the verbatim
-        /// request-target (the canonical base path, <c>/Type?</c> and every raw pair, as transport writes it) for GET.
-        /// </summary>
-        public bool Fits(ResourceType type, IReadOnlyList<ParameterOccurrence> parameters, int count, ShardSearchMethod method)
-        {
-            string query = QueryRewriter.Render(parameters);
-            query = query.Length == 0 ? $"_count={count}" : $"{query}&_count={count}";
-            if (method == ShardSearchMethod.PostSearch)
-            {
-                return Encoding.UTF8.GetByteCount(query) <= Bound.MaxPostBodyBytes!.Value; // Only POST-capable shards are sent POST.
-            }
-
-            // The registry's canonical base is https with no terminal slash, so its path is whatever follows the authority.
-            // Nothing is decoded or re-escaped: System.Uri would decode escaped unreserved characters and expand a raw '|'.
-            string baseUrl = Shard.CanonicalBaseUrl;
-            int path = baseUrl.IndexOf('/', Uri.UriSchemeHttps.Length + "://".Length, StringComparison.Ordinal);
-            string target = $"{(path < 0 ? string.Empty : baseUrl[path..])}/{type.Value}?{query}";
-            return Encoding.UTF8.GetByteCount(target) <= Bound.MaxGetTargetBytes;
         }
     }
 
