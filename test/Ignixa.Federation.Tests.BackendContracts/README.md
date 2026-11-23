@@ -116,9 +116,9 @@ The raw escape spelling must reach the wire. .NET canonicalizes a GET query and 
 with `DangerousDisablePathAndQueryCanonicalization`, and an offline test captures the real request through
 a loopback server to prove the spelling pair is on the wire. The POST body is sent raw.
 
-No live outcome is recorded yet: the match and echo results for GET and POST are pending the first Linux
-run. Offline tests (`RepeatedIdEvidenceTests`, no Docker) cover the parser, sanitized reporting, and
-the actual request target and form body sent by the client.
+Offline tests (`RepeatedIdEvidenceTests`, no Docker) cover the parser, sanitized reporting, and the actual
+request target and form body sent by the client. In the [hosted Linux run](#evidence-status), both GET cases
+echoed the decoded `_id` pair and both POST cases collapsed it. All four passed the match or count contract.
 
 ## Patient.given witness (`PatientGivenContractTests`)
 
@@ -169,13 +169,13 @@ body or a server link. Offline tests (`PatientGivenEvidenceTests`, no Docker) ve
 and the literal GET and POST wire for AND, OR and `:exact`. They reject incomplete pages, wrong match
 multisets despite correct echoes, and wrong echoes despite correct matches.
 
-Historical reference only: a separate native Windows LocalDB run of the Microsoft FHIR Server (the "west"
-build, not Ignixa) reported `FHIR Server for Azure` / `1.0.0` in its metadata. All six shapes returned the
-expected match multisets for both methods with `_count=20` and no `_total=accurate`. Every required pair
+Historical reference (recorded November 20, 2026): a separate native Windows LocalDB run of the Microsoft
+FHIR Server (the "west" build, not Ignixa) reported `FHIR Server for Azure` / `1.0.0` in its metadata. All
+six shapes returned the expected match multisets for both methods with `_count=20` and no `_total=accurate`. Every required pair
 appeared in `Bundle.self`, but the native echo check did not rule out extra pairs. The match multiset, not
 the echo, is the evidence that the tested predicates took effect. That run is not this harness, not the pinned
-`r4-fhir-server:5.2.84` image and not a Linux Docker run, so it is not evidence for this suite. No live
-outcome of this witness is recorded yet.
+`r4-fhir-server:5.2.84` image and not a Linux Docker run, so it is not evidence for this suite. All twelve
+cases later passed both the match and echo assertions in the [hosted Linux run](#evidence-status).
 
 ## Repeated Observation.subject join witness (`ReferenceSearchContractTests`)
 
@@ -212,10 +212,12 @@ seed and raw-spelling tie, the match and echo rules against each other, the one 
 order, representative unaccountable pages, sanitized reports, and the real GET and POST wire through a loopback
 server.
 
-Coordinator-reported, not reproduced here: a separate native run (not this harness, not the pinned image, and
-without a software identity recorded in this repository) selected the matches in the table for both methods. GET
-echoed both occurrences for `equal` and `unequal`; POST echoed one occurrence for `equal` and both for `unequal`.
-That is not evidence for this suite and not acceptance. No live outcome of this witness is recorded yet.
+Historical reference (recorded November 20, 2026): the coordinator reported that a separate native run
+(not this harness, not the pinned image, and without a software identity recorded in this repository) selected
+the matches in the table for both methods. GET echoed both occurrences for `equal` and `unequal`; POST echoed
+one occurrence for `equal` and both for `unequal`. Those native results are not evidence for this suite.
+All six cases passed the match and echo checks in the [hosted Linux run](#evidence-status), including the
+case that allows either POST echo for `equal`.
 
 ## Directional sort and continuation witness (`PatientContinuationContractTests`)
 
@@ -250,8 +252,8 @@ backend that accepts only the exact wire shape, and check the replay of an odd e
 redemption, token reuse across positions, terminal handling, mismatches in row, version and instant, the origin,
 path and escape rejections, and report sanitization. Mutations of the double redemption, the tie rule, the
 version and instant comparison, the terminal rule, direction, oracle order, the origin check, token reuse and
-verbatim replay each fail them. No live outcome of this
-witness is recorded, and it is not accepted until a Linux run supplies one.
+verbatim replay each fail them. All four method and direction combinations passed the walk and replay checks
+in the [hosted Linux run](#evidence-status).
 
 ## Run it
 
@@ -310,9 +312,9 @@ Every failure starts with a tag, so a missing prerequisite is never mistaken for
 Reports identify the backend using the bounded `software.name` and `software.version` fields from
 `GET /metadata`, not the image tag. Search diagnostics contain only reserved ids, counts, status
 codes, and exception type names. Startup failures may also report container state and exit code.
-On fixture startup failure, the harness reports the loopback metadata URL and last probe error and
-prints bounded tails from the two disposable containers before removing them. The generated SQL
-password is redacted. Probe response bodies are not printed.
+On fixture startup failure, the harness reports the loopback metadata URL and last probe error. Before
+removing the containers, it requests each container's last 60 log lines, keeps complete lines within the
+last 12 KiB, and redacts the generated SQL password. Probe response bodies are not printed.
 
 Before any case runs, the fixture waits until all five seeded Observations are returned by an `_id` search.
 If readiness times out, it reports the last sanitized observation: why a response was incomplete, or how
@@ -328,14 +330,11 @@ base and can include foreign references, so it is not an exact-local query.
 
 ## Evidence status
 
-- Local (Windows, no Docker engine): the project builds with the .NET 11.0.100 SDK. The offline tests pass.
-  The thirty-five live cases (three reference, six count, four repeated `_id`, twelve Patient.given, six
-  Observation.subject join, four directional continuation) run and fail with `[prerequisite]`, as they should
-  without Docker: the offline run is 302 passed, 0 failed, 0 skipped, and the live run is 35 total, 0 passed,
-  35 failed, 0 skipped.
-- Pending Docker or CI: startup, port binding, match sets, the Patient count totals, the repeated
-  `_id` match and echo outcomes, the Patient.given match and echo outcomes, the Observation.subject join
-  match and echo outcomes, and the directional continuation outcomes
-  have not been verified against a live backend; no outcome is recorded here and none is
-  assumed. The first Linux run in `.github/workflows/backend-contracts.yml` supplies that evidence. Until then
-  the count, Patient.given, Observation.subject join and continuation witnesses are not accepted.
+- **Hosted Linux, November 23, 2026:** the [reference search job](https://github.com/brendankowitz/fhir-federation-service/actions/runs/45232281984/job/137894707777)
+  at `c1382b0f59f39a5d5d961d929c527a54128ebcd6` passed 305 offline and 35 live cases, with no failures or skips.
+  `/metadata` reported `FHIR Server for Azure` / `5.2.84`. This verifies the listed witnesses against the
+  pinned containers, not a full backend profile or a federation end-to-end run.
+- **Local Windows, November 23, 2026:** the same commit passed 305 offline cases. The Linux Docker engine
+  was unavailable; all 35 live cases failed at `[prerequisite]` before exercising the backend.
+- **Local Windows, November 20, 2026 (historical):** the earlier snapshot recorded in `8b27b1e` passed 302
+  offline cases, with no failures or skips. All 35 live cases failed at `[prerequisite]` without Docker.
