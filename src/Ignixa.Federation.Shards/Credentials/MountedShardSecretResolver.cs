@@ -55,7 +55,10 @@ public sealed class MountedShardSecretResolver : IShardSecretResolver
     private readonly FrozenDictionary<string, string> _leaves;
 
     /// <summary>Creates the resolver over a mounted directory and a fixed map of logical names to leaf file names.</summary>
-    /// <param name="rootDirectory">The fully qualified local directory the operator mounted. It is normalized but not read.</param>
+    /// <param name="rootDirectory">
+    /// The fully qualified local directory the operator mounted. On Windows it must start with a drive letter, colon and
+    /// directory separator. The path is normalized but not read.
+    /// </param>
     /// <param name="files">The logical names (opaque, ordinal) and the file name each one reads inside the root. Snapshotted.</param>
     /// <exception cref="ArgumentNullException"><paramref name="rootDirectory"/> or <paramref name="files"/> is <see langword="null"/>.</exception>
     /// <exception cref="ArgumentException">
@@ -174,9 +177,11 @@ public sealed class MountedShardSecretResolver : IShardSecretResolver
 
     private static string NormalizeRoot(string root)
     {
-        // Windows UNC and device forms (\\server\share, \\?\, \\.\) are network or device roots, not a local directory.
-        bool networkOrDevice = OperatingSystem.IsWindows() && root.Length >= 2 && IsSeparator(root[0]) && IsSeparator(root[1]);
-        if (networkOrDevice || !Path.IsPathFullyQualified(root) || root.Any(char.IsControl))
+        // Windows also treats network and device paths as fully qualified. Require the ordinary drive form instead.
+        bool supportedRoot = OperatingSystem.IsWindows()
+            ? root.Length >= 3 && char.IsAsciiLetter(root[0]) && root[1] == ':' && root[2] is '\\' or '/'
+            : Path.IsPathFullyQualified(root);
+        if (!supportedRoot || root.Any(char.IsControl))
         {
             throw RootRefused();
         }
@@ -193,8 +198,6 @@ public sealed class MountedShardSecretResolver : IShardSecretResolver
 
     private static ArgumentException RootRefused() =>
         new("The mount root must be a fully qualified local directory path.", "rootDirectory");
-
-    private static bool IsSeparator(char c) => c is '/' or '\\';
 
     // An allow-list: it rules out separators, rooted and drive forms, stream syntax, wildcards, control characters,
     // trailing-space aliases, 8.3 short names (~) and non-ASCII look-alikes in one rule.

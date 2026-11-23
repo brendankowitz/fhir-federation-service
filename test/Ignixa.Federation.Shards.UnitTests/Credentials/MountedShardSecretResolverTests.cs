@@ -138,11 +138,27 @@ public sealed class MountedShardSecretResolverTests : IDisposable
     [InlineData("//server/share/dir")]
     [InlineData("\\\\?\\C:\\dir")]
     [InlineData("\\\\.\\C:\\dir")]
-    public void AWindowsNetworkOrDevicePathRootIsRefused(string root)
+    [InlineData("\\??\\C:\\synthetic-mount")]
+    [InlineData("C:synthetic-mount")]
+    public void AWindowsRootThatIsNotDriveRootedIsRefused(string root)
     {
-        Assert.SkipUnless(OperatingSystem.IsWindows(), "UNC and device roots are Windows path forms.");
+        Assert.SkipUnless(OperatingSystem.IsWindows(), "Drive, UNC and device roots are Windows path forms.");
 
-        Should.Throw<ArgumentException>(() => new MountedShardSecretResolver(root, [new(Name, Leaf)])).ParamName.ShouldBe("rootDirectory");
+        ArgumentException failure = Should.Throw<ArgumentException>(() => new MountedShardSecretResolver(root, [new(Name, Leaf)]));
+
+        failure.ParamName.ShouldBe("rootDirectory");
+        failure.Message.ShouldNotContain(root);
+        failure.InnerException.ShouldBeNull();
+    }
+
+    [Theory]
+    [InlineData("C:\\synthetic-mount")]
+    [InlineData("c:/synthetic-mount")]
+    public void ADriveRootedWindowsPathIsAcceptedWithoutReadingTheDirectory(string root)
+    {
+        Assert.SkipUnless(OperatingSystem.IsWindows(), "Drive roots are a Windows path form.");
+
+        Should.NotThrow(() => new MountedShardSecretResolver(root, [new(Name, Leaf)]));
     }
 
     [Fact]
