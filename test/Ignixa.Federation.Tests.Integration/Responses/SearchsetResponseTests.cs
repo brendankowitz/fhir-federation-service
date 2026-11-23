@@ -158,6 +158,37 @@ public sealed class SearchsetResponseTests
     }
 
     [Fact]
+    public async Task AnEntryOfAnIneligibleType_KeepsItsBytesFullUrlAndSourceShardButHasNoAlternate_WhetherMatchOrInclude()
+    {
+        Collision collision = LoadCollision();
+        ShardEntry observationMatch = Entry("east", "Observation", "obs-dup", ObservationBytes);
+        ShardEntry observationInclude = Entry("west", "Observation", "obs-dup", ObservationBytes);
+        ShardEntry organizationInclude = Entry("east", "Organization", "org1", "{\"resourceType\":\"Organization\",\"id\":\"org1\"}"u8);
+
+        byte[] body = await BodyAsync(CreateEligible(
+            collision.Registry,
+            [collision.East, observationMatch],
+            [observationInclude, organizationInclude],
+            eligible: type => type.Value is "Patient" or "Organization"));
+
+        JsonElement[] entries = [.. JsonDocument.Parse(body).RootElement.GetProperty("entry").EnumerateArray()];
+        entries.Select(e => e.GetProperty("fullUrl").GetString()).ShouldBe(
+        [
+            "https://fhir-east.example.org/Patient/dup",
+            "https://fhir-east.example.org/Observation/obs-dup",
+            "https://fhir-west.example.org/Observation/obs-dup",
+            "https://fhir-east.example.org/Organization/org1",
+        ]);
+        entries.Select(e => e.TryGetProperty("link", out _)).ShouldBe([true, false, false, true]);
+        entries.Select(SourceShard).ShouldBe(["k7q2", "k7q2", "p9xm", "k7q2"]);
+        AlternateUrl(entries[0]).ShouldBe($"{ProxyBase}/shards/k7q2/Patient/dup");
+        AlternateUrl(entries[3]).ShouldBe($"{ProxyBase}/shards/k7q2/Organization/org1");
+        entries.Select(e => e.GetProperty("search").GetProperty("mode").GetString()).ShouldBe(["match", "match", "include", "include"]);
+        CountOccurrences(body, ObservationBytes).ShouldBe(2);
+        IndexOf(body, EastBytes).ShouldBeGreaterThanOrEqualTo(0);
+    }
+
+    [Fact]
     public async Task ProxyBaseWithTrailingSlash_DoesNotDoubleTheSlash()
     {
         Collision collision = LoadCollision();
@@ -278,6 +309,13 @@ public sealed class SearchsetResponseTests
 
         return data;
     }
+
+    private static IResult CreateEligible(
+        ShardRegistry registry,
+        IReadOnlyList<ShardEntry> matches,
+        IReadOnlyList<ShardEntry> includes,
+        Func<ResourceType, bool> eligible) =>
+        SearchsetResponse.Create(registry, new Uri(Self), matches, includes, [], null, new Uri(ProxyBase), eligible, null);
 
     private static IResult Create(
         ShardRegistry registry,

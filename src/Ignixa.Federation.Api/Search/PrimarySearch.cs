@@ -118,7 +118,7 @@ internal sealed class PrimarySearch
         _settings = settings;
         _capabilities = capabilities;
         _registry = capabilities.Registry;
-        Reads = new ProxiedReads(settings, _registry, options.ProxyReads ? readBinding : null);
+        Reads = new ProxiedReads(settings, _registry, options.ProxyReads ? readBinding : null, capabilities.Resources.Select(resource => resource.Type));
         _limits = options.Limits;
         _timeouts = options.Timeouts;
         _planner = new SearchPlanner(capabilities, options.ChainResolution, options.Limits);
@@ -756,7 +756,7 @@ internal sealed class PrimarySearch
         IResult response;
         try
         {
-            response = SearchsetResponse.Create(_registry, SelfLink(type, search.RawQuery), page.Matches, staged.Includes, staged.Outcomes, next, Reads.AlternateBase);
+            response = SearchsetResponse.Create(_registry, SelfLink(type, search.RawQuery), page.Matches, staged.Includes, staged.Outcomes, next, Reads.AlternateBase, Reads.Serves, total: null);
         }
         catch (SearchsetEntryException ex) when (_registry.TryGetById(ex.Key.Shard, out ShardDescriptor? shard))
         {

@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Ignixa.Federation.Api.Reads;
 using Ignixa.Federation.Api.Search;
 using Ignixa.Federation.Core.Search;
 using Ignixa.Specification.ValueSets.Normative;
@@ -46,9 +47,9 @@ internal static class MetadataEndpoints
     /// <param name="publicBase">The public base URL the statement names.</param>
     /// <param name="publishedAt">The statement's date.</param>
     /// <param name="resources">The resources the view supports.</param>
-    /// <param name="proxiedReads">Whether the host serves the proxied read.</param>
+    /// <param name="proxiedReads">The shared eligibility; a resource is given the <c>read</c> interaction exactly when it serves the type.</param>
     /// <returns>The serialized statement.</returns>
-    internal static byte[] WriteStatement(string publicBase, DateTimeOffset publishedAt, IReadOnlyList<ResourceSearchSupport> resources, bool proxiedReads)
+    internal static byte[] WriteStatement(string publicBase, DateTimeOffset publishedAt, IReadOnlyList<ResourceSearchSupport> resources, ProxiedReads proxiedReads)
     {
         using var buffer = new MemoryStream();
         using (var json = new Utf8JsonWriter(buffer))
@@ -88,13 +89,13 @@ internal static class MetadataEndpoints
         return buffer.ToArray();
     }
 
-    private static void WriteResource(Utf8JsonWriter json, ResourceSearchSupport resource, bool proxiedReads)
+    private static void WriteResource(Utf8JsonWriter json, ResourceSearchSupport resource, ProxiedReads proxiedReads)
     {
         json.WriteStartObject();
         json.WriteString("type", resource.Type.Value);
         // The planner can admit features that the current host does not execute.
         json.WriteStartArray("interaction");
-        if (proxiedReads)
+        if (proxiedReads.Serves(resource.Type))
         {
             json.WriteStartObject();
             json.WriteString("code", "read");

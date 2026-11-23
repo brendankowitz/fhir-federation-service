@@ -117,6 +117,10 @@ internal static class SearchWorld
     /// primary type and a resolver can return a resource that is also a match.
     /// </param>
     /// <param name="patientGiven">Whether <c>Patient.given</c> is searchable, which tells the two collision patients apart.</param>
+    /// <param name="observation">
+    /// Whether <c>Observation</c> is searchable at all. Leave it on with <paramref name="reverseChain"/>, <paramref name="forwardChain"/>,
+    /// <paramref name="distributedForward"/> and <paramref name="revInclude"/>, which certify paths from <c>Observation</c>.
+    /// </param>
     public static SearchCapabilities Capabilities(
         bool patientName = true,
         IEnumerable<string>? exactCountShapes = null,
@@ -132,7 +136,8 @@ internal static class SearchWorld
         bool organizationInclude = false,
         bool conditionRevInclude = false,
         bool selfRevInclude = false,
-        bool patientGiven = false)
+        bool patientGiven = false,
+        bool observation = true)
     {
         registry ??= Registry;
         List<SearchParameterSupport> patientParameters =
@@ -194,10 +199,12 @@ internal static class SearchWorld
                 : new(subjectPath, subject, ReferenceSearchForms.None, ReferenceSearchForms.None));
         }
 
-        List<ResourceSearchSupport> resources =
-        [
-            new(ResourceType.Parse("Observation"), observationParameters, [], []),
-        ];
+        List<ResourceSearchSupport> resources = [];
+        if (observation)
+        {
+            resources.Add(new(ResourceType.Parse("Observation"), observationParameters, [], []));
+        }
+
         if (patient)
         {
             List<string> revIncludes = [];

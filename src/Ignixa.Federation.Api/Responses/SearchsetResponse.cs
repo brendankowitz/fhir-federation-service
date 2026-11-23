@@ -62,7 +62,34 @@ public static class SearchsetResponse
         IReadOnlyList<ReadOnlyMemory<byte>> outcomes,
         Uri? next = null,
         Uri? proxyReadBase = null,
-        int? total = null)
+        int? total = null) =>
+        Create(registry, self, matches, includes, outcomes, next, proxyReadBase, static _ => true, total);
+
+    /// <summary>
+    /// Builds the response for one page like the public overload, but adds the <c>alternate</c> link only to an entry whose
+    /// resource type <paramref name="alternateEligible"/> accepts. An entry that is not offered a link is otherwise unchanged:
+    /// same <c>fullUrl</c>, source-shard extension and exact resource bytes.
+    /// </summary>
+    /// <param name="registry">See the public overload.</param>
+    /// <param name="self">See the public overload.</param>
+    /// <param name="matches">See the public overload.</param>
+    /// <param name="includes">See the public overload.</param>
+    /// <param name="outcomes">See the public overload.</param>
+    /// <param name="next">See the public overload.</param>
+    /// <param name="proxyReadBase">See the public overload; without it no entry has a link and <paramref name="alternateEligible"/> is not consulted.</param>
+    /// <param name="alternateEligible">Whether the owner-qualified read serves a resource type.</param>
+    /// <param name="total">See the public overload.</param>
+    /// <returns>A <c>200</c> <c>application/fhir+json</c> result carrying the serialised page.</returns>
+    internal static IResult Create(
+        ShardRegistry registry,
+        Uri self,
+        IReadOnlyList<ShardEntry> matches,
+        IReadOnlyList<ShardEntry> includes,
+        IReadOnlyList<ReadOnlyMemory<byte>> outcomes,
+        Uri? next,
+        Uri? proxyReadBase,
+        Func<ResourceType, bool> alternateEligible,
+        int? total)
     {
         ArgumentNullException.ThrowIfNull(registry);
         ArgumentNullException.ThrowIfNull(self);
@@ -98,8 +125,8 @@ public static class SearchsetResponse
             if (matches.Count > 0 || includes.Count > 0 || outcomes.Count > 0)
             {
                 writer.WriteStartArray("entry");
-                WriteShardEntries(writer, registry, matches, "match", alternateBase, nameof(matches));
-                WriteShardEntries(writer, registry, includes, "include", alternateBase, nameof(includes));
+                WriteShardEntries(writer, registry, matches, "match", alternateBase, alternateEligible, nameof(matches));
+                WriteShardEntries(writer, registry, includes, "include", alternateBase, alternateEligible, nameof(includes));
                 for (int i = 0; i < outcomes.Count; i++)
                 {
                     writer.WriteStartObject();
@@ -132,6 +159,7 @@ public static class SearchsetResponse
         IReadOnlyList<ShardEntry> entries,
         string mode,
         string? alternateBase,
+        Func<ResourceType, bool> alternateEligible,
         string sequence)
     {
         for (int i = 0; i < entries.Count; i++)
@@ -153,7 +181,7 @@ public static class SearchsetResponse
             writer.WriteEndArray();
 
             // An id of "." or ".." is a valid id but not addressable as a path segment, so it has no proxy path.
-            if (alternateBase is not null && key.Id.Value is not ("." or ".."))
+            if (alternateBase is not null && alternateEligible(key.Type) && key.Id.Value is not ("." or ".."))
             {
                 writer.WriteStartArray("link");
                 WriteLink(writer, "alternate", $"{alternateBase}/shards/{shard.Alias.Value}/{key.Type.Value}/{key.Id.Value}");

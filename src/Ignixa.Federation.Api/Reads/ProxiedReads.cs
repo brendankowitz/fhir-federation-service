@@ -1,3 +1,4 @@
+using System.Collections.Frozen;
 using Ignixa.Federation.Api.Authentication;
 using Ignixa.Federation.Api.Authorization;
 using Ignixa.Federation.Api.Budgets;
@@ -17,12 +18,13 @@ namespace Ignixa.Federation.Api.Reads;
 /// <remarks>
 /// <para>
 /// <b>Enablement.</b> One snapshot, taken when the search is built: <c>Federation:ProxyReads</c> on <i>and</i> an
-/// <see cref="IShardReadBinding"/> registered. Search alternate links, the <c>read</c> capability and the route all
-/// follow <see cref="Enabled"/>, so they cannot disagree. A disabled route answers 404 only after authentication and
-/// type authorisation, and does no binding I/O.
+/// <see cref="IShardReadBinding"/> registered. A type is then served only when the view's published type intersection
+/// contains it (<see cref="Serves"/>). Search alternate links, the <c>read</c> capability and the route all follow
+/// <see cref="Serves"/>, so they cannot disagree. A disabled proxy or an unpublished type answers the standard 404, the
+/// same as a missing resource, only after authentication and type authorisation, and does no binding I/O.
 /// </para>
 /// <para>
-/// <b>Order.</b> Budget and signing freshness, authentication, the caller's type grant, enablement, the query, the
+/// <b>Order.</b> Budget and signing freshness, authentication, the caller's type grant, type eligibility, the query, the
 /// alias (resolved in this tenant's registry only), the id, and only then the binding, which receives the validated
 /// registry and key, the budget and its token and nothing from the caller. Only the binding's documented failures are
 /// mapped, each naming the selected alias; anything else is a defect and propagates to the host's error handling. A cost
@@ -41,20 +43,32 @@ internal sealed class ProxiedReads
     private readonly SearchHostSettings _settings;
     private readonly ShardRegistry _registry;
     private readonly IShardReadBinding? _binding;
+    private readonly FrozenSet<ResourceType> _servedTypes;
 
     /// <summary>Initializes a new instance of the <see cref="ProxiedReads"/> class.</summary>
     /// <param name="settings">The validated host settings.</param>
     /// <param name="registry">The current tenant's registry.</param>
     /// <param name="binding">The registered binding when the proxy is enabled by configuration; otherwise <see langword="null"/>.</param>
-    public ProxiedReads(SearchHostSettings settings, ShardRegistry registry, IShardReadBinding? binding)
+    /// <param name="publishedTypes">The resource types of the view's published type intersection, the only types the read serves.</param>
+    public ProxiedReads(SearchHostSettings settings, ShardRegistry registry, IShardReadBinding? binding, IEnumerable<ResourceType> publishedTypes)
     {
         _settings = settings;
         _registry = registry;
         _binding = binding;
+        _servedTypes = publishedTypes.ToFrozenSet();
     }
 
     /// <summary>Gets a value indicating whether the proxied read is enabled.</summary>
     public bool Enabled => _binding is not null;
+
+    /// <summary>
+    /// Gets a value indicating whether the owner-qualified read serves <paramref name="type"/>: the proxy is enabled and the
+    /// view publishes the type. The read route, the capability statement's <c>read</c> interaction and each search entry's
+    /// <c>alternate</c> link all decide through this one check, so they cannot disagree.
+    /// </summary>
+    /// <param name="type">The resource type.</param>
+    /// <returns><see langword="true"/> when a read of the type reaches the binding.</returns>
+    public bool Serves(ResourceType type) => Enabled && _servedTypes.Contains(type);
 
     /// <summary>Gets the trusted base the search <c>alternate</c> links are built from, or <see langword="null"/> when disabled.</summary>
     public Uri? AlternateBase => Enabled ? new Uri(_settings.PublicBase) : null;
@@ -123,7 +137,7 @@ internal sealed class ProxiedReads
             return SearchOutcome.Error(StatusCodes.Status403Forbidden, "forbidden", "The caller may not read this resource type.");
         }
 
-        if (_binding is null)
+        if (!Serves(type) || _binding is null)
         {
             return NotFound();
         }
