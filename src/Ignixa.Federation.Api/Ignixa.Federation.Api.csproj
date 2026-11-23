@@ -1,6 +1,11 @@
 <Project Sdk="Microsoft.NET.Sdk.Web">
 
   <ItemGroup>
+    <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" />
+    <PackageReference Include="StackExchange.Redis" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\Ignixa.Federation.Core\Ignixa.Federation.Core.csproj" />
     <ProjectReference Include="..\Ignixa.Federation.Shards\Ignixa.Federation.Shards.csproj" />
   </ItemGroup>

@@ -1,0 +1,60 @@
+using System.Collections.Immutable;
+
+namespace Ignixa.Federation.Api.Continuations;
+
+/// <summary>
+/// A successfully redeemed continuation: the snapshot to resume from, plus the authenticated binding, dependencies,
+/// and original chain timing that a successor must carry forward unchanged.
+/// </summary>
+/// <remarks>
+/// The protector creates this from authenticated state, never from caller-supplied scope.
+/// The default <see cref="object.ToString"/> is
+/// kept, so neither the snapshot nor the binding is rendered.
+/// </remarks>
+internal sealed class RedeemedContinuation
+{
+    internal RedeemedContinuation(
+        ContinuationBinding binding,
+        ContinuationDependencySet dependencies,
+        long chainIssuedTicks,
+        long chainDeadlineTicks,
+        long deadlineTicks,
+        string? cacheKey,
+        ImmutableArray<byte> snapshot)
+    {
+        Binding = binding;
+        Dependencies = dependencies;
+        ChainIssuedTicks = chainIssuedTicks;
+        ChainDeadlineTicks = chainDeadlineTicks;
+        DeadlineTicks = deadlineTicks;
+        CacheKey = cacheKey;
+        Snapshot = snapshot;
+    }
+
+    /// <summary>
+    /// Gets the trusted internal plan and replay bytes the token was issued with. A fresh copy per redemption, so
+    /// repeat redemption of the same token always yields the same bytes.
+    /// </summary>
+    public ImmutableArray<byte> Snapshot { get; }
+
+    /// <summary>Gets the caller the chain is bound to.</summary>
+    internal ContinuationBinding Binding { get; }
+
+    /// <summary>Gets the dependencies the chain was planned against.</summary>
+    internal ContinuationDependencySet Dependencies { get; }
+
+    /// <summary>Gets the UTC ticks of the chain's original issue.</summary>
+    internal long ChainIssuedTicks { get; }
+
+    /// <summary>Gets the absolute deadline set at the chain's original issue.</summary>
+    internal long ChainDeadlineTicks { get; }
+
+    /// <summary>Gets the end of the redeemed token's own window: the earlier of its sliding and chain deadlines.</summary>
+    internal long DeadlineTicks { get; }
+
+    /// <summary>
+    /// Gets the store key of the cached entry the continuation was read from, or <see langword="null"/> when it was
+    /// redeemed from an inline token. A successor of a cached continuation shortens that entry once it is durable.
+    /// </summary>
+    internal string? CacheKey { get; }
+}
