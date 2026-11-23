@@ -35,7 +35,7 @@ public sealed class PrototypeBackendCatalogTests
             {
                 foreach (string scenario in new[]
                 {
-                    "another version", "another product", "no read", "vread only", "modified read", "no search-type",
+                    "another version", "malformed version", "another product", "no read", "vread only", "modified read", "no search-type",
                     "no given", "conflicting _id", "no server mode",
                 })
                 {
@@ -289,6 +289,21 @@ public sealed class PrototypeBackendCatalogTests
         earlier.IsCurrent().ShouldBeFalse();
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ReplacingEitherShardsEvidence_EndsTheAdmission(bool retainWest)
+    {
+        await using PrototypeRig rig = await PrototypeRig.StartAsync();
+        rig.SucceedEverywhere();
+        PrototypeBackendAdmission admission = (await rig.AdmitAsync(Ct)).ShouldNotBeNull();
+        admission.IsCurrent().ShouldBeTrue();
+
+        await RefreshOnlyOneAdvertisementAsync(rig, retainWest);
+
+        admission.IsCurrent().ShouldBeFalse();
+    }
+
     [Fact]
     public async Task ContradictoryRefresh_EndsTheAdmission_AndTheNewAdvertisementIsRefusedWithoutProbes()
     {
@@ -329,6 +344,33 @@ public sealed class PrototypeBackendCatalogTests
         replacement.IsCurrent().ShouldBeTrue();
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ReplacingEitherShardsEvidence_DuringTheLastShardProbe_RefusesAdmission(bool retainWest)
+    {
+        await using PrototypeRig rig = await PrototypeRig.StartAsync();
+        var hold = new ResponseHold();
+        rig.EastRoutes.Succeed(Patient, ShardSearchMethod.Get, Follow);
+        rig.WestRoutes.Strict(Patient, ShardSearchMethod.Get, challenge: ScriptedResponse.Status(400, beforeHead: hold.BeforeHead));
+        rig.WestRoutes.Replay(Patient, ShardSearchMethod.Get, Follow);
+
+        Task<PrototypeBackendAdmission?> admission = rig.AdmitAsync(Ct);
+        try
+        {
+            await hold.ArrivalAsync(Ct);
+            await RefreshOnlyOneAdvertisementAsync(rig, retainWest);
+        }
+        finally
+        {
+            hold.Release();
+        }
+
+        (await admission).ShouldBeNull("one replaced advertisement invalidates the combined view even after all probes pass");
+        rig.EastWires.Where(wire => wire != ProbeRoutes.Metadata).ShouldBe(SuccessfulWires());
+        rig.WestWires.Where(wire => wire != ProbeRoutes.Metadata).ShouldBe(SuccessfulWires());
+    }
+
     [Fact]
     public async Task ACancelledToken_IsThrown_BeforeAnythingIsSent()
     {
@@ -358,9 +400,29 @@ public sealed class PrototypeBackendCatalogTests
         await Should.ThrowAsync<OperationCanceledException>(() => admission);
     }
 
+    private static async Task RefreshOnlyOneAdvertisementAsync(PrototypeRig rig, bool retainWest)
+    {
+        var (retainedRoutes, retained, replaced) = retainWest
+            ? (rig.WestRoutes, rig.WestShard, rig.EastShard)
+            : (rig.EastRoutes, rig.EastShard, rig.WestShard);
+        ShardCapabilitySnapshot before = rig.Refresher.Current;
+        retainedRoutes.Advertisement = ScriptedResponse.Status(503);
+
+        await rig.RefreshAsync();
+
+        ShardCapabilitySnapshot after = rig.Refresher.Current;
+        after.Shards[retained.Id].Failure.ShouldNotBeNull();
+        after.Shards[retained.Id].Evidence.ShouldBeSameAs(before.Shards[retained.Id].Evidence.ShouldNotBeNull());
+        after.Shards[replaced.Id].Failure.ShouldBeNull();
+        after.Shards[replaced.Id].Evidence.ShouldNotBeNull().ShouldNotBeSameAs(before.Shards[replaced.Id].Evidence.ShouldNotBeNull());
+    }
+
     private static string Mutate(string statement, string scenario) => scenario switch
     {
-        "another version" => Replace(statement, "\"version\": \"", "\"version\": \"9."),
+        "another version" => statement.Contains("\"version\": \"1.0.0\"", StringComparison.Ordinal)
+            ? Replace(statement, "\"version\": \"1.0.0\"", "\"version\": \"1.0.1\"")
+            : Replace(statement, ".Sha.2f07ac88", ".Sha.3f07ac88"),
+        "malformed version" => Replace(statement, "\"version\": \"", "\"version\": \"9."),
         "another product" => Replace(statement, "FHIR Server", "FHIR Servr"),
         "no read" => Replace(statement, Read, """{ "code": "history-type" }"""),
         "vread only" => Replace(statement, Read, """{ "code": "vread" }"""),
