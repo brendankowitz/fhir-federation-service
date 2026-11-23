@@ -195,6 +195,52 @@ class RunningLauncher:
         self._stderr.close()
 
 
+# Test-side harness that runs the real launcher in its own process and parks it at a named point, so a test
+# can interrupt it only once the resources under test are registered with the launcher's cleanup. The hooks
+# live here, never in start.py: each point wraps a callable that launch() invokes right after the resources
+# before it were entered (see FlowTests.test_the_barrier_points_follow_the_registrations_they_claim).
+#   east-registered: west_catalog() is evaluated after the east LocalDB was entered onto the cleanup stack.
+#   west-registered: microsoft_command() is evaluated after the west catalog was entered and before any host starts.
+# The parking loop is only a hold; the test synchronises on the BARRIER line this prints, never on a delay.
+BARRIER_HARNESS = '''\
+import contextlib
+import sys
+import time
+
+here, point, *launcher = sys.argv[1:]
+sys.path.insert(0, here)
+import start
+
+east = []
+real_private_localdb = start.private_localdb
+
+
+@contextlib.contextmanager
+def recording_private_localdb(workdir):
+    with real_private_localdb(workdir) as server:
+        east.append(server.rsplit("\\\\", 1)[-1])
+        yield server
+
+
+def hold(*resources):
+    print("BARRIER", point, *east, *resources, file=sys.stderr, flush=True)
+    deadline = time.monotonic() + 300
+    while time.monotonic() < deadline:
+        time.sleep(0.05)  # Ctrl+Break raises KeyboardInterrupt here, through the real cleanup stack
+    raise SystemExit(99)
+
+
+start.private_localdb = recording_private_localdb
+if point == "east-registered":
+    start.west_catalog = lambda: hold()
+elif point == "west-registered":
+    start.microsoft_command = lambda prerequisites, catalog, folder: hold(catalog)
+else:
+    raise SystemExit("unknown barrier point " + point)
+sys.exit(start.main(launcher))
+'''
+
+
 @unittest.skipUnless(NATIVE, NATIVE_SKIP)
 class PrerequisiteTests(unittest.TestCase):
     """Fail-closed behaviour of the real launcher process. Opt-in: it reads the real LocalDB inventory
@@ -462,6 +508,42 @@ class FlowTests(unittest.TestCase):
             patches.enter_context(contextlib.redirect_stderr(err))
             status = start.main([*flags, "--dotnet", "d", "--ignixa-dll", "i", "--microsoft-dll", "m"])
         return status, out.getvalue(), err.getvalue()
+
+    def test_the_barrier_points_follow_the_registrations_they_claim(self):
+        """The real launch() order the native barrier harness relies on, with every resource replaced by a recorder."""
+        start, events = self.start, self.events
+        prerequisites = start.Prerequisites(Path("dotnet.exe"), Path("i.dll"), Path("m.dll"), Path("curl.exe"))
+
+        @contextlib.contextmanager
+        def held(name):
+            events.append("create " + name)
+            try:
+                yield name
+            finally:
+                events.append("remove " + name)
+
+        def hold(point):
+            def barrier(*_):
+                events.append("barrier " + point)
+                raise KeyboardInterrupt
+            return barrier
+
+        for point, expected in (
+                ("east-registered", ["create east", "barrier east-registered", "remove east"]),
+                ("west-registered", ["create east", "create west", "barrier west-registered", "remove west", "remove east"])):
+            with self.subTest(point):
+                events.clear()
+                west = hold(point) if point == "east-registered" else lambda: held("west")
+                microsoft = hold(point) if point == "west-registered" else mock.Mock(return_value=([], {}))
+                with contextlib.ExitStack() as patches:
+                    for target, replacement in (
+                            ("private_localdb", lambda workdir: held("east")), ("west_catalog", west),
+                            ("ignixa_command", mock.Mock(return_value=([], {}))), ("microsoft_command", microsoft),
+                            ("start_child", lambda *_: events.append("host started"))):
+                        patches.enter_context(mock.patch.object(start, target, replacement))
+                    with self.assertRaises(KeyboardInterrupt), contextlib.ExitStack() as stack:
+                        start.launch(stack, prerequisites, False, [])
+                self.assertEqual(expected, events, "no host may start before the west barrier, and cleanup is LIFO")
 
     def test_verified_is_printed_only_after_every_resource_has_been_cleaned_up(self):
         status, out, _ = self.run_main("--verify")
@@ -976,30 +1058,60 @@ class NativeAcceptanceTests(unittest.TestCase):
         self.assertEqual(databases, developer_databases())
 
     def test_an_interrupt_during_startup_cleans_up_whatever_exists_by_then(self):
-        for appears in ("the LocalDB instance", "the west catalog"):
-            with self.subTest(appears):
+        """Ctrl+Break is sent only once a barrier proves the resource under test is registered with the launcher's
+        cleanup, never because a resource is merely visible: a catalog can exist before its guard is registered."""
+        for point in ("east-registered", "west-registered"):
+            with self.subTest(point):
                 instances, databases = localdb_instances(), developer_databases()
-                with tempfile.TemporaryFile() as stderr:
-                    proc = subprocess.Popen(launcher_args(), stdout=subprocess.PIPE, stderr=stderr, text=True,
+                with tempfile.TemporaryDirectory() as folder:
+                    script = Path(folder) / "barrier_harness.py"
+                    script.write_text(BARRIER_HARNESS, encoding="utf-8")
+                    proc = subprocess.Popen([sys.executable, "-B", str(script), str(HERE), point, *launcher_args()[3:]],
+                                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                                             creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
+                    lines, barrier = [], queue.Queue()
+
+                    def read_stderr():
+                        for line in proc.stderr:
+                            lines.append(line)
+                            if line.startswith("BARRIER "):
+                                barrier.put(line.split())
+                        barrier.put(None)  # EOF: the launcher ended, with or without reaching the barrier
+                    reader = threading.Thread(target=read_stderr, daemon=True)
+                    reader.start()
                     try:
-                        deadline = time.monotonic() + 240
-                        while time.monotonic() < deadline and proc.poll() is None:
-                            now = localdb_instances() if appears == "the LocalDB instance" else developer_databases()
-                            if now != (instances if appears == "the LocalDB instance" else databases):
-                                break
-                            time.sleep(0.2)
-                        self.assertIsNone(proc.poll(), "the launcher ended before the resource appeared")
-                        proc.send_signal(signal.CTRL_BREAK_EVENT)
+                        reached = barrier.get(timeout=240)
+                        self.assertIsNotNone(reached, "the launcher ended before the barrier: " + "".join(lines)[-500:])
+                        self.assertEqual(point, reached[1])
+                        instance = reached[2]
+                        self.assertRegex(instance, r"FedProto[0-9a-f]{12}")
+                        self.assertNotIn(instance, instances)
+                        self.assertIn(instance, localdb_instances(), "the east instance must exist at the barrier")
+                        if point == "east-registered":
+                            self.assertEqual(databases, developer_databases(), "no west catalog yet at the east barrier")
+                        else:
+                            catalog = reached[3]
+                            self.assertRegex(catalog, r"FedProtoWest_[0-9a-f]{32}")
+                            self.assertIn(catalog, developer_databases(), "the west catalog must exist at the barrier")
+                            hosts = dotnet_processes()
+                            self.assertEqual([], owned_hosts(hosts, IGNIXA_DLL, proc.pid) + owned_hosts(hosts, MICROSOFT_DLL, proc.pid),
+                                             "no host may have started at the west barrier")
+                        proc.send_signal(signal.CTRL_BREAK_EVENT)  # this launcher's own process group only
                         self.assertEqual(130, proc.wait(timeout=240))
                         self.assertEqual("", proc.stdout.read(), "no endpoint may be advertised")
                     finally:
                         if proc.poll() is None:
-                            proc.kill()
-                            proc.wait(timeout=30)
+                            # A failed check must still let the launcher clean up what it holds; kill is the last resort.
+                            proc.send_signal(signal.CTRL_BREAK_EVENT)
+                            try:
+                                proc.wait(timeout=240)
+                            except subprocess.TimeoutExpired:
+                                proc.kill()
+                                proc.wait(timeout=30)
+                        reader.join(timeout=30)
                         proc.stdout.close()
-                    stderr.seek(0)
-                    self.assertNotIn("Traceback", stderr.read().decode(errors="replace"))
+                        proc.stderr.close()
+                    self.assertNotIn("Traceback", "".join(lines))
                 self.assertEqual(instances, localdb_instances())
                 self.assertEqual(databases, developer_databases())
 
