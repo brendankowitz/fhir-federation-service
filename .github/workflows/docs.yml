@@ -9,6 +9,12 @@ on:
 permissions:
   contents: read
 
+# One run per ref. On main a newer run waits for the in-flight build and deploy and replaces any
+# pending run, so an older artifact can never publish after a newer one. PR runs cancel superseded ones.
+concurrency:
+  group: docs-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   build:
     runs-on: ubuntu-latest
