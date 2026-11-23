@@ -149,7 +149,7 @@ Docker instructions are in [deploy/README.md](deploy/README.md).
 
 ## Configuration
 
-`Core` defines and validates `FederationOptions`, but `Api/Program.cs` does not bind or register these options. On `main`, `appsettings.json` contains only `"Federation": { "Shards": [] }`; the host ignores that section. The following are the actual keys represented by the Core options types, not a claim that the current host consumes them:
+The `Federation` section describes the shard registry and query policy through `FederationOptions` in Core. The merged search API uses these options when preparing a search service; the earlier health-only scaffold did not bind them. The following keys are represented by the Core options types:
 
 ```text
 Federation:
@@ -164,7 +164,7 @@ Federation:
   Tokens: MaxInlineTokenBytes, SlidingLifetime, AbsoluteLifetime
 ```
 
-`Auth.Type` supports `ManagedIdentity` and `ClientCredentials`; `SecretName` points to an externally held secret, never a secret value. Defaults and validation are defined in the Core options types. The in-review API/backend work ([#17](https://github.com/brendankowitz/fhir-federation-service/pull/17), [#19](https://github.com/brendankowitz/fhir-federation-service/pull/19)) is not part of this `main` snapshot. `Federation:Version` is not currently an option; it is planned for VP1.
+`Auth.Type` supports `ManagedIdentity` and `ClientCredentials`; `SecretName` points to an externally held secret, never a secret value. Defaults and validation are defined in the Core options types. `Federation:Version` is not currently an option; it is planned for VP1.
 
 For example, the following two-owner registry and policy section is accepted by the Core options validator when the `MicrosoftFhirServer` profile is supplied:
 
@@ -187,7 +187,7 @@ For example, the following two-owner registry and policy section is accepted by 
 }
 ```
 
-The hostnames and token audiences are placeholders, not runnable endpoints. The passthrough paths are illustrative operator assertions that those references are shard-local; use them only when that is true. This is not everything needed to run a gateway, and it does not make the current host bind the section or serve searches.
+The hostnames and token audiences are placeholders, not runnable endpoints. The passthrough paths are illustrative operator assertions that those references are shard-local; use them only when that is true. This section alone is not enough to serve searches: the merged API also needs `Federation:Host` settings, a capability view, and a request-metered shard client factory. The earlier health-only scaffold does not expose a search endpoint.
 
 ## Repository layout
 
