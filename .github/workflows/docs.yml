@@ -9,15 +9,12 @@ on:
 permissions:
   contents: read
 
-# One run per ref. On main a newer run waits for the in-flight build and deploy and replaces any
-# pending run, so an older artifact can never publish after a newer one. PR runs cancel superseded ones.
-concurrency:
-  group: docs-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
-
 jobs:
   build:
     runs-on: ubuntu-latest
+    concurrency:
+      group: docs-build-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -42,15 +39,31 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     permissions:
+      contents: read
       pages: write
       id-token: write
     concurrency:
       group: pages
+      # A slow older build must not replace a newer pending deployment.
+      queue: max
       cancel-in-progress: false
     environment:
       name: github-pages
       url: ${{ steps.publish.outputs.page_url }}
     steps:
+      - name: Check main tip after acquiring the deployment slot
+        id: tip
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tip=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')
+          if [[ "$tip" == "$GITHUB_SHA" ]]; then
+            echo "current=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Skipping superseded artifact $GITHUB_SHA (main is $tip)."
+          fi
       - name: Publish site
+        if: steps.tip.outputs.current == 'true'
         id: publish
         uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4

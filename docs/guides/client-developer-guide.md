@@ -24,10 +24,12 @@ makes the difference observable: east's patient is Eli Orchid; west's is Gus Orc
 
 ## What counts as success?
 
-For the oracle query `Patient?name=Orchid&_count=1`, follow `next` to exhaustion. Expect one match per nonempty
-page, two distinct owning URLs across the search, and the given name belonging to each URL. A count of two alone
-would also pass if the same patient appeared twice. The CLI intentionally omits bodies: use the entry resource
-in the library if you need to check the names.
+For the [oracle collision fixture](../site/client-bundles.md), run `Patient?name=Orchid&_count=1` and follow `next`
+to exhaustion. Count raw `match` entries on **every page before aggregation**. Require exactly two matches in
+total: `https://fhir-east.example.org/Patient/dup` once with given name `Eli`, and
+`https://fhir-west.example.org/Patient/dup` once with given name `Gus`. Fail on any missing, duplicate or extra
+match, even if deduplication would leave the expected two URLs. The CLI omits resource bodies; inspect the
+entries in the page stream to check the names.
 
 You can start with the [sample tests](../site/sample-client.md) without a service or credentials. They test how a client
 reacts to canned responses. The [HTTP lesson](../site/client-http.md) instead exercises the merged API in memory with a

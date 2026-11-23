@@ -78,7 +78,9 @@ foreach (FederatedEntry match in results.Matches)
 }
 ```
 
-`FromAsync` consumes all pages and keeps distinct matches and includes by `fullUrl`. For bounded memory, process
-the [page stream](client-paging.md) directly instead. For a fixture-specific body assertion, see
+`FromAsync` consumes all pages and keeps distinct matches and includes by `fullUrl`. Processing the
+[page stream](client-paging.md) directly avoids collecting those resources. It does **not** guarantee constant
+memory: the [client](https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/samples/Ignixa.Federation.SampleClient/FederationClient.cs)
+retains followed URLs to detect paging cycles. For a fixture-specific body assertion, see
 [Interpret a searchset Bundle](client-bundles.md). Handle [failures](client-errors.md) during enumeration; the
 sample does not refresh credentials, follow redirects or restart an expired search on your behalf.
