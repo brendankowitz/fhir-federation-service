@@ -14,7 +14,7 @@ namespace Ignixa.Federation.Core.Search;
 /// kept, removed, or replaced by a generated chain terminal (design spec §§6–7).
 /// </summary>
 /// <remarks>
-/// Planning is all-or-nothing. A query is accepted only when the published R4 compiler understood each occurrence and every
+/// Planning is all-or-nothing. A query is accepted only when the selected compiler understood each occurrence and every
 /// shard certified each fact the plan relies on; otherwise the first failing occurrence is reported. Failures never echo
 /// the query. Immutable; safe to share across threads.
 /// </remarks>
@@ -120,7 +120,8 @@ public sealed class SearchPlanner
             draft.Sort,
             draft.IncludeTotal,
             countShape,
-            _capabilities.Registry));
+            _capabilities.Registry,
+            _capabilities.Specification));
     }
 
     private static string CodeOf(string key) => key.Split(':', 2)[0];
@@ -129,7 +130,7 @@ public sealed class SearchPlanner
 
     // At projection time the definition is already in the all-shard intersection. One bare value can witness
     // an ordinary predicate; it cannot attest every value, a modifier, a repetition or a generated search.
-    internal static bool CanPublishParameter(ResourceType type, SearchParameterInfo definition)
+    internal static bool CanPublishParameter(IFederationSearchSpecification specification, ResourceType type, SearchParameterInfo definition)
     {
         string code = definition.Code;
         if (code == ContinuationKey || Controls.Contains(code))
@@ -146,8 +147,8 @@ public sealed class SearchPlanner
             _ => null, // No bare identity reference; composite and special syntax is definition-specific.
         };
         return value is not null
-            && CompileSearch(type, code, value, out CompiledSearch search) is null
-            && search is { Syntax: R4Search.ParameterKey, Ir: SearchParameterExpressionBase predicate }
+            && CompileSearch(specification, type, code, value, out CompiledSearch search) is null
+            && search is { Syntax: SearchSyntax.ParameterKey, Ir: SearchParameterExpressionBase predicate }
             && BindsDefinition(predicate, definition);
     }
 
@@ -304,7 +305,7 @@ public sealed class SearchPlanner
                 }
 
                 draft.Sort = value[0] == '-' ? LastUpdatedSort.Descending : LastUpdatedSort.Ascending;
-                draft.Occurrences.Add(new PlannedOccurrence(occurrence, OccurrenceKind.Sort, OccurrenceAction.Keep, null));
+                draft.Occurrences.Add(new PlannedOccurrence(occurrence, OccurrenceKind.Sort, OccurrenceAction.Keep, null, _capabilities.Specification));
                 return null;
             case Include:
                 return PlanInclude(draft, occurrence, reverse: false);
@@ -314,7 +315,7 @@ public sealed class SearchPlanner
                 return SearchFailureCode.UnsupportedParameter;
         }
 
-        draft.Occurrences.Add(new PlannedOccurrence(occurrence, OccurrenceKind.Control, OccurrenceAction.Remove, null));
+        draft.Occurrences.Add(new PlannedOccurrence(occurrence, OccurrenceKind.Control, OccurrenceAction.Remove, null, _capabilities.Specification));
         return null;
     }
 
@@ -333,30 +334,31 @@ public sealed class SearchPlanner
             occurrence,
             reverse ? OccurrenceKind.RevInclude : OccurrenceKind.Include,
             OccurrenceAction.Remove,
-            hop));
+            hop,
+            _capabilities.Specification));
         return null;
     }
 
     private SearchFailureCode? PlanSearch(Draft draft, QueryOccurrence occurrence)
     {
-        if (CompileSearch(draft.Type, occurrence.Key, occurrence.Value, out CompiledSearch search) is { } failure)
+        if (CompileSearch(_capabilities.Specification, draft.Type, occurrence.Key, occurrence.Value, out CompiledSearch search) is { } failure)
         {
             return failure;
         }
 
         return (search.Syntax, search.Ir) switch
         {
-            (R4Search.ForwardChain, ChainedExpression { Reversed: false } chain) =>
+            (SearchSyntax.ForwardChain, ChainedExpression { Reversed: false } chain) =>
                 PlanForwardChain(draft, occurrence, chain, search.TerminalStart, search.HasAlternatives),
-            (R4Search.ReverseChain, ChainedExpression { Reversed: true } chain) =>
+            (SearchSyntax.ReverseChain, ChainedExpression { Reversed: true } chain) =>
                 PlanReverseChain(draft, occurrence, chain, search.TerminalStart, search.HasAlternatives),
-            (R4Search.ParameterKey, SearchParameterExpressionBase predicate) =>
+            (SearchSyntax.ParameterKey, SearchParameterExpressionBase predicate) =>
                 PlanPredicate(draft, occurrence, predicate, search.HasAlternatives),
-            _ => search.Syntax == R4Search.ParameterKey ? SearchFailureCode.UnsupportedParameter : SearchFailureCode.UnsupportedChain,
+            _ => search.Syntax == SearchSyntax.ParameterKey ? SearchFailureCode.UnsupportedParameter : SearchFailureCode.UnsupportedChain,
         };
     }
 
-    private static SearchFailureCode? CompileSearch(ResourceType type, string key, string value, out CompiledSearch search)
+    private static SearchFailureCode? CompileSearch(IFederationSearchSpecification specification, ResourceType type, string key, string value, out CompiledSearch search)
     {
         search = default;
         if (ReadAlternatives(value) is not { } alternatives)
@@ -374,18 +376,18 @@ public sealed class SearchPlanner
         SearchFailureCode notCompiled = key.Contains('.', StringComparison.Ordinal) || key.StartsWith("_has", StringComparison.Ordinal)
             ? SearchFailureCode.UnsupportedChain
             : SearchFailureCode.UnsupportedParameter;
-        if (R4Search.Compile(type, key, value, notCompiled, out SearchFailureCode failure) is not { } trace)
+        if (specification.Compile(type, key, value, notCompiled, out SearchFailureCode failure) is not { } trace)
         {
             return failure;
         }
 
         // Only what the compiler read exactly as the federation reads and forwards it is planned.
-        if (!R4Search.TryReadKey(trace, out string syntax, out int terminalStart))
+        if (!SearchSyntax.TryReadKey(trace, out string syntax, out int terminalStart))
         {
             return notCompiled;
         }
 
-        if (!R4Search.ReadsAlternatives(trace, alternatives))
+        if (!SearchSyntax.ReadsAlternatives(trace, alternatives))
         {
             return SearchFailureCode.UnsupportedAlternatives;
         }
@@ -400,12 +402,12 @@ public sealed class SearchPlanner
         };
         if (filter is { Parameter.Type: SearchParamType.Reference } and not MissingSearchParameterExpression)
         {
-            return alternatives.All(a => R4Search.IsReferenceValue(value.Substring(a.Start, a.Length)))
+            return alternatives.All(a => specification.IsReferenceValue(value.Substring(a.Start, a.Length)))
                 ? SearchFailureCode.UnsupportedReferenceFilter
                 : SearchFailureCode.InvalidValue;
         }
 
-        if ((syntax == R4Search.ParameterKey) != (notCompiled == SearchFailureCode.UnsupportedParameter))
+        if ((syntax == SearchSyntax.ParameterKey) != (notCompiled == SearchFailureCode.UnsupportedParameter))
         {
             return notCompiled;
         }
@@ -433,7 +435,7 @@ public sealed class SearchPlanner
             return SearchFailureCode.UnsupportedAlternatives;
         }
 
-        draft.Occurrences.Add(new PlannedOccurrence(occurrence, OccurrenceKind.Predicate, OccurrenceAction.Keep, null));
+        draft.Occurrences.Add(new PlannedOccurrence(occurrence, OccurrenceKind.Predicate, OccurrenceAction.Keep, null, _capabilities.Specification));
         draft.Outbound.Add(new Outbound(occurrence.Ordinal, code, definition.Type, Shape(occurrence.Key, alternatives)));
         return null;
     }
@@ -460,7 +462,7 @@ public sealed class SearchPlanner
             || chain.Expression is not SearchParameterExpressionBase terminal
             || terminal.Parameter.Code != CodeOf(terminalKey)
             || (typedName is not null && (!ResourceType.TryParse(typedName, out typed) || !chain.TargetResourceTypes.SequenceEqual([typed.Value])))
-            || R4Search.FindDefinition(draft.Type, code) is not { } definition)
+            || _capabilities.Specification.FindDefinition(draft.Type, code) is not { } definition)
         {
             return SearchFailureCode.UnsupportedChain;
         }
@@ -498,7 +500,7 @@ public sealed class SearchPlanner
             || !chain.ResourceTypes.SequenceEqual([source.Value])
             || chain.Expression is not SearchParameterExpressionBase terminal
             || terminal.Parameter.Code != CodeOf(terminalKey)
-            || R4Search.FindDefinition(source, code) is not { } definition
+            || _capabilities.Specification.FindDefinition(source, code) is not { } definition
             || !definition.TargetResourceTypes.Contains(draft.Type.Value, StringComparer.Ordinal))
         {
             return SearchFailureCode.UnsupportedChain;
@@ -522,7 +524,7 @@ public sealed class SearchPlanner
         ResourceType terminalType = forward ? path.Target : path.Source;
         string? terminalModifier = ModifierOf(terminalKey);
         if (terminalModifier is "missing" or "not"
-            || !R4Search.IsPlainReference(definition, path.Source)
+            || !_capabilities.Specification.IsPlainReference(definition, path.Source)
             || !_capabilities.Searches(terminalType))
         {
             return SearchFailureCode.UnsupportedChain;
@@ -572,7 +574,7 @@ public sealed class SearchPlanner
             passthrough ? ChainResolutionMode.Passthrough : ChainResolutionMode.Distributed,
             passthrough ? null : QueryRewriter.Encode(terminalKey, occurrence.Value),
             certifications);
-        draft.Occurrences.Add(new PlannedOccurrence(occurrence, kind, passthrough ? OccurrenceAction.Keep : OccurrenceAction.Replace, hop));
+        draft.Occurrences.Add(new PlannedOccurrence(occurrence, kind, passthrough ? OccurrenceAction.Keep : OccurrenceAction.Replace, hop, _capabilities.Specification));
         string group = passthrough ? occurrence.Key : forward ? path.Code : "_id";
         draft.Outbound.Add(new Outbound(occurrence.Ordinal, group, outboundType, passthrough ? Shape(occurrence.Key, alternatives) : group + "=,"));
         return null;
@@ -581,7 +583,7 @@ public sealed class SearchPlanner
     // A resource-type modifier on a reference is certified once, as `[type]`, not per type name.
     private bool ModifierProven(SearchParamType type, string modifier)
     {
-        string certified = type == SearchParamType.Reference && R4Search.IsResourceType(modifier) ? SearchCertification.TypeModifier : modifier;
+        string certified = type == SearchParamType.Reference && _capabilities.Specification.IsResourceType(modifier) ? SearchCertification.TypeModifier : modifier;
         return _capabilities.EveryShard(c => c.SupportsModifier(type, certified));
     }
 

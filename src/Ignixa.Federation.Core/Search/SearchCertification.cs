@@ -33,7 +33,7 @@ public sealed class SearchCertification
         ArgumentNullException.ThrowIfNull(modifiers);
         foreach (string modifier in modifiers.Values.SelectMany(m => m))
         {
-            if (modifier != TypeModifier && !R4Search.IsSearchCode(modifier))
+            if (modifier != TypeModifier && !SearchSyntax.IsSearchCode(modifier))
             {
                 throw new ArgumentException("A modifier is a search code such as 'exact', or '[type]'.", nameof(modifiers));
             }

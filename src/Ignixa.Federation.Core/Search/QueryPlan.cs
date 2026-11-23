@@ -15,7 +15,8 @@ public sealed class QueryPlan
         LastUpdatedSort? sort,
         bool includeTotal,
         string countShape,
-        ShardRegistry registry)
+        ShardRegistry registry,
+        IFederationSearchSpecification specification)
     {
         Type = type;
         Query = query;
@@ -25,6 +26,7 @@ public sealed class QueryPlan
         IncludeTotal = includeTotal;
         CountShape = countShape;
         Registry = registry;
+        Specification = specification;
     }
 
     /// <summary>Gets the searched resource type.</summary>
@@ -60,6 +62,9 @@ public sealed class QueryPlan
     /// planned for. Internal, so it is neither serialized nor caller-supplied.
     /// </summary>
     internal ShardRegistry Registry { get; }
+
+    /// <summary>Gets the view under which this plan was admitted.</summary>
+    internal IFederationSearchSpecification Specification { get; }
 
     /// <summary>Builds backend search parameters after all rewrites for one shard have been resolved.</summary>
     /// <param name="decodedReplacements">

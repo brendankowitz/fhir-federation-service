@@ -103,6 +103,11 @@ public sealed class ReverseChainResolver
     {
         ArgumentNullException.ThrowIfNull(plan);
         ArgumentNullException.ThrowIfNull(authorizedTypes);
+        if (!ReferenceEquals(plan.Specification, _capabilities.Specification))
+        {
+            throw new ArgumentException("The plan was made against another federation view.", nameof(plan));
+        }
+
         ArgumentOutOfRangeException.ThrowIfNegative(fetchBudget);
         cancellationToken.ThrowIfCancellationRequested();
         Admit(plan, authorizedTypes);
@@ -248,7 +253,7 @@ public sealed class ReverseChainResolver
             foreach (ShardEntry entry in page.Entries)
             {
                 token.ThrowIfCancellationRequested();
-                foreach (string literal in IncludeReferenceExtractor.Extract(entry, expression))
+                foreach (string literal in IncludeReferenceExtractor.Extract(entry, expression, _capabilities.Specification.Schema))
                 {
                     if (_classifier.Classify(entry.Key.Shard, literal) is { Kind: ReferenceKind.Relative or ReferenceKind.KnownAbsolute, Target: { } key }
                         && key.Type == hop.Path.Target)

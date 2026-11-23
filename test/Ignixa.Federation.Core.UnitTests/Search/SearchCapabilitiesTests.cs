@@ -12,7 +12,7 @@ public sealed class SearchCapabilitiesTests
     private const string PatientNameCanonical = "http://hl7.org/fhir/SearchParameter/Patient-name";
 
     private static ShardSearchCapability Shard(string id, IEnumerable<ResourceSearchSupport>? resources = null) =>
-        new(ShardId.Parse(id), resources ?? AllResources, Certification());
+        new(ShardId.Parse(id), resources ?? AllResources, Certification(), "4.0.1");
 
     private static SearchCapabilities WithWestPatient(params SearchParameterSupport[] parameters) =>
         Capabilities(westResources: [new ResourceSearchSupport(Type("Patient"), parameters, [], []), .. AllResources.Skip(1)]);
@@ -71,19 +71,19 @@ public sealed class SearchCapabilitiesTests
     [Fact]
     public void RejectsAShardWithNoCapability()
     {
-        Should.Throw<ArgumentException>(() => new SearchCapabilities(Registry(), [Shard("east")]));
+        Should.Throw<ArgumentException>(() => new SearchCapabilities(Registry(), [Shard("east")], R4Specification));
     }
 
     [Fact]
     public void RejectsACapabilityForAnUnregisteredShard()
     {
-        Should.Throw<ArgumentException>(() => new SearchCapabilities(Registry(), [Shard("east"), Shard("west"), Shard("north")]));
+        Should.Throw<ArgumentException>(() => new SearchCapabilities(Registry(), [Shard("east"), Shard("west"), Shard("north")], R4Specification));
     }
 
     [Fact]
     public void RejectsTwoCapabilitiesForOneShard()
     {
-        Should.Throw<ArgumentException>(() => new SearchCapabilities(Registry(), [Shard("east"), Shard("west"), Shard("west")]));
+        Should.Throw<ArgumentException>(() => new SearchCapabilities(Registry(), [Shard("east"), Shard("west"), Shard("west")], R4Specification));
     }
 
     [Fact]
@@ -209,7 +209,7 @@ public sealed class SearchCapabilitiesTests
         ResourceSearchSupport[] republished = [.. first.Resources.Select(r => new ResourceSearchSupport(r.Type, r.Parameters, [], []))];
         ShardRegistry registry = Registry();
 
-        var second = new SearchCapabilities(registry, registry.Shards.Select(s => new ShardSearchCapability(s.Id, republished, Certification())));
+        var second = new SearchCapabilities(registry, registry.Shards.Select(s => new ShardSearchCapability(s.Id, republished, Certification(), "4.0.1")), R4Specification);
 
         second.Resources.Select(r => r.Type.Value).ShouldBe(first.Resources.Select(r => r.Type.Value));
         for (int i = 0; i < first.Resources.Count; i++)
@@ -257,7 +257,7 @@ public sealed class SearchCapabilitiesTests
         string type, string code, SearchParamType parameterType, string value)
     {
         ResourceSearchSupport resource = new(Type(type), [Param(code, parameterType), Param("_id", SearchParamType.Token)], [], []);
-        var capabilities = new SearchCapabilities(Registry(), [Shard("east", [resource]), Shard("west", [resource])]);
+        var capabilities = new SearchCapabilities(Registry(), [Shard("east", [resource]), Shard("west", [resource])], R4Specification);
 
         PlanFails(type, $"{code}={value}", Planner(capabilities));
         capabilities.Resources.Single().Parameters.Select(p => p.Code).ShouldBe(["_id"]);
@@ -273,7 +273,7 @@ public sealed class SearchCapabilitiesTests
             new(Type("RiskAssessment"), [Param("probability", SearchParamType.Number)], [], []),
             new(Type("Questionnaire"), [Param("url", SearchParamType.Uri)], [], []),
         ];
-        var capabilities = new SearchCapabilities(Registry(), [Shard("east", resources), Shard("west", resources)]);
+        var capabilities = new SearchCapabilities(Registry(), [Shard("east", resources), Shard("west", resources)], R4Specification);
 
         capabilities.Resources.Single(r => r.Type.Value == "Observation").Parameters.Select(p => p.Code)
             .ShouldBe(["_id", "code", "date", "value-quantity"]);
@@ -304,7 +304,7 @@ public sealed class SearchCapabilitiesTests
             ["*", "Observation:*:Patient", "Observation:subject:iterate", "Observation:subject"]);
         ShardRegistry registry = Registry();
         var capabilities = new SearchCapabilities(registry, registry.Shards.Select(
-            s => new ShardSearchCapability(s.Id, [patient, .. AllResources.Skip(1)], Certification())));
+            s => new ShardSearchCapability(s.Id, [patient, .. AllResources.Skip(1)], Certification(), "4.0.1")), R4Specification);
 
         ResourceSearchSupport published = capabilities.Resources.Single(r => r.Type.Value == "Patient");
         ShouldPublishExactlyWhatPlans(capabilities, [patient]);
@@ -368,7 +368,7 @@ public sealed class SearchCapabilitiesTests
             .. AllResources.Skip(2),
         ];
         ShardRegistry registry = Registry();
-        var capabilities = new SearchCapabilities(registry, registry.Shards.Select(s => new ShardSearchCapability(s.Id, resources, Certification())));
+        var capabilities = new SearchCapabilities(registry, registry.Shards.Select(s => new ShardSearchCapability(s.Id, resources, Certification(), "4.0.1")), R4Specification);
         SearchPlanner planner = Planner(capabilities);
 
         ShouldPublishExactlyWhatPlans(capabilities, resources);

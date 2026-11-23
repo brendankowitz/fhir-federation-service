@@ -40,10 +40,10 @@ public sealed class FederatedCountAdmissionTests
         var wider = new SearchCapabilities(
             registry,
             [
-                new ShardSearchCapability(Fixture.Shard(0), AllResources, certified),
-                new ShardSearchCapability(Fixture.Shard(1), AllResources, certified),
-                new ShardSearchCapability(Fixture.Shard(2), AllResources, Certification()),
-            ]);
+                new ShardSearchCapability(Fixture.Shard(0), AllResources, certified, "4.0.1"),
+                new ShardSearchCapability(Fixture.Shard(1), AllResources, certified, "4.0.1"),
+                new ShardSearchCapability(Fixture.Shard(2), AllResources, Certification(), "4.0.1"),
+            ], R4Specification);
 
         await Should.ThrowAsync<ExactCountNotCertifiedException>(
             () => CountFixture.Executor(_client, wider).ExecuteAsync(CountPlan, SearchEvery(wider), 3, Token));

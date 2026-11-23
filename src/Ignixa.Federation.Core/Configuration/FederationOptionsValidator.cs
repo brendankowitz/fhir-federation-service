@@ -1,3 +1,4 @@
+using System.Collections.Frozen;
 using System.Text.RegularExpressions;
 using Ignixa.Federation.Core.Shards;
 using Microsoft.Extensions.Options;
@@ -13,6 +14,8 @@ public sealed partial class FederationOptionsValidator : IValidateOptions<Federa
 {
     private const int SpecMaxPageSize = 100;
 
+    private static readonly FrozenSet<string> CertifiedVersions = FrozenSet.Create(StringComparer.Ordinal, "R4");
+
     private readonly BackendProfile[] _profiles;
 
     /// <summary>Initializes a new instance of the <see cref="FederationOptionsValidator"/> class.</summary>
@@ -24,12 +27,20 @@ public sealed partial class FederationOptionsValidator : IValidateOptions<Federa
         _profiles = [.. profiles];
     }
 
+    /// <summary>Determines whether an exact configured release has been certified for the host.</summary>
+    public static bool IsCertifiedVersion(string? version) => version is not null && CertifiedVersions.Contains(version);
+
     /// <inheritdoc/>
     public ValidateOptionsResult Validate(string? name, FederationOptions options)
     {
         ArgumentNullException.ThrowIfNull(options);
 
         var failures = new List<string>();
+        if (!IsCertifiedVersion(options.Version))
+        {
+            failures.Add("Federation:Version: must be a certified release.");
+        }
+
         if (!ShardRegistry.TryCreate(options.Shards, _profiles, out _, out IReadOnlyList<string> shardErrors))
         {
             failures.AddRange(shardErrors);

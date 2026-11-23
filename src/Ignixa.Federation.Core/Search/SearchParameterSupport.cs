@@ -4,8 +4,8 @@ namespace Ignixa.Federation.Core.Search;
 
 /// <summary>One search parameter a shard advertises for a resource type, as its CapabilityStatement lists it (design spec §9.1).</summary>
 /// <remarks>
-/// <see cref="SearchCapabilities"/> admits the parameter only when it means the R4 parameter of that code: the type must
-/// match, and a supplied <see cref="Definition"/> must equal the packaged R4 canonical ordinally (version and fragment
+/// <see cref="SearchCapabilities"/> admits the parameter only when it means the selected-release parameter of that code: the type must
+/// match, and a supplied <see cref="Definition"/> must equal the packaged canonical ordinally (version and fragment
 /// included, no URI normalization). Without a definition, code and type decide.
 /// </remarks>
 public sealed record SearchParameterSupport
@@ -24,7 +24,7 @@ public sealed record SearchParameterSupport
     /// </exception>
     public SearchParameterSupport(string code, SearchParamType type, string? definition)
     {
-        if (!R4Search.IsSearchCode(code))
+        if (!SearchSyntax.IsSearchCode(code))
         {
             throw new ArgumentException("A search code is a letter or '_' followed by letters, digits, '_' or '-'.", nameof(code));
         }

@@ -9,13 +9,12 @@ using Ignixa.Federation.Core.Shards;
 using Ignixa.Search.Indexing;
 using Ignixa.Search.Indexing.SearchValues;
 using Ignixa.Serialization.SourceNodes;
-using Ignixa.Specification.Generated;
 
 namespace Ignixa.Federation.Core.Execution.Includes;
 
 /// <summary>
 /// Reads the reference literals a forward include follows from one match (design spec §7.6): the include parameter's
-/// packaged R4 expression, evaluated over the match's own JSON, and the <c>Reference.reference</c> primitive of each
+/// packaged expression, evaluated over the match's own JSON, and the <c>Reference.reference</c> primitive of each
 /// result. Classifying and routing a literal is the caller's job.
 /// </summary>
 /// <remarks>
@@ -25,19 +24,18 @@ namespace Ignixa.Federation.Core.Execution.Includes;
 /// </remarks>
 internal static class IncludeReferenceExtractor
 {
-    private static readonly Lazy<R4CoreSchemaProvider> Schema = new(() => new R4CoreSchemaProvider());
-
     // Strict, so a shard's invalid UTF-8 is a contract violation rather than silently replaced characters.
     private static readonly UTF8Encoding StrictUtf8 = new(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
 
     /// <summary>Parses the FHIRPath expression <paramref name="hop"/> evaluates.</summary>
-    /// <param name="hop">The include's hop, whose expression is the parameter's packaged R4 expression.</param>
+    /// <param name="hop">The include's hop, whose expression is the parameter's packaged expression.</param>
     /// <returns>The parsed expression, for <see cref="Extract"/>.</returns>
     public static Expression ParseExpression(ReferenceHop hop) => new FhirPathParser(false).Parse(hop.Expression);
 
     /// <summary>Gets the reference literals <paramref name="expression"/> reaches from <paramref name="match"/>, in expression order.</summary>
     /// <param name="match">A match whose type is the source type of the hop <paramref name="expression"/> was parsed from.</param>
     /// <param name="expression">The hop's expression, from <see cref="ParseExpression"/>.</param>
+    /// <param name="schema">The schema selected for the federation view.</param>
     /// <returns>
     /// The literals, verbatim from the JSON (not trimmed); duplicates are kept. A literal the reference resolver cannot read
     /// is not of the type a <c>resolve() is X</c> filter asks for.
@@ -48,11 +46,11 @@ internal static class IncludeReferenceExtractor
     /// depth or conflicting <c>_</c>-prefixed properties), a resource of another type than its key, or a
     /// <c>Reference.reference</c> the expression returns that is not a single JSON string.
     /// </exception>
-    public static IReadOnlyList<string> Extract(ShardEntry match, Expression expression)
+    public static IReadOnlyList<string> Extract(ShardEntry match, Expression expression, IFhirSchemaProvider schema)
     {
         try
         {
-            return Read(match, expression);
+            return Read(match, expression, schema);
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
@@ -63,9 +61,8 @@ internal static class IncludeReferenceExtractor
         }
     }
 
-    private static List<string> Read(ShardEntry match, Expression expression)
+    private static List<string> Read(ShardEntry match, Expression expression, IFhirSchemaProvider schema)
     {
-        R4CoreSchemaProvider schema = Schema.Value;
         IElement resource = ResourceJsonNode.Parse(StrictUtf8.GetString(match.Resource.Span)).ToElement(schema);
 
         // The key came from the bundle entry; a body of another type would silently match no expression.

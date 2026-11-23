@@ -1,6 +1,7 @@
 using Ignixa.Federation.Core.Execution.References;
 using Ignixa.Federation.Core.Identity;
 using Ignixa.Federation.Core.Search;
+using Ignixa.Federation.Core.UnitTests.Search;
 using Ignixa.Federation.Core.Shards;
 using Shouldly;
 using static Ignixa.Federation.Core.UnitTests.Execution.References.RevIncludeTraversal;
@@ -18,10 +19,11 @@ public sealed class RevIncludePageExecutorArgumentTests
         ShardRegistry registry = Registry();
         var client = new FakeShardClient();
 
-        Should.Throw<ArgumentNullException>(() => new RevIncludePageExecutor(null!, registry, 1, _ => true));
-        Should.Throw<ArgumentNullException>(() => new RevIncludePageExecutor(client, null!, 1, _ => true));
-        Should.Throw<ArgumentNullException>(() => new RevIncludePageExecutor(client, registry, 1, null!));
-        Should.Throw<ArgumentOutOfRangeException>(() => new RevIncludePageExecutor(client, registry, 0, _ => true));
+        Should.Throw<ArgumentNullException>(() => new RevIncludePageExecutor(null!, registry, TestSearch.R4Specification, 1, _ => true));
+        Should.Throw<ArgumentNullException>(() => new RevIncludePageExecutor(client, null!, TestSearch.R4Specification, 1, _ => true));
+        Should.Throw<ArgumentNullException>(() => new RevIncludePageExecutor(client, registry, null!, 1, _ => true));
+        Should.Throw<ArgumentNullException>(() => new RevIncludePageExecutor(client, registry, TestSearch.R4Specification, 1, null!));
+        Should.Throw<ArgumentOutOfRangeException>(() => new RevIncludePageExecutor(client, registry, TestSearch.R4Specification, 0, _ => true));
     }
 
     // An equal registry built again is still another topology instance: the plan was proven against its own.

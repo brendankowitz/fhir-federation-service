@@ -1,4 +1,5 @@
 using Ignixa.Federation.Core.Configuration;
+using Ignixa.Abstractions;
 using Ignixa.Federation.Core.Identity;
 using Ignixa.Federation.Core.Search;
 using Ignixa.Federation.Core.Shards;
@@ -13,6 +14,8 @@ namespace Ignixa.Federation.Core.UnitTests.Search;
 /// </summary>
 internal static class TestSearch
 {
+    public static IFederationSearchSpecification R4Specification { get; } = ReleaseCompositionTests.Compose(FhirVersion.R4);
+
     public static readonly SearchParamType[] AllTypes = Enum.GetValues<SearchParamType>();
 
     public static readonly ReferencePath ObservationSubjectPatient = Path("Observation", "subject", "Patient");
@@ -114,9 +117,9 @@ internal static class TestSearch
         return new SearchCapabilities(
             registry,
             [
-                new ShardSearchCapability(ShardId.Parse("east"), AllResources, east ?? Certification()),
-                new ShardSearchCapability(ShardId.Parse("west"), westResources ?? AllResources, west ?? Certification()),
-            ]);
+                new ShardSearchCapability(ShardId.Parse("east"), AllResources, east ?? Certification(), "4.0.1"),
+                new ShardSearchCapability(ShardId.Parse("west"), westResources ?? AllResources, west ?? Certification(), "4.0.1"),
+            ], R4Specification);
     }
 
     public static SearchPlanner Planner(SearchCapabilities? capabilities = null, params string[] passthrough)

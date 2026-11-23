@@ -194,7 +194,7 @@ public sealed class FederatedCountChainAdmissionTests
     {
         ShardRegistry registry = Registry();
         SearchCertification certification = Certification(exactCountShapes: [shape], paths: paths);
-        return new SearchCapabilities(registry, registry.Shards.Select(s => new ShardSearchCapability(s.Id, AllResources, certification)));
+        return new SearchCapabilities(registry, registry.Shards.Select(s => new ShardSearchCapability(s.Id, AllResources, certification, "4.0.1")), R4Specification);
     }
 
     /// <summary>
@@ -236,6 +236,6 @@ public sealed class FederatedCountChainAdmissionTests
         SearchCertification certification = Certification(
             exactCountShapes: [shape],
             paths: [FullPath(ObservationSubjectPatient, registry.Version, ["count:Observation?@Observation.subject:Patient"])]);
-        return new SearchCapabilities(registry, registry.Shards.Select(s => new ShardSearchCapability(s.Id, AllResources, certification)));
+        return new SearchCapabilities(registry, registry.Shards.Select(s => new ShardSearchCapability(s.Id, AllResources, certification, "4.0.1")), R4Specification);
     }
 }
