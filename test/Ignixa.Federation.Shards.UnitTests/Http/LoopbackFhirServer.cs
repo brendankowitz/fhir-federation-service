@@ -58,11 +58,21 @@ internal sealed class LoopbackFhirServer : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
-        await _stopping.CancelAsync();
-        _listener.Dispose();
-        await _acceptLoop;
-        await Task.WhenAll(_connections);
-        _stopping.Dispose();
+        using (_stopping)
+        {
+            try
+            {
+                // A just-accepted connection can send the loop around again during cancellation.
+                using (_listener)
+                {
+                    await Task.WhenAll(_stopping.CancelAsync(), _acceptLoop);
+                }
+            }
+            finally
+            {
+                await Task.WhenAll(_connections);
+            }
+        }
     }
 
     private static int IndexOfHeadEnd(byte[] buffer, int length)
@@ -87,8 +97,13 @@ internal sealed class LoopbackFhirServer : IAsyncDisposable
             {
                 client = await _listener.AcceptTcpClientAsync(_stopping.Token);
             }
-            catch (Exception e) when (e is OperationCanceledException or SocketException or ObjectDisposedException)
+            catch (OperationCanceledException) when (_stopping.IsCancellationRequested)
             {
+                return;
+            }
+            catch (SocketException e) when (_stopping.IsCancellationRequested && e.SocketErrorCode == SocketError.OperationAborted)
+            {
+                // Windows can report an aborted accept as a socket error during cancellation.
                 return;
             }
 
