@@ -191,9 +191,15 @@ def run_launcher_verify(timeout=900):
     with tempfile.TemporaryFile(mode="w+t") as stdout, tempfile.TemporaryFile(mode="w+t") as stderr:
         proc = subprocess.Popen(args, stdout=stdout, stderr=stderr, creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
         try:
-            status = proc.wait(timeout=timeout)
-        finally:
-            stop_launcher(proc)
+            try:
+                status = proc.wait(timeout=timeout)
+            finally:
+                stop_launcher(proc)
+        except subprocess.TimeoutExpired as error:
+            stdout.seek(0)
+            stderr.seek(0)
+            error.output, error.stderr = stdout.read(), stderr.read()
+            raise
         stdout.seek(0)
         stderr.seek(0)
         return subprocess.CompletedProcess(args, status, stdout.read(), stderr.read())
@@ -1239,10 +1245,18 @@ class LauncherTeardownTests(unittest.TestCase):
         proc.poll.return_value = None
         timed_out = subprocess.TimeoutExpired("launcher", 1)
         proc.wait.side_effect = [timed_out, 130]
-        with mock.patch.object(subprocess, "Popen", return_value=proc) as launch:
+
+        def launch_verify(args, *, stdout, stderr, creationflags):
+            stdout.write("partial output\n")
+            proc.send_signal.side_effect = lambda _: stderr.write("finished cleanup\n")
+            return proc
+
+        with mock.patch.object(subprocess, "Popen", side_effect=launch_verify) as launch:
             with self.assertRaises(subprocess.TimeoutExpired) as raised:
                 run_launcher_verify(timeout=1)
         self.assertIs(timed_out, raised.exception)
+        self.assertEqual("partial output\n", timed_out.stdout)
+        self.assertEqual("finished cleanup\n", timed_out.stderr)
         self.assertIn("--verify", launch.call_args.args[0])
         self.assertTrue(launch.call_args.kwargs["creationflags"] & subprocess.CREATE_NEW_PROCESS_GROUP)
         proc.send_signal.assert_called_once_with(signal.CTRL_BREAK_EVENT)
@@ -1543,8 +1557,8 @@ class NativeAcceptanceTests(unittest.TestCase):
                                 barrier.put(line.split())
                         barrier.put(None)  # EOF: the launcher ended, with or without reaching the barrier
                     reader = threading.Thread(target=read_stderr, daemon=True)
-                    reader.start()
                     try:
+                        reader.start()
                         reached = barrier.get(timeout=240)
                         self.assertIsNotNone(reached, "the launcher ended before the barrier: " + "".join(lines)[-500:])
                         self.assertEqual(point, reached[1])
@@ -1567,7 +1581,8 @@ class NativeAcceptanceTests(unittest.TestCase):
                         try:
                             stop_launcher(proc)
                         finally:
-                            reader.join(timeout=30)
+                            if reader.ident is not None:
+                                reader.join(timeout=30)
                             proc.stdout.close()
                             proc.stderr.close()
                     self.assertNotIn("Traceback", "".join(lines))
