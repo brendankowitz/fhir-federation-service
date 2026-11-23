@@ -106,14 +106,17 @@ public sealed class PrimarySearchDistributedForwardTests
         strategy.Rebuilds.ShouldHaveSingleItem();
     }
 
-    [Fact]
-    public async Task NoStrategyRefusesBeforeAnyClient()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task InitialSearchWithoutTheStrategyIsNotImplementedBeforeAnyClient(bool post)
     {
         using SearchHost host = Start(strategy: null);
 
-        SearchResult refused = await host.GetAsync("/Observation?" + Paged);
+        SearchResult refused = await SendAsync(host, post, Paged);
 
         refused.StatusCode.ShouldBe(HttpStatusCode.NotImplemented);
+        refused.IssueCode.ShouldBe("not-supported");
         host.Shards.Views.ShouldBeEmpty();
         host.Shards.Calls.ShouldBeEmpty();
     }
@@ -470,17 +473,23 @@ public sealed class PrimarySearchDistributedForwardTests
         narrowed.Shards.Calls.ShouldBeEmpty();
     }
 
-    [Fact]
-    public async Task ReplayOnAHostWithoutTheStrategyIsNotImplementedBeforeAnyClient()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ReplayOnAHostWithoutTheStrategyRestartsBeforeAnyClient(bool post)
     {
         using var ring = new IsolatedKeyRing();
-        (SearchHost issuer, string next) = await IssueAsync(ring);
-        using SearchHost _ = issuer;
+        using SearchHost issuer = Start(new ScriptedDistributedForward(), s => s.Protection = ring.CreateProvider());
         using SearchHost bare = Start(strategy: null, s => s.Protection = ring.CreateProvider());
+        SearchResult first = await SendAsync(issuer, post, Paged);
+        first.StatusCode.ShouldBe(HttpStatusCode.OK, first.Body);
 
-        SearchResult refused = await bare.FollowAsync(next);
+        SearchResult refused = await bare.FollowAsync(first.Link("next").ShouldNotBeNull());
 
-        refused.StatusCode.ShouldBe(HttpStatusCode.NotImplemented);
+        refused.StatusCode.ShouldBe(HttpStatusCode.Gone);
+        refused.IssueCode.ShouldBe("not-found");
+        refused.Json.GetProperty("resourceType").GetString().ShouldBe("OperationOutcome");
+        refused.Link("next").ShouldBeNull();
         bare.Shards.Views.ShouldBeEmpty();
         bare.Shards.Calls.ShouldBeEmpty();
     }

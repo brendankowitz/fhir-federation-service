@@ -638,10 +638,7 @@ internal sealed class PrimarySearch
             // and before any client exists. Witness discovery is never repeated: the saved rewrites are the evidence.
             if (_forward is null)
             {
-                // Streams still in the canonical shape mean only the strategy is missing; any other shape is drift.
-                return DistributedForwardStreams.IsCanonical(_registry, plan, prepared.PageSize, snapshot.Streams, snapshot.Continuation)
-                    ? UnsupportedShape()
-                    : SearchOutcome.Gone();
+                return SearchOutcome.Gone();
             }
 
             IReadOnlyList<ShardSearchRequest>? rebuilt = _forward.Rebuild(
