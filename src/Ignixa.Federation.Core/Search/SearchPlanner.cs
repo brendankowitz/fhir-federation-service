@@ -119,7 +119,8 @@ public sealed class SearchPlanner
             draft.CountOnly ? null : draft.PageSize ?? _defaultPageSize,
             draft.Sort,
             draft.IncludeTotal,
-            countShape));
+            countShape,
+            _capabilities.Registry));
     }
 
     private static string CodeOf(string key) => key.Split(':', 2)[0];

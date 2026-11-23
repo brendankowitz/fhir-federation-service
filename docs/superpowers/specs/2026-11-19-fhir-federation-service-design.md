@@ -222,6 +222,8 @@ Examples, with Sarah as `Patient/p1` on shard A and `Patient/p2` on shard B:
 2. Cap `MaxChainKeys` = 1000 distinct keys (exactly 1000 valid; proven overflow → 400 `too-costly`). Zero keys → empty result.
 3. **Per-shard rewrite.** For backend shard X, replace the occurrence with one occurrence whose OR-list holds the proven **own-side** form(s) for keys on X and the proven **absolute** form(s) for keys on other shards (see *Search-value forms*), for example `subject=<own-side form of a>,https://fhir-west.internal/Patient/b`. Each shard therefore receives a different rewritten query. AND with other occurrences is preserved.
 
+   **Forward-chain transport exception.** For each shard's completed primary rewrite, form-decode each key and value once and compare them case-sensitively. If any two pairs have the same key and value, use GET even when the shard supports POST. Preserve every occurrence's raw spelling and position.
+
 **Distributed reverse chain** — `Patient?_has:Observation:subject:code=1234-5`:
 1. Sub-query `Observation?code=1234-5` on all shards, fetching the elements the reference parameter's FHIRPath expression depends on (full resources when not provably a single element) **[call]**.
 2. Resolve each extracted `Patient` reference with the classifier (§7.7): relative → the Observation's shard; known absolute → the named shard; foreign → ignored.

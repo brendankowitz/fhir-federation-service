@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using Ignixa.Federation.Core.Identity;
+using Ignixa.Federation.Core.Shards;
 
 namespace Ignixa.Federation.Core.Search;
 
@@ -13,7 +14,8 @@ public sealed class QueryPlan
         int? pageSize,
         LastUpdatedSort? sort,
         bool includeTotal,
-        string countShape)
+        string countShape,
+        ShardRegistry registry)
     {
         Type = type;
         Query = query;
@@ -22,6 +24,7 @@ public sealed class QueryPlan
         Sort = sort;
         IncludeTotal = includeTotal;
         CountShape = countShape;
+        Registry = registry;
     }
 
     /// <summary>Gets the searched resource type.</summary>
@@ -50,6 +53,13 @@ public sealed class QueryPlan
     /// parameter keys sorted ordinally and joined by <c>&amp;</c>, each followed by <c>=,</c> when it lists alternatives.
     /// </summary>
     public string CountShape { get; }
+
+    /// <summary>
+    /// Gets the registry whose shards, versioned certifications and reference forms this plan was proven against. An executor
+    /// checks it is the very instance it serves before sending anything, so a plan never runs against topology it was not
+    /// planned for. Internal, so it is neither serialized nor caller-supplied.
+    /// </summary>
+    internal ShardRegistry Registry { get; }
 
     /// <summary>Builds backend search parameters after all rewrites for one shard have been resolved.</summary>
     /// <param name="decodedReplacements">
