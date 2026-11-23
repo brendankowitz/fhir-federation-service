@@ -8,6 +8,14 @@ sidebar_position: 3
 
 The gateway is a read-only FHIR R4 search endpoint in front of independent servers. It is not a database that imports their resources or assigns global IDs. **The owner is part of the identity**: if two servers each return `Patient/42`, the response contains two resources with different `fullUrl` values. The JSON inside each entry retains its original references. [Design §§4–5][design] · [Searchset response tests][entries].
 
+## One query, separate indexes
+
+The gateway combines **search results**, not indexes. Each participating FHIR server searches its own data. The client gets one searchset and can use an entry’s `fullUrl` to identify the resource at its owner.
+
+[![A client searches through the broker. Each FHIR server has its own API, index and storage; a match points back to its server.](public/architecture/fhir-federated-querying-at-scale.svg)](public/architecture/fhir-federated-querying-at-scale.svg)
+
+[Open the querying-at-scale diagram at full size](public/architecture/fhir-federated-querying-at-scale.svg). The figure’s **128 TB per shard × 8 = 1.024 PB** is illustrative nominal database capacity, not measured usable storage, latency or throughput.
+
 ## Follow one search
 
 For a request such as `GET /Observation?status=final`, assuming the type and parameter are supported:
@@ -25,17 +33,25 @@ A **generation** is the search service and serialized CapabilityStatement prepar
 
 For the components required to produce a generation, see [Host and backend binding](binding.md). For the meaning of a shard's URL and alias, see [Shard registry](shards.md).
 
-[design]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/docs/superpowers/specs/2026-11-19-fhir-federation-service-design.md
-[entries]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/test/Ignixa.Federation.Tests.Integration/Responses/SearchsetResponseTests.cs
-[routes]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/src/Ignixa.Federation.Api/Search/PrimarySearchEndpoints.cs
-[grants]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/src/Ignixa.Federation.Api/Authorization/CallerAccess.cs
-[planner]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/src/Ignixa.Federation.Core/Search/SearchPlanner.cs
-[dispatch]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/src/Ignixa.Federation.Api/Search/PrimarySearch.cs
-[transport]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/src/Ignixa.Federation.Api/Search/IShardClientFactory.cs
-[execution]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/test/Ignixa.Federation.Core.UnitTests/Execution/UnsortedPageExecutorFailureTests.cs
-[continuations]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/test/Ignixa.Federation.Tests.Integration/Search/PrimarySearchContinuationTests.cs
-[reads]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/test/Ignixa.Federation.Tests.Integration/Reads/ProxiedReadRouteTests.cs
-[state]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/src/Ignixa.Federation.Api/Search/PrimarySearchState.cs
-[publication]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/test/Ignixa.Federation.Tests.Integration/Search/PrimarySearchCapabilityPublicationTests.cs
-[metadata]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/src/Ignixa.Federation.Api/Metadata/MetadataEndpoints.cs
-[signing]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/test/Ignixa.Federation.Tests.Integration/Search/SigningReadinessTests.cs
+## Proposed coordination, not a write API
+
+The design sketch below extends the search model with placement rules, ingest and export workers, a job queue and bulk file storage. **Those are proposed capabilities, not supported gateway operations.** The implemented gateway serves read-only search and eligible owner-qualified reads. It does not accept writes, assign incoming resources to shards, or coordinate bulk imports and exports.
+
+[![Proposed design: a query broker handles interactive searches, while separate ingest and export workers coordinate shard jobs and object storage.](public/architecture/fhir-federation-coordination.svg)](public/architecture/fhir-federation-coordination.svg)
+
+[Open the proposed coordination diagram at full size](public/architecture/fhir-federation-coordination.svg). For what callers can actually send today, use the [search support matrix](status.md).
+
+[design]: ../superpowers/specs/2026-11-19-fhir-federation-service-design.md
+[entries]: ../../test/Ignixa.Federation.Tests.Integration/Responses/SearchsetResponseTests.cs
+[routes]: ../../src/Ignixa.Federation.Api/Search/PrimarySearchEndpoints.cs
+[grants]: ../../src/Ignixa.Federation.Api/Authorization/CallerAccess.cs
+[planner]: ../../src/Ignixa.Federation.Core/Search/SearchPlanner.cs
+[dispatch]: ../../src/Ignixa.Federation.Api/Search/PrimarySearch.cs
+[transport]: ../../src/Ignixa.Federation.Api/Search/IShardClientFactory.cs
+[execution]: ../../test/Ignixa.Federation.Core.UnitTests/Execution/UnsortedPageExecutorFailureTests.cs
+[continuations]: ../../test/Ignixa.Federation.Tests.Integration/Search/PrimarySearchContinuationTests.cs
+[reads]: ../../test/Ignixa.Federation.Tests.Integration/Reads/ProxiedReadRouteTests.cs
+[state]: ../../src/Ignixa.Federation.Api/Search/PrimarySearchState.cs
+[publication]: ../../test/Ignixa.Federation.Tests.Integration/Search/PrimarySearchCapabilityPublicationTests.cs
+[metadata]: ../../src/Ignixa.Federation.Api/Metadata/MetadataEndpoints.cs
+[signing]: ../../test/Ignixa.Federation.Tests.Integration/Search/SigningReadinessTests.cs

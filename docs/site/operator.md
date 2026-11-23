@@ -6,7 +6,7 @@ sidebar_position: 2
 
 # Operate a gateway
 
-**First decide what you are validating.** To prove that the image runs, use the [quickstart](quickstart.md). To serve FHIR traffic, you also need a host that supplies a current capabilities view and a shard transport. Adding shard URLs to the stock image does not supply either. The [host registration](https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/src/Ignixa.Federation.Api/Search/PrimarySearchEndpoints.cs) and [cold-host tests](https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/test/Ignixa.Federation.Tests.Integration/Search/PrimarySearchColdHostTests.cs) explain why the distinction matters.
+**First decide what you are validating.** To prove that the image runs, use the [quickstart](quickstart.md). To serve FHIR traffic, you also need a host that supplies a current capabilities view and a shard transport. Adding shard URLs to the stock image does not supply either. The [host registration](../../src/Ignixa.Federation.Api/Search/PrimarySearchEndpoints.cs) and [cold-host tests](../../test/Ignixa.Federation.Tests.Integration/Search/PrimarySearchColdHostTests.cs) explain why the distinction matters.
 
 | If you need to… | Read |
 | --- | --- |
@@ -23,4 +23,4 @@ sidebar_position: 2
 | Decide what to measure and what not to log | [Observability](observability.md) |
 | Review trust boundaries before admitting traffic | [Security](security.md) |
 | Diagnose an unhealthy replica or a failing search | [Troubleshooting](troubleshooting.md) |
-| Look up a setting and its default | [Generated configuration reference](configuration.md) |
+| Look up a setting and its default | [Generated configuration reference](https://brendankowitz.github.io/fhir-federation-service/configuration/) |

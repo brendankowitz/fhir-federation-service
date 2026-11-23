@@ -12,8 +12,17 @@ Other entry points: the [README](../README.md) has the capability status table, 
 
 ## Build and maintain the documentation site
 
-With the pinned .NET SDK, PowerShell 7.3+ and Python 3 installed, run `pwsh -File tools/build-docs.ps1` from the repository root. Use `-Dotnet <path>` to select a specific `dotnet` executable. Open `artifacts/docs/_site/index.html` through a static web server to preview. Do not commit generated files.
+From the repository root, with the pinned .NET SDK, Node.js 22.23.5 with npm, PowerShell 7.3+ and Python 3.9+:
 
-Keep published topics in `docs/site/` and list each one in `docs/site/toc.yml`; the client landing page is sourced from `docs/guides/client-developer-guide.md`. Cite behavioral claims with links to code, tests or numbered design sections. Use `/blob/REVISION/` for tracked files and `/tree/REVISION/` for directories; the build replaces `REVISION` with the exact checkout SHA. When changing host behavior, update the [support matrix](site/status.md) in the same PR: a passing Core test alone is not evidence of a reachable HTTP feature. Configuration defaults and selected shard contracts are generated from Core. The sample API reference comes from the SampleClient assembly and its XML comments; it documents sample code, not a supported SDK package. Update source comments rather than copying generated tables.
+```sh
+pwsh -File tools/build-docs.ps1
+npm --prefix docs/site run preview
+```
+
+Open `http://localhost:4321/fhir-federation-service/`. The first command restores locked npm dependencies, generates the C# references, stages Markdown, builds `docs/site/dist/` (including the Pagefind search index), and validates links and migrated bookmarks. Use `-Dotnet <path>` to select another `dotnet` executable. Do not commit generated files.
+
+Edit published topics in `docs/site/*.md`, the [client landing page](guides/client-developer-guide.md) in `docs/guides/`, or the [home page](site/src/content/docs/index.mdx) in the Starlight collection. Register new topics in [the sidebar](site/astro.config.mjs). Link between authored files using checkout-relative paths; staging converts them to canonical `/slug/` URLs. For generated reference pages, use the full published URL. Link to source, tests and numbered design sections by relative path; staging pins repository evidence to the exact checkout SHA. When changing host behavior, update the [support matrix](site/status.md) in the same PR: a passing Core test alone is not evidence of a reachable HTTP feature.
+
+Configuration defaults and shard contracts come from Core; the sample API reference comes from the SampleClient assembly and its XML comments, not a supported SDK package. Edit those sources, not the ignored `src/content/docs/generated/` files. Old `.html` bookmarks redirect to the canonical routes and retain their fragments; `tools/legacy-docs-urls.json` records the public URL contract.
 
 PRs build but never deploy. Main publishes the validated artifact to the [project Pages site](https://brendankowitz.github.io/fhir-federation-service/) when the repository administrator has selected **Settings → Pages → Build and deployment → Source: GitHub Actions**. After enabling this, run the Documentation workflow on `main` if it has already built.

@@ -9,17 +9,17 @@ description: Discover supported searches, send authenticated GET and form POST r
 Start with the federation's public HTTPS base, not a shard address. `GET [base]/metadata` requires no caller token.
 When ready, it returns a JSON R4 `CapabilityStatement` describing the admitted capabilities; it does **not** grant
 you access to those resource types. With no published capability view it returns `503`.
-See the [metadata endpoint](https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/src/Ignixa.Federation.Api/Metadata/MetadataEndpoints.cs).
+See the [metadata endpoint](../../src/Ignixa.Federation.Api/Metadata/MetadataEndpoints.cs).
 
 ## Make the first request
 
 Authenticate with a bearer JWT for the federation. On a ready host, a missing or untrusted token gets a `401`
 Bearer challenge before any shard call. A valid token needs a configured app role granting the requested type.
 A SMART scope in `scp` or `scope` is refused with `403`, even alongside a granted role. See the
-[authorization tests](https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/test/Ignixa.Federation.Tests.Integration/Search/PrimarySearchAuthorizationTests.cs).
+[authorization tests](../../test/Ignixa.Federation.Tests.Integration/Search/PrimarySearchAuthorizationTests.cs).
 
 This is the first exchange from `Paging_WalksEveryPageThroughOpaqueNextLinks_InRegistryOrder` in the
-[host tests](https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/test/Ignixa.Federation.Tests.Integration/Search/PrimarySearchTests.cs),
+[host tests](../../test/Ignixa.Federation.Tests.Integration/Search/PrimarySearchTests.cs),
 shown in HTTP notation. The test sends the route relative to its in-process host. Headers are abbreviated,
 tokens replaced, and JSON formatted. The response links use the fixture's **configured public base**.
 
@@ -79,11 +79,11 @@ Follow subsequent pages with GET, even after POST.
 
 ## If the first search returns 503
 
-The [routes](https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/src/Ignixa.Federation.Api/Search/PrimarySearchEndpoints.cs)
+The [routes](../../src/Ignixa.Federation.Api/Search/PrimarySearchEndpoints.cs)
 are mapped even on an unconfigured host. Search returns `503`, not `404`, and both health probes can still be green.
 A configured host without a current view stays live but not ready. Explicit `PrototypeCatalog` mode without
 its required admission source fails before listening. The merged API (#17) and its in-process test bindings are
 not a settings-only installation of the separate shard backend work (#19). Compare the
-[cold-host tests](https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/test/Ignixa.Federation.Tests.Integration/Search/PrimarySearchColdHostTests.cs)
-and [catalog startup tests](https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/test/Ignixa.Federation.Tests.Integration/Search/CatalogBackendHostTests.cs)
+[cold-host tests](../../test/Ignixa.Federation.Tests.Integration/Search/PrimarySearchColdHostTests.cs)
+and [catalog startup tests](../../test/Ignixa.Federation.Tests.Integration/Search/CatalogBackendHostTests.cs)
 before diagnosing a `503` as a bad query.

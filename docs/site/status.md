@@ -8,7 +8,7 @@ sidebar_position: 4
 
 **A valid FHIR search is not necessarily an executable gateway search.** The [planner] validates the request against a particular capability view. The [HTTP dispatcher] then chooses an execution path. The matrix below describes that second step on a **configured, ready host** with the required permissions. It does not mean the stock container can connect to a FHIR server.
 
-[PR #17](https://github.com/brendankowitz/fhir-federation-service/pull/17) supplied the API in this checkout. Integration tests compose it with a capability view and scripted shards. The stock executable does not register the production shard transport or admission source. The verified HTTPS backend proposed in [PR #19](https://github.com/brendankowitz/fhir-federation-service/pull/19) is not part of this baseline. See [Operate a gateway](operator.md) for the difference between an unconfigured, cold, and ready host, and [Configuration](configuration.md) for option defaults.
+[PR #17](https://github.com/brendankowitz/fhir-federation-service/pull/17) supplied the API in this checkout. Integration tests compose it with a capability view and scripted shards. The stock executable does not register the production shard transport or admission source. The verified HTTPS backend proposed in [PR #19](https://github.com/brendankowitz/fhir-federation-service/pull/19) is not part of this baseline. See [Operate a gateway](operator.md) for the difference between an unconfigured, cold, and ready host, and [Configuration](https://brendankowitz.github.io/fhir-federation-service/configuration/) for option defaults.
 
 ## What can run through the API?
 
@@ -43,25 +43,25 @@ For an authenticated search on a warm host, **400 `not-supported`** can mean the
 
 Two shards' `Patient/42` entries are distinct: `entry.fullUrl` points to the actual owner, and the resource JSON and its relative references stay unchanged. Where `ProxyReads`, the read binding, and type eligibility allow it, an alternate link uses `/shards/{alias}/{type}/{id}`. The unqualified `/{type}/{id}` is ambiguous, not a lookup across all shards. [Response tests][responses], [read route tests][reads].
 
-[planner]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/src/Ignixa.Federation.Core/Search/SearchPlanner.cs
-[HTTP dispatcher]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/src/Ignixa.Federation.Api/Search/PrimarySearch.cs
-[primary]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/test/Ignixa.Federation.Tests.Integration/Search/PrimarySearchTests.cs
-[predicates]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/test/Ignixa.Federation.Core.UnitTests/Search/SearchPlannerPredicateTests.cs
-[continuations]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/test/Ignixa.Federation.Tests.Integration/Search/PrimarySearchContinuationTests.cs
-[count]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/test/Ignixa.Federation.Tests.Integration/Search/PrimarySearchCountTests.cs
-[local-chain]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/test/Ignixa.Federation.Tests.Integration/Search/PrimarySearchForwardChainTests.cs
-[forward]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/test/Ignixa.Federation.Tests.Integration/Search/PrimarySearchDistributedForwardTests.cs
-[forward-core]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/src/Ignixa.Federation.Core/Execution/Chains/ForwardChainResolver.cs
-[reverse]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/test/Ignixa.Federation.Tests.Integration/Search/PrimarySearchReverseChainTests.cs
-[reverse-count]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/test/Ignixa.Federation.Tests.Integration/Search/PrimarySearchReverseCountTests.cs
-[revinclude]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/test/Ignixa.Federation.Tests.Integration/Search/PrimarySearchRevIncludeTests.cs
-[revinclude-core]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/src/Ignixa.Federation.Core/Execution/References/RevIncludePageExecutor.cs
-[sort]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/test/Ignixa.Federation.Core.UnitTests/Execution/Sorted/SortedPageExecutorMergeTests.cs
-[include]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/test/Ignixa.Federation.Core.UnitTests/Execution/Includes/ForwardIncludeFetchTests.cs
-[controls]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/test/Ignixa.Federation.Core.UnitTests/Search/SearchPlannerControlTests.cs
-[include-plan]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/test/Ignixa.Federation.Core.UnitTests/Search/SearchPlannerIncludeTests.cs
-[v1 design]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/docs/superpowers/specs/2026-11-19-fhir-federation-service-design.md
-[vnext]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/docs/vnext/README.md
-[metadata]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/src/Ignixa.Federation.Api/Metadata/MetadataEndpoints.cs
-[responses]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/test/Ignixa.Federation.Tests.Integration/Responses/SearchsetResponseTests.cs
-[reads]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/test/Ignixa.Federation.Tests.Integration/Reads/ProxiedReadRouteTests.cs
+[planner]: ../../src/Ignixa.Federation.Core/Search/SearchPlanner.cs
+[HTTP dispatcher]: ../../src/Ignixa.Federation.Api/Search/PrimarySearch.cs
+[primary]: ../../test/Ignixa.Federation.Tests.Integration/Search/PrimarySearchTests.cs
+[predicates]: ../../test/Ignixa.Federation.Core.UnitTests/Search/SearchPlannerPredicateTests.cs
+[continuations]: ../../test/Ignixa.Federation.Tests.Integration/Search/PrimarySearchContinuationTests.cs
+[count]: ../../test/Ignixa.Federation.Tests.Integration/Search/PrimarySearchCountTests.cs
+[local-chain]: ../../test/Ignixa.Federation.Tests.Integration/Search/PrimarySearchForwardChainTests.cs
+[forward]: ../../test/Ignixa.Federation.Tests.Integration/Search/PrimarySearchDistributedForwardTests.cs
+[forward-core]: ../../src/Ignixa.Federation.Core/Execution/Chains/ForwardChainResolver.cs
+[reverse]: ../../test/Ignixa.Federation.Tests.Integration/Search/PrimarySearchReverseChainTests.cs
+[reverse-count]: ../../test/Ignixa.Federation.Tests.Integration/Search/PrimarySearchReverseCountTests.cs
+[revinclude]: ../../test/Ignixa.Federation.Tests.Integration/Search/PrimarySearchRevIncludeTests.cs
+[revinclude-core]: ../../src/Ignixa.Federation.Core/Execution/References/RevIncludePageExecutor.cs
+[sort]: ../../test/Ignixa.Federation.Core.UnitTests/Execution/Sorted/SortedPageExecutorMergeTests.cs
+[include]: ../../test/Ignixa.Federation.Core.UnitTests/Execution/Includes/ForwardIncludeFetchTests.cs
+[controls]: ../../test/Ignixa.Federation.Core.UnitTests/Search/SearchPlannerControlTests.cs
+[include-plan]: ../../test/Ignixa.Federation.Core.UnitTests/Search/SearchPlannerIncludeTests.cs
+[v1 design]: ../superpowers/specs/2026-11-19-fhir-federation-service-design.md
+[vnext]: ../vnext/README.md
+[metadata]: ../../src/Ignixa.Federation.Api/Metadata/MetadataEndpoints.cs
+[responses]: ../../test/Ignixa.Federation.Tests.Integration/Responses/SearchsetResponseTests.cs
+[reads]: ../../test/Ignixa.Federation.Tests.Integration/Reads/ProxiedReadRouteTests.cs

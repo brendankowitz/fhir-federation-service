@@ -8,7 +8,7 @@ sidebar_position: 11
 
 **Budget one incoming request, not one shard or one returned resource.** A search can spend its allowance discovering witnesses before it returns a single match. Cursor follows, retries and speculative fetches also cost calls. A GET for the next federation page is a new request; a backend `next` followed while filling the current page is not. [Request budget][budget] · [search endpoint][endpoint] · [page executor][page].
 
-Start with the [search support matrix](status.md) to check that the host executes the requested shape. Use [configuration binding](binding.md) and the [configuration reference](configuration.md) to set the options below. The [design, §§7–8][design] describes the intended service; the implementation and tests linked here distinguish what this revision actually enforces.
+Start with the [search support matrix](status.md) to check that the host executes the requested shape. Use [configuration binding](binding.md) and the [configuration reference](https://brendankowitz.github.io/fhir-federation-service/configuration/) to set the options below. The [design, §§7–8][design] describes the intended service; the implementation and tests linked here distinguish what this revision actually enforces.
 
 ## Choose limits for a deployment
 
@@ -54,33 +54,33 @@ The following are sizing examples, not throughput measurements. Keep the workloa
 
 For a 400 `too-costly`, identify the stage and exhausted unit before retrying. For a 504, investigate elapsed time; for a 502 on a required shard, investigate that shard rather than increasing a budget. Neither a failed required stage nor an exhausted request returns a partial successful Bundle. [HTTP outcomes][outcomes] · [HTTP failure tests][failures]. See [HTTP errors](errors.md), [observability](observability.md) and [troubleshooting](troubleshooting.md) for the on-call workflow.
 
-[design]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/docs/superpowers/specs/2026-11-19-fhir-federation-service-design.md
-[limits]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/src/Ignixa.Federation.Core/Configuration/LimitOptions.cs
-[timeouts]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/src/Ignixa.Federation.Core/Configuration/TimeoutOptions.cs
-[tokens]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/src/Ignixa.Federation.Core/Configuration/TokenOptions.cs
-[validation]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/src/Ignixa.Federation.Core/Configuration/FederationOptionsValidator.cs
-[validation-tests]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/test/Ignixa.Federation.Core.UnitTests/Configuration/FederationOptionsValidatorTests.cs
-[startup]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/src/Ignixa.Federation.Api/Program.cs
-[planner]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/src/Ignixa.Federation.Core/Search/SearchPlanner.cs
-[budget]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/src/Ignixa.Federation.Api/Budgets/RequestBudget.cs
-[budget-tests]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/test/Ignixa.Federation.Tests.Integration/Budgets/RequestBudgetTests.cs
-[transport]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/src/Ignixa.Federation.Api/Search/IShardClientFactory.cs
-[read]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/src/Ignixa.Federation.Api/Reads/IShardReadBinding.cs
-[endpoint]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/src/Ignixa.Federation.Api/Search/PrimarySearchEndpoints.cs
-[route]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/src/Ignixa.Federation.Api/Search/PrimarySearch.cs
-[outcomes]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/src/Ignixa.Federation.Api/Search/SearchOutcome.cs
-[failures]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/test/Ignixa.Federation.Tests.Integration/Search/PrimarySearchFailureTests.cs
-[stream]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/src/Ignixa.Federation.Core/Execution/ShardStream.cs
-[page]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/src/Ignixa.Federation.Core/Execution/UnsortedPageExecutor.cs
-[counts]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/test/Ignixa.Federation.Tests.Integration/Search/PrimarySearchCountTests.cs
-[count-executor]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/src/Ignixa.Federation.Core/Execution/Counts/FederatedCountExecutor.cs
-[forward]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/src/Ignixa.Federation.Core/Execution/Chains/ForwardChainResolver.cs
-[call-deadline]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/src/Ignixa.Federation.Core/Execution/Chains/DeadlineShardClient.cs
-[fit]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/test/Ignixa.Federation.Core.UnitTests/Execution/Chains/ForwardChainHostFitTests.cs
-[reverse]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/src/Ignixa.Federation.Core/Execution/ReverseChains/ReverseChainResolver.cs
-[witnesses]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/src/Ignixa.Federation.Core/Execution/ReverseChains/ReverseChainWitnesses.cs
-[reverse-tests]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/test/Ignixa.Federation.Core.UnitTests/Execution/ReverseChains/ReverseChainPagingTests.cs
-[reverse-deadline]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/test/Ignixa.Federation.Core.UnitTests/Execution/ReverseChains/ReverseChainWitnessDeadlineTests.cs
-[includes]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/test/Ignixa.Federation.Tests.Integration/Search/PrimarySearchRevIncludeTests.cs
-[rev-executor]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/src/Ignixa.Federation.Core/Execution/References/RevIncludePageExecutor.cs
-[protector]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/src/Ignixa.Federation.Api/Continuations/ContinuationProtector.cs
+[design]: ../superpowers/specs/2026-11-19-fhir-federation-service-design.md
+[limits]: ../../src/Ignixa.Federation.Core/Configuration/LimitOptions.cs
+[timeouts]: ../../src/Ignixa.Federation.Core/Configuration/TimeoutOptions.cs
+[tokens]: ../../src/Ignixa.Federation.Core/Configuration/TokenOptions.cs
+[validation]: ../../src/Ignixa.Federation.Core/Configuration/FederationOptionsValidator.cs
+[validation-tests]: ../../test/Ignixa.Federation.Core.UnitTests/Configuration/FederationOptionsValidatorTests.cs
+[startup]: ../../src/Ignixa.Federation.Api/Program.cs
+[planner]: ../../src/Ignixa.Federation.Core/Search/SearchPlanner.cs
+[budget]: ../../src/Ignixa.Federation.Api/Budgets/RequestBudget.cs
+[budget-tests]: ../../test/Ignixa.Federation.Tests.Integration/Budgets/RequestBudgetTests.cs
+[transport]: ../../src/Ignixa.Federation.Api/Search/IShardClientFactory.cs
+[read]: ../../src/Ignixa.Federation.Api/Reads/IShardReadBinding.cs
+[endpoint]: ../../src/Ignixa.Federation.Api/Search/PrimarySearchEndpoints.cs
+[route]: ../../src/Ignixa.Federation.Api/Search/PrimarySearch.cs
+[outcomes]: ../../src/Ignixa.Federation.Api/Search/SearchOutcome.cs
+[failures]: ../../test/Ignixa.Federation.Tests.Integration/Search/PrimarySearchFailureTests.cs
+[stream]: ../../src/Ignixa.Federation.Core/Execution/ShardStream.cs
+[page]: ../../src/Ignixa.Federation.Core/Execution/UnsortedPageExecutor.cs
+[counts]: ../../test/Ignixa.Federation.Tests.Integration/Search/PrimarySearchCountTests.cs
+[count-executor]: ../../src/Ignixa.Federation.Core/Execution/Counts/FederatedCountExecutor.cs
+[forward]: ../../src/Ignixa.Federation.Core/Execution/Chains/ForwardChainResolver.cs
+[call-deadline]: ../../src/Ignixa.Federation.Core/Execution/Chains/DeadlineShardClient.cs
+[fit]: ../../test/Ignixa.Federation.Core.UnitTests/Execution/Chains/ForwardChainHostFitTests.cs
+[reverse]: ../../src/Ignixa.Federation.Core/Execution/ReverseChains/ReverseChainResolver.cs
+[witnesses]: ../../src/Ignixa.Federation.Core/Execution/ReverseChains/ReverseChainWitnesses.cs
+[reverse-tests]: ../../test/Ignixa.Federation.Core.UnitTests/Execution/ReverseChains/ReverseChainPagingTests.cs
+[reverse-deadline]: ../../test/Ignixa.Federation.Core.UnitTests/Execution/ReverseChains/ReverseChainWitnessDeadlineTests.cs
+[includes]: ../../test/Ignixa.Federation.Tests.Integration/Search/PrimarySearchRevIncludeTests.cs
+[rev-executor]: ../../src/Ignixa.Federation.Core/Execution/References/RevIncludePageExecutor.cs
+[protector]: ../../src/Ignixa.Federation.Api/Continuations/ContinuationProtector.cs

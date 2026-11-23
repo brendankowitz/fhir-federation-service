@@ -59,20 +59,20 @@ Use a synthetic caller and non-sensitive fixtures. Record route **template**, st
 
 For client recovery see [Handle errors and expiry](client-errors.md); for further diagnosis see [limits and budgets](limits.md), [authentication](authentication.md), and [deployment and replicas](deployment.md).
 
-[wire]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/src/Ignixa.Federation.Api/Search/SearchOutcome.cs
-[search]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/src/Ignixa.Federation.Api/Search/PrimarySearch.cs
-[planner]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/src/Ignixa.Federation.Core/Search/SearchFailure.cs
-[reasons]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/src/Ignixa.Federation.Core/Execution/ShardFailureReason.cs
-[routes]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/src/Ignixa.Federation.Api/Search/PrimarySearchEndpoints.cs
-[reads]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/src/Ignixa.Federation.Api/Reads/ProxiedReads.cs
-[metadata]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/src/Ignixa.Federation.Api/Metadata/MetadataEndpoints.cs
-[warnings]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/src/Ignixa.Federation.Api/Search/IncludeOutcomes.cs
-[startup]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/src/Ignixa.Federation.Api/Program.cs
-[failures]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/test/Ignixa.Federation.Tests.Integration/Search/PrimarySearchFailureTests.cs
-[includes]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/test/Ignixa.Federation.Tests.Integration/Search/PrimarySearchRevIncludeTests.cs
-[auth]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/test/Ignixa.Federation.Tests.Integration/Search/PrimarySearchAuthorizationTests.cs
-[replay]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/test/Ignixa.Federation.Tests.Integration/Search/PrimarySearchContinuationTests.cs
-[eligibility]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/test/Ignixa.Federation.Tests.Integration/Reads/ProxiedReadEligibilityTests.cs
-[read-tests]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/test/Ignixa.Federation.Tests.Integration/Reads/ProxiedReadFailureTests.cs
-[spec]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/docs/superpowers/specs/2026-11-19-fhir-federation-service-design.md#L252-L263
-[surface]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/docs/superpowers/specs/2026-11-19-fhir-federation-service-design.md#L99-L110
+[wire]: ../../src/Ignixa.Federation.Api/Search/SearchOutcome.cs
+[search]: ../../src/Ignixa.Federation.Api/Search/PrimarySearch.cs
+[planner]: ../../src/Ignixa.Federation.Core/Search/SearchFailure.cs
+[reasons]: ../../src/Ignixa.Federation.Core/Execution/ShardFailureReason.cs
+[routes]: ../../src/Ignixa.Federation.Api/Search/PrimarySearchEndpoints.cs
+[reads]: ../../src/Ignixa.Federation.Api/Reads/ProxiedReads.cs
+[metadata]: ../../src/Ignixa.Federation.Api/Metadata/MetadataEndpoints.cs
+[warnings]: ../../src/Ignixa.Federation.Api/Search/IncludeOutcomes.cs
+[startup]: ../../src/Ignixa.Federation.Api/Program.cs
+[failures]: ../../test/Ignixa.Federation.Tests.Integration/Search/PrimarySearchFailureTests.cs
+[includes]: ../../test/Ignixa.Federation.Tests.Integration/Search/PrimarySearchRevIncludeTests.cs
+[auth]: ../../test/Ignixa.Federation.Tests.Integration/Search/PrimarySearchAuthorizationTests.cs
+[replay]: ../../test/Ignixa.Federation.Tests.Integration/Search/PrimarySearchContinuationTests.cs
+[eligibility]: ../../test/Ignixa.Federation.Tests.Integration/Reads/ProxiedReadEligibilityTests.cs
+[read-tests]: ../../test/Ignixa.Federation.Tests.Integration/Reads/ProxiedReadFailureTests.cs
+[spec]: ../superpowers/specs/2026-11-19-fhir-federation-service-design.md#L252-L263
+[surface]: ../superpowers/specs/2026-11-19-fhir-federation-service-design.md#L99-L110

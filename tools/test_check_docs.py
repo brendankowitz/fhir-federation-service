@@ -81,15 +81,16 @@ class ExternalDocsTests(unittest.TestCase):
             try:
                 origin = f"http://127.0.0.1:{server.server_port}"
                 site = Path(temp)
-                for name in ("operator", "status", "client-developer-guide"):
-                    (site / f"{name}.html").write_text("<article></article>")
-                (site / "contracts.html").write_text(f'<article><a href="{origin}/generated"></a></article>')
+                for name in ("operator", "status", "client-developer-guide", "contracts"):
+                    (site / name).mkdir()
+                    (site / name / "index.html").write_text('<div class="sl-markdown-content"></div>')
+                (site / "contracts/index.html").write_text(f'<div class="sl-markdown-content"><a href="{origin}/generated"></a></div>')
                 (site / "index.html").write_text(f'''
                     <nav><a href="{origin}/chrome"></a></nav>
-                    <article><pre><code><a href="{origin}/example"></a></code></pre>
+                    <div class="sl-markdown-content"><pre><code><a href="{origin}/example"></a></code></pre>
                     <a href="{SOURCE}/commit/REVISION"></a><a href="{origin}/retry#a"></a>
                     <img src="{origin}/image"><a href="{origin}/retry#b"></a>
-                    <a href="{origin}/missing"></a></article>''')
+                    <a href="{origin}/missing"></a></div>''')
                 result = subprocess.run(
                     [sys.executable, str(CHECKER.with_name("check-docs-external.py")), temp],
                     capture_output=True, text=True, timeout=20,

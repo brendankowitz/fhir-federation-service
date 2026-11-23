@@ -26,7 +26,7 @@ available:
 ```
 
 Keep the matches, retain each issue, and let the consumer know the related-resource list is incomplete. The
-[parser](https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/samples/Ignixa.Federation.SampleClient/SearchPage.cs)
+[parser](../../samples/Ignixa.Federation.SampleClient/SearchPage.cs)
 exposes issues in `SearchPage.Outcomes`. It also retains the source alias when the entry supplies one. See
 [Bundle interpretation](client-bundles.md) for the distinction between per-page and collected results.
 
@@ -41,7 +41,7 @@ Content-Type: application/fhir+json; charset=utf-8
 {"resourceType":"OperationOutcome","issue":[{"severity":"error","code":"not-found","diagnostics":"The continuation is no longer valid; repeat the original search."}]}
 ```
 
-The text and issue code come from the [host error responses](https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/src/Ignixa.Federation.Api/Search/SearchOutcome.cs).
+The text and issue code come from the [host error responses](../../src/Ignixa.Federation.Api/Search/SearchOutcome.cs).
 Choose recovery from status **and operation**, not by matching diagnostics strings:
 
 | Status or condition | Next action |
@@ -54,7 +54,7 @@ Choose recovery from status **and operation**, not by matching diagnostics strin
 | `502` / `503` / `504` | A backend failure, unavailability, or timeout is not a complete set of results. Surface the failure. On `503`, check host readiness; a required continuation that is too large can also cause `503`. |
 | Redirect, malformed success body, or non-FHIR error body | Do not follow a redirect or parse arbitrary text as a Bundle. Preserve status when available; do not log the raw body. |
 
-These are [search handler](https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/src/Ignixa.Federation.Api/Search/PrimarySearch.cs)
+These are [search handler](../../src/Ignixa.Federation.Api/Search/PrimarySearch.cs)
 behaviors, not a promise that every failure has a JSON body. For example, unmapped history, vread, operation
 or write paths can reach the router's empty `404` or `405`.
 
@@ -62,7 +62,7 @@ or write paths can reach the router's empty `404` or `405`.
 
 The sample CLI returns `0` on success, `2` for invalid usage, `3` for expired continuation, `4` for HTTP or
 response failures, and `5` for a refused link or missing requested alternate. A repeated next link is a paging
-error (`4`), not an expired search. See the [CLI tests](https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/test/Ignixa.Federation.SampleClient.UnitTests/CliAppTests.cs).
+error (`4`), not an expired search. See the [CLI tests](../../test/Ignixa.Federation.SampleClient.UnitTests/CliAppTests.cs).
 
 In library code, catch `SearchExpiredException` **before** `FederationRequestException` (its base class).
 When the response isn't an `OperationOutcome`, `FederationRequestException.Issues` can be empty; the status

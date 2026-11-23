@@ -1,0 +1,19 @@
+{
+  "name": "ignixa-federation-docs",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=22.23.4" },
+  "scripts": {
+    "build": "astro build",
+    "preview": "astro preview"
+  },
+  "dependencies": {
+    "@astrojs/markdown-remark": "7.3.9",
+    "@astrojs/starlight": "0.43.1",
+    "astro": "7.4.12",
+    "micromark": "4.0.3",
+    "micromark-extension-gfm": "3.0.0",
+    "micromark-util-decode-string": "2.0.1",
+    "parse5": "8.1.1"
+  }
+}

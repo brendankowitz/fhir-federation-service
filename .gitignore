@@ -3,6 +3,10 @@
 [Oo]bj/
 artifacts/
 publish/
+docs/site/node_modules/
+docs/site/.astro/
+docs/site/dist/
+docs/site/src/content/docs/generated/
 
 # Test and coverage output
 TestResults/

@@ -44,18 +44,18 @@ The [design, §14][spec] calls for per-shard latency, calls per request, truncat
 3. Separate failures by HTTP status **and FHIR issue code**. For example, trend 400 `too-costly` separately from planner refusals; compare 502 shard failures with 504 timeouts rather than treating both as missed probes. Inspect warning outcome entries separately from HTTP failures for reverse includes. These are suggested aggregations of the [wire behavior][search], not built-in counters. See [Errors](errors.md) and [Limits](limits.md).
 4. Inspect a sample of exported telemetry before enabling production traffic. Allowlist route templates, status, bounded stage names and configured aliases. Exclude raw paths with resource IDs, query strings, POST bodies, `ct`, tokens, claims and backend payloads. Apply the same redaction at the ingress, exporter and backend. Do not turn a caller pseudonym into a metric label. [Caller-correlation handling][privacy] · [host JWT log filter][routes] · [Security](security.md)
 
-[program]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/src/Ignixa.Federation.Api/Program.cs
-[routes]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/src/Ignixa.Federation.Api/Search/PrimarySearchEndpoints.cs
-[metadata]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/src/Ignixa.Federation.Api/Metadata/MetadataEndpoints.cs
-[health]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/test/Ignixa.Federation.Tests.Integration/HealthEndpointTests.cs
-[cold]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/test/Ignixa.Federation.Tests.Integration/Search/PrimarySearchColdHostTests.cs
-[publication]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/test/Ignixa.Federation.Tests.Integration/Search/PrimarySearchCapabilityPublicationTests.cs
-[signing]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/test/Ignixa.Federation.Tests.Integration/Search/SigningReadinessTests.cs
-[search-tests]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/test/Ignixa.Federation.Tests.Integration/Search/PrimarySearchTests.cs
-[telemetry]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/src/Ignixa.Federation.Core/Diagnostics/FederationTelemetry.cs
-[activity]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/src/Ignixa.Federation.Shards/Diagnostics/ShardActivity.cs
-[activity-test]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/test/Ignixa.Federation.Shards.UnitTests/Diagnostics/ShardActivityTests.cs
-[budget]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/src/Ignixa.Federation.Api/Budgets/RequestBudget.cs
-[spec]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/docs/superpowers/specs/2026-11-19-fhir-federation-service-design.md
-[search]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/src/Ignixa.Federation.Api/Search/PrimarySearch.cs
-[privacy]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/docs/guides/CallerCorrelation.md
+[program]: ../../src/Ignixa.Federation.Api/Program.cs
+[routes]: ../../src/Ignixa.Federation.Api/Search/PrimarySearchEndpoints.cs
+[metadata]: ../../src/Ignixa.Federation.Api/Metadata/MetadataEndpoints.cs
+[health]: ../../test/Ignixa.Federation.Tests.Integration/HealthEndpointTests.cs
+[cold]: ../../test/Ignixa.Federation.Tests.Integration/Search/PrimarySearchColdHostTests.cs
+[publication]: ../../test/Ignixa.Federation.Tests.Integration/Search/PrimarySearchCapabilityPublicationTests.cs
+[signing]: ../../test/Ignixa.Federation.Tests.Integration/Search/SigningReadinessTests.cs
+[search-tests]: ../../test/Ignixa.Federation.Tests.Integration/Search/PrimarySearchTests.cs
+[telemetry]: ../../src/Ignixa.Federation.Core/Diagnostics/FederationTelemetry.cs
+[activity]: ../../src/Ignixa.Federation.Shards/Diagnostics/ShardActivity.cs
+[activity-test]: ../../test/Ignixa.Federation.Shards.UnitTests/Diagnostics/ShardActivityTests.cs
+[budget]: ../../src/Ignixa.Federation.Api/Budgets/RequestBudget.cs
+[spec]: ../superpowers/specs/2026-11-19-fhir-federation-service-design.md
+[search]: ../../src/Ignixa.Federation.Api/Search/PrimarySearch.cs
+[privacy]: ../guides/CallerCorrelation.md

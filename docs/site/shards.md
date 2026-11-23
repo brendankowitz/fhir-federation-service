@@ -10,7 +10,7 @@ sidebar_position: 7
 
 ## Describe each owner
 
-This illustrative configuration fragment describes one owner; it is **not a settings-only warm startup**. `Profile` must name a profile supplied by the composed host. Use [Configuration](configuration.md) for the generated option reference and [binding](binding.md) for service requirements. [Registry validator][registry] · [Credential tests][auth].
+This illustrative configuration fragment describes one owner; it is **not a settings-only warm startup**. `Profile` must name a profile supplied by the composed host. Use [Configuration](https://brendankowitz.github.io/fhir-federation-service/configuration/) for the generated option reference and [binding](binding.md) for service requirements. [Registry validator][registry] · [Credential tests][auth].
 
 ```json
 {
@@ -45,14 +45,14 @@ Suppose both east and west hold `Patient/42`. In an east Observation, `subject.r
 
 The [design's profile checks (§9.2)][design] call for matching backend software, rejection of an unknown parameter under strict handling, monotone `_lastUpdated` order and repeatable next-page redemption. Those are **requirements on evidence**, not checks performed by `ShardRegistry.TryCreate`. Confirm that the composed source can reject incomplete or contradictory evidence, and that withdrawal turns readiness unhealthy. Then verify a supported query with known, non-sensitive rows on both owners. Do not infer support for every combination from an advertised search parameter. [Source contract][source] · [Catalog tests][catalog] · [Search matrix](status.md).
 
-[registry]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/src/Ignixa.Federation.Core/Shards/ShardRegistry.cs
-[source]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/src/Ignixa.Federation.Api/Search/ICapabilityAdmissionSource.cs
-[auth]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/test/Ignixa.Federation.Core.UnitTests/Shards/ShardRegistryAuthTests.cs
-[bases]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/test/Ignixa.Federation.Core.UnitTests/Shards/ShardRegistryBaseUrlTests.cs
-[version]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/test/Ignixa.Federation.Core.UnitTests/Shards/ShardRegistryVersionTests.cs
-[factory]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/src/Ignixa.Federation.Api/Search/IShardClientFactory.cs
-[design]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/docs/superpowers/specs/2026-11-19-fhir-federation-service-design.md
-[responses]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/test/Ignixa.Federation.Tests.Integration/Responses/SearchsetResponseTests.cs
-[chain]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/src/Ignixa.Federation.Core/Configuration/ChainResolutionOptions.cs
-[passthrough]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/test/Ignixa.Federation.Tests.Integration/Search/PrimarySearchForwardChainTests.cs
-[catalog]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/test/Ignixa.Federation.Tests.Integration/Search/CatalogBackendHostTests.cs
+[registry]: ../../src/Ignixa.Federation.Core/Shards/ShardRegistry.cs
+[source]: ../../src/Ignixa.Federation.Api/Search/ICapabilityAdmissionSource.cs
+[auth]: ../../test/Ignixa.Federation.Core.UnitTests/Shards/ShardRegistryAuthTests.cs
+[bases]: ../../test/Ignixa.Federation.Core.UnitTests/Shards/ShardRegistryBaseUrlTests.cs
+[version]: ../../test/Ignixa.Federation.Core.UnitTests/Shards/ShardRegistryVersionTests.cs
+[factory]: ../../src/Ignixa.Federation.Api/Search/IShardClientFactory.cs
+[design]: ../superpowers/specs/2026-11-19-fhir-federation-service-design.md
+[responses]: ../../test/Ignixa.Federation.Tests.Integration/Responses/SearchsetResponseTests.cs
+[chain]: ../../src/Ignixa.Federation.Core/Configuration/ChainResolutionOptions.cs
+[passthrough]: ../../test/Ignixa.Federation.Tests.Integration/Search/PrimarySearchForwardChainTests.cs
+[catalog]: ../../test/Ignixa.Federation.Tests.Integration/Search/CatalogBackendHostTests.cs

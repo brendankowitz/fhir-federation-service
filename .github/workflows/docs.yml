@@ -22,17 +22,22 @@ jobs:
       - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
         with:
           global-json-file: global.json
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: '22.23.5'
+          cache: npm
+          cache-dependency-path: docs/site/package-lock.json
       - name: Generate and validate documentation
         shell: pwsh
         run: ./tools/build-docs.ps1
       - name: Test link validation and check authored external links
         run: |
           python -B -m unittest discover -s tools -p test_check_docs.py
-          python tools/check-docs-external.py artifacts/docs/_site
+          python tools/check-docs-external.py docs/site/dist
       - uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         with:
-          path: artifacts/docs/_site
+          path: docs/site/dist
 
   deploy:
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
