@@ -417,10 +417,11 @@ public sealed class HttpShardClientBreakerTests
         for (int i = 0; i < ShardResilience.MinimumThroughput + 1; i++)
         {
             var acquiring = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-            shard.Credentials.Acquire = ct =>
+            var late = new TaskCompletionSource<string>();
+            shard.Credentials.Acquire = _ =>
             {
                 acquiring.SetResult();
-                return NeverAnswers(ct);
+                return new ValueTask<string>(late.Task);
             };
             Task<ShardPage> call = shard.Client.SearchAsync(shard.SarahRequest(ShardSearchMethod.PostSearch), Ct);
             await acquiring.Task.WaitAsync(TimeSpan.FromSeconds(15), Ct);
@@ -428,6 +429,10 @@ public sealed class HttpShardClientBreakerTests
 
             ShardCallException failure = await Should.ThrowAsync<ShardCallException>(() => Guard(call));
             failure.Failure.ShouldBe(ShardCallFailure.Timeout);
+
+            // The provider ignored its token and answers only now. The token is dropped, and the acquisition gives back its
+            // slot (HttpShardClient.MaxPendingAcquisitions) for the next call; one that never answered would keep it.
+            late.SetResult(SyntheticCredentials.Token);
         }
 
         // The success call uses the same breaker; only Guard bounds it in wall-clock time.

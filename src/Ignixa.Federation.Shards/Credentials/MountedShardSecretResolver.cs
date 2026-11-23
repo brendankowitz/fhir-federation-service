@@ -38,8 +38,9 @@ namespace Ignixa.Federation.Shards.Credentials;
 /// fresh <see cref="ShardCredentialException"/> with <see cref="ShardCredentialFailure.SecretUnavailable"/>, no inner
 /// exception and no diagnostics from the file system or decoder. Constructor errors never quote the rejected input.
 /// Cancellation is checked before open, during reads, and before returning a value or reporting an expected failure.
-/// It does not impose a deadline on the platform's synchronous open. The scratch bytes are cleared after each read;
-/// the returned string cannot be. This resolver is safe for concurrent calls.</para>
+/// The platform's synchronous open cannot be interrupted here. <see cref="Http.HttpShardClient"/> bounds its wait and
+/// the number of outstanding acquisitions. Scratch bytes are cleared after each read; the returned string cannot be.
+/// This resolver is safe for concurrent calls.</para>
 /// </remarks>
 public sealed class MountedShardSecretResolver : IShardSecretResolver
 {

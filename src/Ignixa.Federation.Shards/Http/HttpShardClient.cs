@@ -45,8 +45,10 @@ namespace Ignixa.Federation.Shards.Http;
 /// its cursor when the page arrives and is measured only when the cursor is redeemed.</para>
 /// <para><b>Self link.</b> The first page's <c>self</c> must be a usable URI reference (RFC 3986) without a fragment. Its
 /// path is not checked, because it is never requested; links are normalized to the configured base (design spec §4.2).</para>
-/// <para><b>Limits.</b> One deadline covers credential acquisition, attempts and validation. A credential provider that
-/// ignores cancellation cannot extend it. Each response is read to at most one byte past its configured size limit.
+/// <para><b>Limits.</b> One deadline covers credential acquisition, attempts and validation. The caller stops waiting at
+/// that deadline or on cancellation, even when the credential provider blocks or ignores cancellation. At most four
+/// acquisitions per client run at once, including abandoned ones. Each response is read to at most one byte
+/// past its configured size limit.
 /// The optional <see cref="IShardTransferMeter"/> sees each send, including a retry, and every body byte consumed,
 /// so a caller can enforce an aggregate budget. A rejected response's body is
 /// never drained to reuse its connection; the connection is closed instead.</para>
@@ -92,6 +94,9 @@ public sealed class HttpShardClient : IShardClient, IDisposable
     // its settings check cannot drift from what a client accepts.
     internal static readonly TimeSpan MaxCallTimeout = TimeSpan.FromMilliseconds(uint.MaxValue - 1);
 
+    // The most credential acquisitions one client runs at once, counting those whose caller has already given up.
+    internal const int MaxPendingAcquisitions = 4;
+
     private static readonly UriCreationOptions Verbatim = new() { DangerousDisablePathAndQueryCanonicalization = true };
 
     private static readonly JsonDocumentOptions StrictJson = new() { AllowDuplicateProperties = false };
@@ -106,6 +111,12 @@ public sealed class HttpShardClient : IShardClient, IDisposable
     private readonly HttpMessageInvoker _invoker;
     private readonly ShardResilience _resilience;
     private readonly TimeProvider _deadlineClock;
+
+    // Bounds MaxPendingAcquisitions. Released by the acquisition itself, never by its caller, so a provider call the caller
+    // abandoned keeps its slot until it actually returns. Not disposed: an abandoned acquisition may release it after Dispose.
+    [SuppressMessage("Usage", "CA2213:Disposable fields should be disposed",
+        Justification = "An abandoned acquisition may still release a slot after Dispose; the semaphore holds no wait handle unless AvailableWaitHandle is used, and it is not.")]
+    private readonly SemaphoreSlim _acquisitionSlots = new(MaxPendingAcquisitions, MaxPendingAcquisitions);
 
     /// <summary>Creates a client for one shard, trusting the platform's certificate store.</summary>
     /// <param name="shard">The shard every call goes to.</param>
@@ -761,8 +772,8 @@ public sealed class HttpShardClient : IShardClient, IDisposable
             {
                 // The credential is acquired by the first attempt that runs, so a call the circuit rejects acquires none, and
                 // a slow provider is the breaker's attempt to wait for, not a way past it. A timeout or failure here is the
-                // credential's, not the backend's, so it carries no fault tag; WaitAsync bounds a provider that ignores its
-                // token, and the abandoned acquisition is left to finish on its own.
+                // credential's, not the backend's, so it carries no fault tag; the provider runs off this thread within a
+                // bounded number of slots, and an abandoned acquisition is left to finish on its own.
                 token ??= await AcquireAsync(operation, deadline.Token, cancellationToken).ConfigureAwait(false);
                 using HttpRequestMessage message = CreateMessage(method, uri, formBody);
                 if (context.CallerId is { } callerId)
@@ -807,8 +818,7 @@ public sealed class HttpShardClient : IShardClient, IDisposable
         string token;
         try
         {
-            token = await _credentials.GetAccessTokenAsync(_shard.Auth, deadline).AsTask()
-                .WaitAsync(deadline).ConfigureAwait(false);
+            token = await RunAcquisitionAsync(deadline).ConfigureAwait(false);
         }
         catch (ShardCallException e) when (e.Fault != ShardFault.None)
         {
@@ -821,6 +831,9 @@ public sealed class HttpShardClient : IShardClient, IDisposable
                 ShardCallFailure.CredentialUnavailable, "The shard credential could not be acquired.", fault: ShardFault.None);
         }
 
+        // A token that arrived as the deadline passed, or after the caller gave up, is not used. Checked here, outside the
+        // send, so the timeout is the credential's and the breaker does not count it.
+        deadline.ThrowIfCancellationRequested();
         if (!IsBearerToken(token))
         {
             // The token is deliberately not quoted.
@@ -828,6 +841,45 @@ public sealed class HttpShardClient : IShardClient, IDisposable
         }
 
         return token;
+    }
+
+    // Reserve capacity before queueing work: a provider stalled in synchronous I/O keeps its slot even when the caller
+    // gives up. Other callers wait asynchronously within their own deadlines.
+    private async Task<string> RunAcquisitionAsync(CancellationToken deadline)
+    {
+        await _acquisitionSlots.WaitAsync(deadline).ConfigureAwait(false);
+
+        // Not canceled by the deadline: a work item canceled before it starts would never release its slot.
+        Task<string> acquisition = Task.Run(() => AcquireInSlotAsync(deadline), CancellationToken.None);
+        try
+        {
+            return await acquisition.WaitAsync(deadline).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            // Abandoned: a late token is dropped with the task, and a late fault is observed here so it reaches no
+            // unobserved-exception handler, which might log the provider's message.
+            _ = acquisition.ContinueWith(
+                static abandoned => _ = abandoned.Exception,
+                CancellationToken.None,
+                TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
+            throw;
+        }
+    }
+
+    private async Task<string> AcquireInSlotAsync(CancellationToken deadline)
+    {
+        try
+        {
+            // A work item that starts only after its caller gave up (a starved pool, say) does not call the provider.
+            deadline.ThrowIfCancellationRequested();
+            return await _credentials.GetAccessTokenAsync(_shard.Auth, deadline).ConfigureAwait(false);
+        }
+        finally
+        {
+            _acquisitionSlots.Release();
+        }
     }
 
     // The single place a request's method is chosen. A GET carries an explicit zero-length body, so it is framed

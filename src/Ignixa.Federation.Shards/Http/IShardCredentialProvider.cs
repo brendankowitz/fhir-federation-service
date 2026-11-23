@@ -9,6 +9,8 @@ namespace Ignixa.Federation.Shards.Http;
 /// <para>Failures propagate unchanged, so an implementation must keep secrets out of its exception messages. The token
 /// passed in is linked to the per-call deadline: a call that outlasts it fails as
 /// <see cref="ShardCallFailure.Timeout"/>.</para>
+/// <para>The client invokes this on the thread pool and can stop waiting before the provider returns. Abandoned
+/// acquisitions still count toward the client's concurrency limit, so providers should honor cancellation.</para>
 /// </remarks>
 public interface IShardCredentialProvider
 {
