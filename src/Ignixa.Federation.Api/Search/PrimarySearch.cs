@@ -34,6 +34,9 @@ namespace Ignixa.Federation.Api.Search;
 /// depth-one native forward chains the operator listed as passthrough paths. A passthrough forward chain keeps its raw
 /// occurrences and each owner joins locally, as an operator promise for that path only; the caller must be able to read the
 /// target type. Native forward chains do not combine with reverse chains in one search.
+/// One distributed depth-one forward chain with only ordinary predicates executes through the optional
+/// <see cref="IDistributedForwardSearch"/>: its resolver gets this request's one budget-bound client, and every owner then pages
+/// its own canonical rewrite of the chain, never the raw chain. A host without that strategy refuses it before any client exists.
 /// Ordinary count-only searches require exact shape proof and an explicit dialect for each shard. Count-only searches
 /// with admitted distributed reverse chains resolve witnesses and then count every owner's generated request through the
 /// same exact executor, within the remaining physical allowance. Ordinary unsorted paged <c>_revinclude</c> is staged by
@@ -92,6 +95,7 @@ internal sealed class PrimarySearch
     private readonly FrozenDictionary<string, string> _shardRevisions;
     private readonly FrozenDictionary<ShardId, CountDialect>? _countDialects;
     private readonly IRevIncludePageResolver? _revIncludes;
+    private readonly IDistributedForwardSearch? _forward;
 
     /// <summary>Gets the proxied read, built from the same enablement snapshot the search links and capability statement follow.</summary>
     public ProxiedReads Reads { get; }
@@ -104,11 +108,13 @@ internal sealed class PrimarySearch
         FrozenDictionary<ShardId, CountDialect>? countDialects,
         IShardReadBinding? readBinding,
         IRevIncludePageResolver? revIncludes,
+        IDistributedForwardSearch? forward,
         IDataProtectionProvider protection,
         TimeProvider time,
         int maxRequestLineBytes)
     {
         _revIncludes = revIncludes;
+        _forward = forward;
         _settings = settings;
         _capabilities = capabilities;
         _registry = capabilities.Registry;
@@ -184,6 +190,7 @@ internal sealed class PrimarySearch
             CaptureCountDialects(capabilities.Registry, services.GetService<IReadOnlyDictionary<ShardId, CountDialect>>()),
             services.GetService<IShardReadBinding>(),
             services.GetService<IRevIncludePageResolver>(),
+            services.GetService<IDistributedForwardSearch>(),
             services.GetRequiredService<IDataProtectionProvider>(),
             services.GetRequiredService<TimeProvider>(),
             services.GetRequiredService<IOptions<KestrelServerOptions>>().Value.Limits.MaxRequestLineSize);
@@ -342,6 +349,13 @@ internal sealed class PrimarySearch
             return UnsupportedShape();
         }
 
+        // Fixed by plan and host composition, so a host without the strategy refuses before any client or shard exists.
+        if (IsDistributedForward(plan))
+        {
+            return _forward is { } forward
+                ? await ExecuteForwardAsync(plan, forward, binding, prepared, budget)
+                : UnsupportedShape();
+        }
         // Fixed by grants and plan, so a host without the resolver refuses before any client or shard exists.
         RevIncludeStage? includes = RevIncludeStage.Create(plan, access);
         if (includes is not null && _revIncludes is null)
@@ -487,6 +501,71 @@ internal sealed class PrimarySearch
             (int)Math.Max(0, FetchAllowance - Math.Max(budget.BackendCalls, resolved.Calls)));
     }
 
+    /// <summary>
+    /// Resolves one distributed forward chain with the host's strategy on the request's single client, then pages exactly the
+    /// canonical owner streams it returned.
+    /// </summary>
+    /// <remarks>
+    /// The strategy is trusted for what a witness means, not for what the host may send: its streams must be the canonical
+    /// boundary shape and every one must fit the transport before any owner is asked for a page. Budget, deadline and shard
+    /// failures propagate to <see cref="SearchAsync"/>, which classifies them; none yields a partial page.
+    /// </remarks>
+    private async Task<IResult> ExecuteForwardAsync(
+        QueryPlan plan, IDistributedForwardSearch forward, ContinuationBinding binding, PreparedSearch search, RequestBudget budget)
+    {
+        budget.Checkpoint();
+        IShardClient client = _clients.CreateClient(_capabilities, budget);
+        var readable = new HashSet<ResourceType>(ForwardTargets(plan)) { plan.Type };
+
+        // The logical allowance and the physical one coincide at entry; later the shared budget's own count is the bound.
+        int allowance = RemainingPhysicalFetches(budget);
+        long payloadAllowance = Math.Max(0, _limits.MaxResponseBytes - budget.ResponseBytes);
+        (IReadOnlyList<ShardSearchRequest> Streams, int RemainingFetches)? resolved;
+        try
+        {
+            resolved = await forward.ResolveAsync(
+                plan, _capabilities, readable, client, _limits, _timeouts, _clients.FitsSearchRequest, allowance, payloadAllowance, budget.Token);
+        }
+        catch (TimeoutException)
+        {
+            budget.Checkpoint();
+            return SearchOutcome.TimedOut();
+        }
+
+        budget.Checkpoint();
+        if (resolved is null)
+        {
+            return SearchOutcome.NotSupported(StatusCodes.Status400BadRequest, "The required reference forms are not certified for this chain.");
+        }
+
+        (IReadOnlyList<ShardSearchRequest> streams, int remainingFetches) = resolved.Value;
+
+        if (streams.Count == 0)
+        {
+            return SearchsetResponse.Create(_registry, SelfLink(plan.Type, search.RawQuery), [], [], []);
+        }
+
+        if (remainingFetches < 0
+            || remainingFetches > allowance
+            || !DistributedForwardStreams.IsCanonical(_registry, plan, search.PageSize, streams, resumed: null))
+        {
+            return StrategyViolation();
+        }
+
+        if (!DistributedForwardStreams.AllFit(_registry, streams, _clients.FitsSearchRequest))
+        {
+            return SearchOutcome.TooCostly();
+        }
+
+        return await ExecuteAsync(plan.Type, binding, search with { Streams = [.. streams] },
+            predecessor: null, resumeFrom: null, budget, client, Math.Min(remainingFetches, RemainingPhysicalFetches(budget)));
+    }
+
+    private int RemainingPhysicalFetches(RequestBudget budget) => (int)Math.Max(0, FetchAllowance - budget.BackendCalls);
+
+    private static IResult StrategyViolation() =>
+        SearchOutcome.Error(StatusCodes.Status500InternalServerError, "exception", "The distributed forward strategy returned streams this host cannot execute.");
+
     private async Task<IResult> ContinueAsync(ResourceType type, CallerAccess access, ContinuationBinding binding, string token, RequestBudget budget)
     {
         // Only expiry, relevant registry or plan drift, and a missing anchor are 410; authentic bytes this host cannot
@@ -553,7 +632,30 @@ internal sealed class PrimarySearch
             return SearchOutcome.Gone();
         }
 
-        if (reverse)
+        if (IsDistributedForward(plan))
+        {
+            // Everything that can disagree with the current plan, grants, proof, registry or limits is decided here, purely
+            // and before any client exists. Witness discovery is never repeated: the saved rewrites are the evidence.
+            if (_forward is null)
+            {
+                // Streams still in the canonical shape mean only the strategy is missing; any other shape is drift.
+                return DistributedForwardStreams.IsCanonical(_registry, plan, prepared.PageSize, snapshot.Streams, snapshot.Continuation)
+                    ? UnsupportedShape()
+                    : SearchOutcome.Gone();
+            }
+
+            IReadOnlyList<ShardSearchRequest>? rebuilt = _forward.Rebuild(
+                plan, _capabilities, snapshot.Streams, _limits.MaxChainKeys, _clients.FitsSearchRequest);
+            if (rebuilt is null
+                || !DistributedForwardStreams.IsCanonical(_registry, plan, prepared.PageSize, rebuilt, snapshot.Continuation)
+                || !DistributedForwardStreams.AllFit(_registry, rebuilt, _clients.FitsSearchRequest))
+            {
+                return SearchOutcome.Gone();
+            }
+
+            prepared = prepared with { Streams = [.. rebuilt] };
+        }
+        else if (reverse)
         {
             if (_countDialects is null)
             {
@@ -886,6 +988,8 @@ internal sealed class PrimarySearch
         var revisions = new SortedDictionary<string, string>(StringComparer.Ordinal);
         bool revIncluded = false;
         bool chained = false;
+        bool distributed = false;
+        int chains = 0;
         foreach (PlannedOccurrence occurrence in plan.Occurrences)
         {
             switch (occurrence.Kind, occurrence.Action)
@@ -922,6 +1026,7 @@ internal sealed class PrimarySearch
 
                     break;
                 case (OccurrenceKind.ForwardChain, OccurrenceAction.Keep):
+                    chains++;
                     chained = true;
                     // A passthrough hop has no Terminal, so the terminal definition comes from the planned decoded key: the
                     // text after the dot of the one depth-one chain (the planner admitted no deeper path).
@@ -936,19 +1041,37 @@ internal sealed class PrimarySearch
                     }
 
                     break;
+                case (OccurrenceKind.ForwardChain, OccurrenceAction.Replace):
+                    chains++;
+                    chained = true;
+                    distributed = true;
+                    // The planner consults the source reference and the target's terminal definition, never the target's
+                    // _id, so those are the only definitions pinned for this hop.
+                    ReferenceHop witnessed = occurrence.Hop!;
+                    if (reverse
+                        || witnessed.Mode != ChainResolutionMode.Distributed
+                        || !Pin(witnessed.Path.Source, witnessed.Path.Code)
+                        || !Pin(witnessed.Path.Target, WebUtility.UrlDecode(witnessed.Terminal!.Key)))
+                    {
+                        return false;
+                    }
+
+                    break;
                 default:
                     return false;
             }
         }
 
         // A reverse include next to any chain would need the chain's own evidence and joins; it is not combined.
-        if (revIncluded && chained)
+        // One distributed forward chain stands alone: it is the only chain in the search.
+        if ((revIncluded && chained) || (distributed && (chains != 1 || reverse)))
         {
             return false;
         }
 
+        // A distributed forward chain's streams are the strategy's to produce, as a reverse chain's are the resolver's.
         ShardSearchRequest[] streams = [];
-        if (!reverse)
+        if (!reverse && !distributed)
         {
             IReadOnlyList<ParameterOccurrence> parameters = plan.BuildBackendParameters(NoReplacements);
             streams = [.. _registry.Shards.Select(s => new ShardSearchRequest(s.Id, plan.Type, parameters, pageSize, SearchMethod(post, s)))];
@@ -972,6 +1095,9 @@ internal sealed class PrimarySearch
 
     private static ResourceType[] ReverseSources(QueryPlan plan) =>
         [.. plan.Occurrences.Where(o => o.Kind == OccurrenceKind.ReverseChain).Select(o => o.Hop!.Path.Source).Distinct()];
+
+    private static bool IsDistributedForward(QueryPlan plan) =>
+        plan.Occurrences.Any(o => (o.Kind, o.Action) is (OccurrenceKind.ForwardChain, OccurrenceAction.Replace));
 
     /// <summary>The target types the caller must be able to read, regardless of how the planned forward chains are resolved.</summary>
     private static ResourceType[] ForwardTargets(QueryPlan plan) =>

@@ -78,6 +78,9 @@ internal sealed class ScriptedShards : IShardClientFactory
 
     public Func<ShardSearchRequest, bool>? RequestFits { get; set; }
 
+    /// <summary>Gets or sets a per-resource filter applied to a search's first page, to model a backend that honours the request's predicates.</summary>
+    public Func<ShardSearchRequest, SearchWorld.SeedResource, bool>? Matches { get; set; }
+
     public bool FitsSearchRequest(ShardSearchRequest request) => RequestFits?.Invoke(request) ?? true;
 
     public IShardClient CreateClient(SearchCapabilities view, RequestBudget budget)
@@ -106,7 +109,8 @@ internal sealed class ScriptedShards : IShardClientFactory
             ShardDescriptor shard = Shard(request.Shard);
             return Answered(Answer(shard, request.Type, 0, Math.Min(request.PageSize, script.PageSizeLimit),
                 script.FilterGeneratedIds ? request.Parameters.FirstOrDefault(p => p.Key == "_id")?.Value : null,
-                target => ShardCursor.Next(request, shard.Profile, target)));
+                target => ShardCursor.Next(request, shard.Profile, target),
+                script.Matches is { } matches ? r => matches(request, r) : null));
         }
 
         public async Task<ShardPage> ContinueAsync(ShardCursor cursor, CancellationToken cancellationToken)
@@ -160,11 +164,12 @@ internal sealed class ScriptedShards : IShardClientFactory
             }
         }
 
-        private ShardPage Answer(ShardDescriptor shard, ResourceType type, int offset, int count, string? ids, Func<string, ShardCursor> cursor)
+        private ShardPage Answer(ShardDescriptor shard, ResourceType type, int offset, int count, string? ids, Func<string, ShardCursor> cursor,
+            Func<SearchWorld.SeedResource, bool>? matches = null)
         {
             string[]? selected = ids is null ? null : Uri.UnescapeDataString(ids).Split(',');
             SearchWorld.SeedResource[] all = [.. script.Resources[shard.Id.Value]
-                .Where(r => r.Type == type.Value && (selected is null || selected.Contains(r.Id, StringComparer.Ordinal)))];
+                .Where(r => r.Type == type.Value && (selected is null || selected.Contains(r.Id, StringComparer.Ordinal)) && (matches?.Invoke(r) ?? true))];
             var entries = new List<ShardEntry>();
             foreach (SearchWorld.SeedResource resource in all.Skip(offset).Take(count))
             {

@@ -116,6 +116,7 @@ internal static class SearchWorld
     /// Whether <c>Patient.link:Patient</c> is a <c>_revinclude</c> source, advertised on <c>Patient</c>, so the source type is the
     /// primary type and a resolver can return a resource that is also a match.
     /// </param>
+    /// <param name="patientGiven">Whether <c>Patient.given</c> is searchable, which tells the two collision patients apart.</param>
     public static SearchCapabilities Capabilities(
         bool patientName = true,
         IEnumerable<string>? exactCountShapes = null,
@@ -130,7 +131,8 @@ internal static class SearchWorld
         bool revInclude = false,
         bool organizationInclude = false,
         bool conditionRevInclude = false,
-        bool selfRevInclude = false)
+        bool selfRevInclude = false,
+        bool patientGiven = false)
     {
         registry ??= Registry;
         List<SearchParameterSupport> patientParameters =
@@ -138,6 +140,11 @@ internal static class SearchWorld
             new("_id", SearchParamType.Token, null),
             new("family", SearchParamType.String, null),
         ];
+        if (patientGiven)
+        {
+            patientParameters.Add(new("given", SearchParamType.String, null));
+        }
+
         if (patientName)
         {
             patientParameters.Add(new("name", SearchParamType.String, null));
