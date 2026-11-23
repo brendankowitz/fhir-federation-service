@@ -2,6 +2,8 @@ using System.Net;
 using System.Text;
 using Ignixa.Federation.Api.Search;
 using Ignixa.Federation.Core.Search;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -198,40 +200,34 @@ public sealed class CatalogBackendHostTests
     }
 
     [Fact]
-    public void CatalogMode_WithoutASource_FailsStartupNamingTheSetting_EvenWithASeedRegistered()
+    public async Task CatalogMode_WithoutASource_FailsStartupNamingTheSetting_EvenWithASeedRegistered()
     {
         var shards = new ScriptedShards();
-        Exception failure = Should.Throw<Exception>(() =>
-        {
-            using SearchHost host = SearchHost.Start(setup =>
-            {
-                setup.Shards = shards;
-                setup.Settings[ModeKey] = PrototypeCatalog;
-                setup.WaitForReadiness = false;
-            });
-        });
+        WebApplicationBuilder builder = CreateCatalogBuilder();
+        builder.Services.AddSingleton(SearchWorld.Capabilities());
+        builder.Services.AddSingleton<IShardClientFactory>(shards);
+        await using WebApplication host = builder.Build();
 
-        failure.ToString().ShouldContain(ModeKey);
-        failure.ToString().ShouldContain(nameof(ICapabilityAdmissionSource));
+        InvalidOperationException failure = await Should.ThrowAsync<InvalidOperationException>(
+            host.StartAsync(TestContext.Current.CancellationToken));
+
+        failure.Message.ShouldContain(ModeKey);
+        failure.Message.ShouldContain(nameof(ICapabilityAdmissionSource));
         shards.Calls.Count.ShouldBe(0);
     }
 
     [Fact]
-    public void CatalogMode_DoesNotMaskAFailureOfASuppliedSource()
+    public async Task CatalogMode_DoesNotMaskAFailureOfASuppliedSource()
     {
-        Exception failure = Should.Throw<Exception>(() =>
-        {
-            using SearchHost host = SearchHost.Start(setup =>
-            {
-                setup.Settings[ModeKey] = PrototypeCatalog;
-                setup.WaitForReadiness = false;
-                setup.ConfigureServices = services =>
-                    services.AddSingleton<ICapabilityAdmissionSource>(_ => throw new InvalidOperationException("source-construction-defect"));
-            });
-        });
+        WebApplicationBuilder builder = CreateCatalogBuilder();
+        var sourceFailure = new InvalidOperationException("source-construction-defect");
+        builder.Services.AddSingleton<ICapabilityAdmissionSource>(_ => throw sourceFailure);
+        await using WebApplication host = builder.Build();
 
-        failure.ToString().ShouldContain("source-construction-defect");
-        failure.ToString().ShouldNotContain("requires a registered");
+        InvalidOperationException failure = await Should.ThrowAsync<InvalidOperationException>(
+            host.StartAsync(TestContext.Current.CancellationToken));
+
+        failure.ShouldBeSameAs(sourceFailure);
     }
 
     [Theory]
@@ -265,6 +261,17 @@ public sealed class CatalogBackendHostTests
         shards.Calls.Count.ShouldBe(0);
         source.Calls.ShouldBe(0);
         return text;
+    }
+
+    // Own StartAsync and disposal separately so the startup exception is not racing Program.Run's host disposal.
+    private static WebApplicationBuilder CreateCatalogBuilder()
+    {
+        var setup = new SearchHostSetup();
+        setup.Settings[ModeKey] = PrototypeCatalog;
+        WebApplicationBuilder builder = WebApplication.CreateBuilder();
+        builder.WebHost.UseTestServer();
+        builder.Configuration.AddInMemoryCollection(setup.Settings);
+        return builder.AddPrimarySearch();
     }
 
     private static async Task AssertColdAsync(SearchHost host)
