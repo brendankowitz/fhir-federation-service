@@ -7,6 +7,7 @@ using Ignixa.Federation.Core.Identity;
 using Ignixa.Federation.Core.Search;
 using Ignixa.Federation.Tests.Integration.Reads;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using Shouldly;
 
 namespace Ignixa.Federation.Tests.Integration.Search;
@@ -84,6 +85,53 @@ public sealed class CapabilityPublicationWorkerTests
         h.Source.Calls.ShouldBe(4);
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task HostedWorker_CanStopSeparatelyOrWithTheHost(bool stopWorkerFirst)
+    {
+        var source = new ScriptedAdmissions();
+        var clock = new StepClock();
+        using SearchHost host = SearchHost.Start(setup =>
+        {
+            setup.Capabilities = null;
+            setup.WaitForReadiness = false;
+            setup.ConfigureServices = services =>
+            {
+                services.AddSingleton(sp => new CapabilityPublicationWorker(
+                    sp.GetRequiredService<PrimarySearchState>(), source, Cadence, clock));
+                services.AddHostedService(sp => sp.GetRequiredService<CapabilityPublicationWorker>());
+            };
+        });
+
+        try
+        {
+            var evidence = new ProofEvidence();
+            (await source.NextAsync()).Release(evidence.Admit(SearchWorld.Capabilities()));
+            await clock.NextWaitAsync();
+            await host.WaitForReadinessAsync();
+
+            // Otherwise, let SearchHost disposal stop the registered worker through the Generic Host.
+            if (!stopWorkerFirst)
+            {
+                return;
+            }
+
+            var worker = host.Services.GetRequiredService<CapabilityPublicationWorker>();
+            using var bound = new CancellationTokenSource(Guard);
+            await worker.StopAsync(bound.Token);
+
+            host.Services.GetRequiredService<IHostApplicationLifetime>().ApplicationStopping.IsCancellationRequested.ShouldBeFalse();
+            (await host.GetAsync("/health/live", token: null)).StatusCode.ShouldBe(HttpStatusCode.OK);
+            (await host.GetAsync("/metadata", token: null)).StatusCode.ShouldBe(HttpStatusCode.ServiceUnavailable);
+            worker.ExecuteTask.ShouldNotBeNull().IsCompletedSuccessfully.ShouldBeTrue();
+        }
+        finally
+        {
+            source.Close();
+        }
+    }
+
     [Fact]
     public async Task StopDuringAPendingProbe_CancelsIt_WaitsForItsRelease_AndIgnoresAValidLateResult()
     {
@@ -99,10 +147,30 @@ public sealed class CapabilityPublicationWorkerTests
         probe.Release(h.Evidence.Admit(SearchWorld.Capabilities()));
         await stop.WaitAsync(Guard, TestContext.Current.CancellationToken);
 
-        h.Worker.ExecuteTask.ShouldNotBeNull().IsCanceled.ShouldBeTrue();
+        h.Worker.ExecuteTask.ShouldNotBeNull().IsCompletedSuccessfully.ShouldBeTrue();
         h.Evidence.Commits.ShouldBe(0);
         h.Evidence.Refusals.ShouldBe(0);
         h.Source.Calls.ShouldBe(1);
+        await AssertColdAsync(h);
+    }
+
+    [Fact]
+    public async Task SourceFailureDuringStop_IsNotTreatedAsRequestedCancellation()
+    {
+        await using Harness h = Harness.Create();
+        await h.Worker.StartAsync(TestContext.Current.CancellationToken);
+        Probe probe = await h.Source.NextAsync();
+
+        Task stop = h.Worker.StopAsync(TestContext.Current.CancellationToken);
+        probe.Token.IsCancellationRequested.ShouldBeTrue();
+        var sourceFailure = new InvalidOperationException("The admission source failed.");
+        probe.Result.SetException(sourceFailure);
+
+        await stop.WaitAsync(Guard, TestContext.Current.CancellationToken);
+        InvalidOperationException failure = await Should.ThrowAsync<InvalidOperationException>(
+            h.Worker.ExecuteTask.ShouldNotBeNull().WaitAsync(Guard, TestContext.Current.CancellationToken));
+        failure.ShouldBeSameAs(sourceFailure);
+        h.Evidence.Commits.ShouldBe(0);
         await AssertColdAsync(h);
     }
 
@@ -120,10 +188,8 @@ public sealed class CapabilityPublicationWorkerTests
         h.Evidence.AfterInstall = () => servedAfterCommit = h.State.Current is not null;
         probe.Release(h.Evidence.Admit(SearchWorld.Capabilities()));
         Task execution = h.Worker.ExecuteTask.ShouldNotBeNull();
-        await execution.WaitAsync(Guard, TestContext.Current.CancellationToken)
-            .ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing | ConfigureAwaitOptions.ContinueOnCapturedContext);
+        await execution.WaitAsync(Guard, TestContext.Current.CancellationToken);
 
-        execution.IsCanceled.ShouldBeTrue();
         stopReturned.ShouldBeTrue();
         h.Evidence.Commits.ShouldBe(1);
         servedAfterCommit.ShouldBeFalse();

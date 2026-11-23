@@ -16,8 +16,8 @@ namespace Ignixa.Federation.Api.Search;
 /// <para>
 /// <see cref="StopAsync"/> first closes the publication path and withdraws the view, then cancels and joins the loop
 /// within the host's stop bound. A closed or cancelled loop starts no new probe. A result returned after cancellation,
-/// even a valid one, is ignored, and a closed path refuses any install that is still pending. A defect from the source or
-/// a failed build stops the loop and the host stays cold.
+/// even a valid one, is ignored, and a closed path refuses any install that is still pending. Requested worker
+/// cancellation completes the loop normally. Source defects and failed builds still fault the worker and withdraw the view.
 /// </para>
 /// <para>
 /// Not registered by default: a host that activates it must not also publish through <see cref="IFederationCapabilityPublisher"/>.
@@ -90,6 +90,10 @@ internal sealed class CapabilityPublicationWorker : BackgroundService
 
                 await Task.Delay(_cadence, _time, stoppingToken);
             }
+        }
+        catch (OperationCanceledException exception) when (stoppingToken.IsCancellationRequested && exception.CancellationToken == stoppingToken)
+        {
+            // Stopping this worker need not stop the host. A cancelled ExecuteTask would be reported as a host failure.
         }
         finally
         {

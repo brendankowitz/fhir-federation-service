@@ -13,7 +13,7 @@ internal interface ICapabilityAdmissionSource
     /// <summary>Tries to admit the current evidence as a view to serve.</summary>
     /// <param name="cancellationToken">Cancelled when the worker stops; the result is then ignored, even if valid.</param>
     /// <returns>The admission, or <see langword="null"/> for an expected refusal that the worker retries after its cadence.</returns>
-    /// <exception cref="OperationCanceledException"><paramref name="cancellationToken"/> was cancelled.</exception>
-    /// <remarks>Any other exception is a defect: it stops the worker, which leaves the host cold.</remarks>
+    /// <exception cref="OperationCanceledException">Cancellation requested by, and reported with, <paramref name="cancellationToken"/>.</exception>
+    /// <remarks>Any other exception propagates from the worker, which withdraws its view.</remarks>
     ValueTask<CapabilityAdmission?> TryAdmitAsync(CancellationToken cancellationToken);
 }
