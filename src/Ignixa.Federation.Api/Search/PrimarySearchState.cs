@@ -18,15 +18,10 @@ namespace Ignixa.Federation.Api.Search;
 /// they are installed, so they cannot describe different views and a failed build installs nothing. A request reads
 /// <see cref="Current"/> once and uses only that bundle, so a publication never changes a request in flight.
 /// <para>
-/// Publishing a view is not reconfiguring the application. The raw <c>Federation</c> section keys and values are copied once,
-/// when this state is created right after the host is built, and every build binds and validates the search options from that
-/// copy against the view's profiles; the live configuration is never read again, so a later change to it, or a reload, reaches
-/// neither a publication nor the role grants, authority, signing and public base the host fixed at startup. Nothing is parsed
-/// at capture, so a malformed or invalid startup value does not stop a cold host from listening: it fails each publication
-/// until the host is restarted, and a runtime edit does not rescue it.
+/// Capture the raw search options at startup so publication cannot mix newly reloaded settings with the host's startup
+/// settings. Binding and validation wait for a view; bad search options must not prevent a cold host from listening.
 /// </para>
-/// Thread-safe: publications, which include the build, are serialized by a lock that readers never take. Concurrent callers
-/// are not queued first-in first-out: the lock is not fair, so the order they install in is the order they acquire it.
+/// Publications are serialized; readers do not take the writer lock.
 /// </remarks>
 internal sealed class PrimarySearchState : IHealthCheck, IFederationCapabilityPublisher
 {
@@ -70,7 +65,7 @@ internal sealed class PrimarySearchState : IHealthCheck, IFederationCapabilityPu
     /// <inheritdoc />
     public void Publish(SearchCapabilities? capabilities)
     {
-        // The build stays inside the lock: a later publication must not be overwritten by an earlier one that finishes late.
+        // A withdrawal must wait for an in-progress build so the build cannot install after the withdrawal returns.
         lock (_writer)
         {
             Volatile.Write(ref _current, capabilities is null ? null : Build(capabilities));

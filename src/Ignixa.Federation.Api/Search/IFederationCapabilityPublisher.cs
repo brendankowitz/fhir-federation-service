@@ -8,42 +8,32 @@ namespace Ignixa.Federation.Api.Search;
 /// </summary>
 /// <remarks>
 /// <para>
-/// <b>Trust.</b> The caller owns the evidence behind the view: it publishes only a complete, eligible view and never a
-/// stale observation. Nothing from HTTP or configuration reaches this seam, and the host adds no authorization of its own
-/// to what a published view allows.
+/// The trusted in-process caller owns the evidence behind the view. It must publish only complete, eligible views and
+/// never stale observations. There is no HTTP or configuration path for supplying a view. Publication does not change
+/// caller authentication or grants.
 /// </para>
 /// <para>
-/// <b>Effect.</b> A published view replaces the current one as a whole: the search, the capability statement and the
-/// readiness check all follow it from the moment <see cref="Publish"/> returns. A request that has already started keeps the
-/// view it began with; the next request sees the new one. Publishing <see langword="null"/> withdraws the view, so the
-/// host is up but not ready until another is published. A withdrawal never falls back to a view registered at startup.
+/// Searches and qualified reads capture one generation in the request pipeline before authentication. Metadata captures
+/// once in its handler. These requests keep the generation they captured even if a later call replaces or withdraws it.
+/// Publishing <see langword="null"/> makes the host not ready without stopping it or restoring a startup view. A view is
+/// necessary but not sufficient for readiness; the other readiness checks still apply.
 /// </para>
 /// <para>
-/// <b>Failure.</b> The replacement is built and validated completely before it is installed. If it cannot be built, the
-/// call throws and the previous view, or its absence, stays in force: a rejected publication is not a withdrawal.
+/// The replacement is built and validated before it is installed, using startup settings. If it cannot be built, the
+/// call throws and leaves the previous view in force. Invalid search options are reported when a warm view is built,
+/// not while an unseeded host starts cold. Publishing a view does not apply configuration reloads.
 /// </para>
-/// /// <para>
-/// <b>Not reconfiguration.</b> Publishing changes only the capabilities view. The caller roles and grants, the token
-/// authority, issuer and audience, signing, the public base and the <c>Federation</c> search options (limits, timeouts,
-/// tokens, shards, <c>ProxyReads</c>) are all the host's startup settings: the options are copied from configuration when the
-/// host is built and each publication builds its search from that copy, so changing or reloading configuration afterwards
-/// has no effect on any publication. Invalid startup options do not stop a cold host from starting; they fail each
-/// publication until the host is restarted.
-/// </para>
-/// <para>
-/// Thread-safe. Calls are serialized and take effect in the order they acquire the lock, which is not a first-in first-out
-/// guarantee for concurrent callers: the last view installed is the one from the call that took the lock last. A caller that
-/// needs one view to win must finish its call before starting the next.
+/// Thread-safe. Calls are serialized, but concurrent calls have no guaranteed order. A source must order its own updates.
 /// </para>
 /// </remarks>
-[SuppressMessage("Design", "CA1515:Consider making public types internal", Justification = "Trusted host components outside this assembly resolve and call this seam, so it must be public; the integration tests could reach an internal type through InternalsVisibleTo and are not the reason.")]
+[SuppressMessage("Design", "CA1515:Consider making public types internal", Justification = "Trusted host components outside this assembly resolve and call this seam.")]
 public interface IFederationCapabilityPublisher
 {
     /// <summary>Installs <paramref name="capabilities"/> as the served view, or withdraws the view when it is <see langword="null"/>.</summary>
     /// <param name="capabilities">The complete view to serve, or <see langword="null"/> to withdraw it.</param>
     /// <exception cref="InvalidOperationException">
-    /// The search cannot be built from the view: no shard transport is registered, the startup <c>Federation</c> options are
-    /// malformed or invalid, or its shards do not describe exactly the view's registry. The served view is unchanged.
+    /// The generation could not be built, for example because there is no shard transport, startup options are invalid,
+    /// or the configured shards do not describe the view's registry. The served view is unchanged.
     /// </exception>
     void Publish(SearchCapabilities? capabilities);
 }
