@@ -83,6 +83,22 @@ public sealed class RevIncludeQueryCompilerEvidenceTests
         Unsupported(Certified(registry, forwardOnly, WestCertificate(registry)), Targets, East);
     }
 
+    // Right path, forms and registry version, and the operation is certified, but without its standalone source search shape.
+    [Fact]
+    public void RefusesAShardThatProvesTheOperationWithoutTheStandaloneShape()
+    {
+        ShardRegistry registry = Registry();
+        ReferencePathCertification shapeless = Certify(
+            TestSearch.ObservationSubjectPatient,
+            ReferenceSearchForms.Relative | ReferenceSearchForms.CanonicalAbsolute,
+            ReferenceSearchForms.CanonicalAbsolute,
+            registry.Version,
+            withShape: false);
+        shapeless.Operations.ShouldBe(ReferencePathOperations.RevIncludeSearch);
+
+        Unsupported(Certified(registry, shapeless, WestCertificate(registry)), Targets, East);
+    }
+
     [Fact]
     public void RefusesAShardWhoseCoverageIsForAnotherRegistry()
     {

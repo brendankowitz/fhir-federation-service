@@ -30,20 +30,24 @@ internal static class RevIncludeScenario
             [TestShards.East(), TestShards.West("https://west-legacy.example/fhir").WithProfile(GetOnly.Name)],
             [.. TestShards.Profiles, GetOnly]);
 
-    /// <summary>Certifies only the reverse include search of <paramref name="path"/>, with the given forms.</summary>
+    /// <summary>
+    /// Certifies only the reverse include search of <paramref name="path"/>, with the given forms, and its standalone shape
+    /// unless <paramref name="withShape"/> is <see langword="false"/> (a certificate may prove the operation without it).
+    /// </summary>
     public static ReferencePathCertification Certify(
         ReferencePath path,
         ReferenceSearchForms own,
         ReferenceSearchForms foreign,
         string registryVersion,
-        ReferencePathOperations operations = ReferencePathOperations.RevIncludeSearch) => new(
+        ReferencePathOperations operations = ReferencePathOperations.RevIncludeSearch,
+        bool withShape = true) => new(
         path,
         operations,
         own,
         foreign,
         registryVersion,
         null,
-        operations.HasFlag(ReferencePathOperations.RevIncludeSearch) ? TestSearch.StandaloneShape(path) : null);
+        withShape && operations.HasFlag(ReferencePathOperations.RevIncludeSearch) ? TestSearch.StandaloneShape(path) : null);
 
     public static ReferencePathCertification EastCertificate(ShardRegistry registry) => Certify(
         TestSearch.ObservationSubjectPatient,
@@ -117,8 +121,20 @@ internal static class RevIncludeScenario
     /// <summary>Percent-decodes the request's single reference pair, as a backend reads it.</summary>
     public static string Decoded(this ShardSearchRequest request) => Uri.UnescapeDataString(request.Parameters.Single(p => p.Key == "subject").Value);
 
-    /// <summary>Gets the query text a transport sends for <paramref name="request"/>: its pairs and then its count.</summary>
-    public static string WireQuery(this ShardSearchRequest request) => $"{QueryRewriter.Render(request.Parameters)}&_count={request.PageSize}";
+    /// <summary>
+    /// Gets the bytes a transport sends for <paramref name="request"/> to its shard in <paramref name="registry"/>: the pairs
+    /// and then the count, as a POST form body, or after the shard's base path and <c>/Type?</c> as a GET target.
+    /// </summary>
+    public static int WireBytes(this ShardSearchRequest request, ShardRegistry registry)
+    {
+        string query = $"{QueryRewriter.Render(request.Parameters)}&_count={request.PageSize}";
+        string wire = request.Method switch
+        {
+            ShardSearchMethod.PostSearch => query,
+            ShardSearchMethod.Get => $"{registry.Shards.Single(s => s.Id == request.Shard).BaseUrl.AbsolutePath.TrimEnd('/')}/{request.Type}?{query}",
+            _ => throw new ArgumentOutOfRangeException(nameof(request)),
+        };
 
-    public static int WireBytes(this ShardSearchRequest request) => Encoding.UTF8.GetByteCount(request.WireQuery());
+        return Encoding.UTF8.GetByteCount(wire);
+    }
 }
