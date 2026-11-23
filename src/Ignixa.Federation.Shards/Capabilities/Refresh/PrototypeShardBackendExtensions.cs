@@ -2,6 +2,7 @@ using Ignixa.Federation.Core.Configuration;
 using Ignixa.Federation.Core.Shards;
 using Ignixa.Federation.Shards.Credentials;
 using Ignixa.Federation.Shards.Http;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 
@@ -88,6 +89,42 @@ public static class PrototypeShardBackendExtensions
 
         IShardSecretResolver secrets = mounted is null ? NoSecrets.Instance : mounted;
         return services.AddShardBackend(registry, new AzureShardCredentialProvider(secrets), backendCall, maxResponseBytes, limits);
+    }
+
+    /// <summary>
+    /// Registers the prototype shard backend from a federation configuration section by reading it explicitly
+    /// (no reflection binding) and composing it through the options-based overload.
+    /// </summary>
+    /// <param name="services">The service collection to register into.</param>
+    /// <param name="federationSection">
+    /// The federation section: <c>Shards</c> (with per-shard <c>WireLimits</c>), <c>Timeouts</c>, <c>Limits</c> and
+    /// <c>Backend:SecretMountRoot</c> / <c>Backend:SecretFiles</c>. The backend mount settings are read only when a
+    /// shard uses <c>ClientCredentials</c>; a managed-identity-only configuration never reads them.
+    /// </param>
+    /// <returns>The same collection, for chaining.</returns>
+    /// <exception cref="OptionsValidationException">
+    /// A setting is malformed, has the wrong shape, or fails the composition's validation. Failures name the
+    /// configuration path of the offending setting and never echo submitted values. Nothing is registered.
+    /// </exception>
+    /// <exception cref="InvalidOperationException">A backend is already registered.</exception>
+    /// <remarks>
+    /// Secret values are not read here; credential resolution stays deferred to the first call. Numeric collection keys
+    /// are treated as indexes, so gaps in a configured list are tolerated and failures name the configured key.
+    /// </remarks>
+    public static IServiceCollection AddPrototypeShardBackend(this IServiceCollection services, IConfigurationSection federationSection)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+        ArgumentNullException.ThrowIfNull(federationSection);
+
+        PrototypeShardBackendSettings settings = PrototypeShardBackendSettings.Read(federationSection);
+        try
+        {
+            return services.AddPrototypeShardBackend(settings.Options, settings.WireLimits, settings.SecretMountRoot, settings.SecretFiles);
+        }
+        catch (OptionsValidationException ex)
+        {
+            throw settings.Translate(ex);
+        }
     }
 
     private static void CheckTransport(TimeSpan backendCall, TimeSpan request, long maxResponseBytes, List<string> failures)
