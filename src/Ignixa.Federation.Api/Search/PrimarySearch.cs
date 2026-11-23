@@ -973,10 +973,10 @@ internal sealed class PrimarySearch
     private static ResourceType[] ReverseSources(QueryPlan plan) =>
         [.. plan.Occurrences.Where(o => o.Kind == OccurrenceKind.ReverseChain).Select(o => o.Hop!.Path.Source).Distinct()];
 
-    /// <summary>The target types of native forward chains, which every shard joins locally and the caller must be able to read.</summary>
+    /// <summary>The target types the caller must be able to read, regardless of how the planned forward chains are resolved.</summary>
     private static ResourceType[] ForwardTargets(QueryPlan plan) =>
         [.. plan.Occurrences
-            .Where(o => o is { Kind: OccurrenceKind.ForwardChain, Action: OccurrenceAction.Keep, Hop.Mode: ChainResolutionMode.Passthrough })
+            .Where(o => o.Kind == OccurrenceKind.ForwardChain)
             .Select(o => o.Hop!.Path.Target)
             .Distinct()];
 

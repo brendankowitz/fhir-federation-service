@@ -81,12 +81,21 @@ public sealed class PrimarySearchForwardChainTests
     }
 
     [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public async Task TargetTypeGrantIsRequiredBeforeAnyClientOrShardWork(bool post)
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    [InlineData(true, true)]
+    public async Task TargetTypeGrantIsRequiredBeforeAnyClientOrShardWork(bool post, bool distributed)
     {
-        using SearchHost host = Start();
-        string token = host.Token(        new SyntheticTokenRequest { Roles = [SearchWorld.ObservationRole], ObjectId = SearchWorld.CallerObjectId });
+        using SearchHost host = Start(s =>
+        {
+            if (distributed)
+            {
+                s.Capabilities = SearchWorld.Capabilities(distributedForward: true);
+                s.Settings.Remove(PassthroughKey);
+            }
+        });
+        string token = host.Token(new SyntheticTokenRequest { Roles = [SearchWorld.ObservationRole], ObjectId = SearchWorld.CallerObjectId });
 
         SearchResult refused = post
             ? await host.PostFormAsync("/Observation/_search", Paged, token)
@@ -102,8 +111,10 @@ public sealed class PrimarySearchForwardChainTests
         primary.StatusCode.ShouldBe(HttpStatusCode.OK);
     }
 
-    [Fact]
-    public async Task RedemptionRechecksTheTargetTypeGrantForTheSameBearerBeforeAnyClient()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task RedemptionRechecksTheTargetTypeGrantForTheSameCallerBeforeAnyClient(bool distributed)
     {
         using var ring = new IsolatedKeyRing();
         using SearchHost issuer = Start(s => s.Protection = ring.CreateProvider());
@@ -112,6 +123,11 @@ public sealed class PrimarySearchForwardChainTests
             s.Protection = ring.CreateProvider();
             s.Settings[$"Federation:Host:Roles:{SearchWorld.ReaderRole}:0"] = "Observation";
             s.Settings.Remove($"Federation:Host:Roles:{SearchWorld.ReaderRole}:1");
+            if (distributed)
+            {
+                s.Capabilities = SearchWorld.Capabilities(distributedForward: true);
+                s.Settings.Remove(PassthroughKey);
+            }
         });
         SearchResult first = await issuer.GetAsync("/Observation?" + Paged);
         first.StatusCode.ShouldBe(HttpStatusCode.OK);
