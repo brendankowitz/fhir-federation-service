@@ -201,7 +201,7 @@ public sealed class RevIncludePageExecutor
         private readonly List<ShardEntry> _includes = [];
         private int _unstartedFirstPages = firstPages;
 
-        public IReadOnlyList<ShardEntry> Includes => _includes;
+        public IReadOnlyList<ShardEntry> Includes => _includes.AsReadOnly();
 
         /// <summary>Gets a value indicating whether a distinct eligible resource beyond the limit was seen.</summary>
         public bool Truncated { get; private set; }

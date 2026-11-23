@@ -50,6 +50,26 @@ public sealed class RevIncludePageExecutorIncludeSetTests
         page.Fetches.ShouldBe(8);
     }
 
+    [Fact]
+    public async Task TheReturnedIncludesCannotBeClearedByTheCaller()
+    {
+        ShardRegistry registry = Registry();
+        var backend = new RevIncludeBackend();
+        ShardEntry include = Entry(East, Observation, "o1");
+        backend.OnSearch(East, Observation, Page(null, include));
+        backend.OnSearch(West, Observation, Page(null));
+
+        RevIncludePage page = await Executor(backend.Client, registry)
+            .ExecuteAsync(Plan(registry, Observations), [Match(East, "a")], ReadAll, 1, 2, Token);
+
+        if (page.Includes is IList<ShardEntry> list)
+        {
+            Should.Throw<NotSupportedException>(list.Clear);
+        }
+
+        page.Includes.ShouldBe([include]);
+    }
+
     // Organization:partof searches the page's own type, so a match can come back as a source: the match wins by its key
     // whatever version the source copy has, and a suppressed copy neither fills the limit nor truncates it.
     [Fact]

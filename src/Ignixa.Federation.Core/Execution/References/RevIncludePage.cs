@@ -14,7 +14,7 @@ public sealed class RevIncludePage
     }
 
     /// <summary>
-    /// Gets the included resources, each distinct by key and version and none a page match, in occurrence, then source
+    /// Gets the read-only included resources, each distinct by key and version and none a page match, in occurrence, then source
     /// shard ordinal, then backend order. At most the include limit; the first copy returned wins.
     /// </summary>
     public IReadOnlyList<ShardEntry> Includes { get; }
