@@ -63,9 +63,20 @@ def child_environment() -> dict[str, str]:
     return {k: v for k, v in os.environ.items() if k.upper() in INHERITED_ENVIRONMENT}
 
 
+_cleanup_running = False
+
+
 def run_tool(argv: list[str], *, timeout: int, stdin: bytes | None = None) -> subprocess.CompletedProcess[bytes]:
+    """Run a helper tool. During cleanup (see ``interrupts_deferred``) the tool gets no console of its own to share.
+
+    A console Ctrl+C / Ctrl+Break reaches every process attached to the launcher's console, so a cleanup tool left on
+    it would be killed by the very interrupt cleanup is shielding itself from. CREATE_NO_WINDOW starts it on a hidden
+    console instead. Startup tools keep the shared console and stay interruptible.
+    """
+    flags = subprocess.CREATE_NO_WINDOW if _cleanup_running else 0
     try:
-        return subprocess.run(argv, input=stdin, capture_output=True, timeout=timeout, env=child_environment())
+        return subprocess.run(argv, input=stdin, capture_output=True, timeout=timeout, env=child_environment(),
+                              creationflags=flags)
     except subprocess.TimeoutExpired:
         raise LaunchError(f"{Path(argv[0]).name} did not finish within {timeout} seconds") from None
     except OSError:
@@ -262,7 +273,9 @@ def private_localdb(workdir: Path):
                               f"log on (name='Prototype_east_log', filename=N'{mdf}_log.ldf')")
         yield server
     finally:
-        discard_localdb(name)
+        # This also runs while the first interrupt is still propagating out of a partly finished creation.
+        with interrupts_deferred():
+            discard_localdb(name)
 
 
 def localdb_names() -> set[str]:
@@ -478,12 +491,19 @@ def serve(prereq: Prerequisites, verify_only: bool, problems: list[str]) -> int:
 
 @contextlib.contextmanager
 def interrupts_deferred():
-    """Ignore Ctrl+C and Ctrl+Break for the bounded duration of cleanup."""
+    """Shield cleanup from Ctrl+C and Ctrl+Break: ignore them here and run cleanup tools off the shared console.
+
+    Both halves are needed; ignoring the signals only protects this Python process, not the tools it spawns.
+    Re-entrant: an inner scope restores whatever the outer one set.
+    """
+    global _cleanup_running
     signals = (signal.SIGINT, signal.SIGBREAK)
     saved = [signal.signal(s, signal.SIG_IGN) for s in signals]
+    was_running, _cleanup_running = _cleanup_running, True
     try:
         yield
     finally:
+        _cleanup_running = was_running
         for s, handler in zip(signals, saved):
             signal.signal(s, handler)
 

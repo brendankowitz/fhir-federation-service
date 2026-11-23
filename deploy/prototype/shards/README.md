@@ -58,7 +58,8 @@ printed to stdout (progress and diagnostics go to stderr):
 
 The process then stays in the foreground. **Ctrl+C or Ctrl+Break** stops both servers and removes every
 resource the launcher created. Pressing it during startup does the same for whatever exists by then, and
-exits `130`. While cleanup runs, further Ctrl+C/Ctrl+Break presses are ignored so they cannot abandon it.
+exits `130`. While cleanup runs, further Ctrl+C/Ctrl+Break presses are ignored, and the `SqlLocalDB` and `sqlcmd`
+cleanup commands run on a hidden console of their own so a press cannot kill them either.
 
 `--verify` runs the identical launch, seed and live reads, then stops and cleans up. It prints
 `{"verified": true}` only after cleanup has finished without a problem; if any resource could not be removed

@@ -476,6 +476,133 @@ class FlowTests(unittest.TestCase):
             self.assertEqual(before, [signal.getsignal(s) for s in (signal.SIGINT, signal.SIGBREAK)])
 
 
+class CleanupShieldingTests(unittest.TestCase):
+    """Cleanup tools must not share the launcher's console, because a console Ctrl+Break reaches all of its processes."""
+
+    NO_WINDOW = subprocess.CREATE_NO_WINDOW
+
+    def setUp(self):
+        import start
+        self.start = start
+
+    def fake_tools(self, calls, *, interrupt_on=None, localdb=()):
+        """subprocess.run stand-in recording (tool, verb, creationflags, SIGINT handler) and answering plausibly."""
+        marker = "11111111-1111-1111-1111-111111111111"
+        created = list(localdb)
+
+        def run(argv, **kwargs):
+            verb = argv[1] if argv[0] == "SqlLocalDB" else "sqlcmd"
+            calls.append((argv[0], verb, kwargs.get("creationflags", 0), signal.getsignal(signal.SIGINT)))
+            if verb == "create":
+                created.append(argv[2])
+            if interrupt_on == verb:
+                raise KeyboardInterrupt
+            if verb == "info":
+                return subprocess.CompletedProcess(argv, 0, " ".join(created).encode(), b"")
+            if argv[0] == "sqlcmd":
+                query = argv[argv.index("-Q") + 1]
+                text = marker if ("create database [FedProtoWest" in query or "select isnull" in query) else ""
+                return subprocess.CompletedProcess(argv, 0, text.encode(), b"")
+            return subprocess.CompletedProcess(argv, 0, b"", b"")
+        return run
+
+    def test_partly_created_localdb_is_discarded_by_tools_that_are_shielded_from_the_console(self):
+        calls = []
+        with preserved_signals(), tempfile.TemporaryDirectory() as workdir, \
+                mock.patch.object(self.start.subprocess, "run", self.fake_tools(calls, interrupt_on="sqlcmd")):
+            with self.assertRaises(KeyboardInterrupt):
+                with self.start.private_localdb(Path(workdir)):
+                    self.fail("the interrupt must stop the launch before the body runs")
+        by_verb = {verb: (flags, handler) for _, verb, flags, handler in calls}
+        self.assertEqual(["info", "create", "sqlcmd", "info", "stop", "delete"], [verb for _, verb, _, _ in calls])
+        for verb in ("create", "sqlcmd"):
+            self.assertEqual(0, by_verb[verb][0], f"{verb} is a startup tool and must stay on the shared console")
+        for _, verb, flags, handler in calls[3:]:
+            self.assertEqual(self.NO_WINDOW, flags, f"cleanup tool {verb} must not share the launcher's console")
+            self.assertEqual(signal.SIG_IGN, handler, f"cleanup tool {verb} must run with interrupts ignored")
+
+    def test_catalog_cleanup_sql_is_shielded_while_its_creation_sql_is_not(self):
+        calls = []
+        with preserved_signals(), mock.patch.object(self.start.subprocess, "run", self.fake_tools(calls)):
+            catalog = self.start.west_catalog()
+            catalog.__enter__()
+            created = len(calls)
+            with self.start.interrupts_deferred():
+                catalog.__exit__(None, None, None)
+        self.assertEqual([0], [flags for _, _, flags, _ in calls[:created]])
+        self.assertGreaterEqual(len(calls) - created, 2, "the guard read and the drop both run at cleanup")
+        self.assertEqual({self.NO_WINDOW}, {flags for _, _, flags, _ in calls[created:]})
+
+    def test_the_shield_covers_only_the_scope_and_nests(self):
+        calls = []
+        with preserved_signals(), mock.patch.object(self.start.subprocess, "run", self.fake_tools(calls)):
+            self.start.run_tool(["SqlLocalDB", "info"], timeout=5)
+            with self.start.interrupts_deferred():
+                with self.start.interrupts_deferred():
+                    self.start.run_tool(["SqlLocalDB", "info"], timeout=5)
+                self.start.run_tool(["SqlLocalDB", "info"], timeout=5)
+            self.start.run_tool(["SqlLocalDB", "info"], timeout=5)
+        self.assertEqual([0, self.NO_WINDOW, self.NO_WINDOW, 0], [flags for _, _, flags, _ in calls])
+
+    def test_a_failing_cleanup_tool_is_still_reported_not_swallowed(self):
+        def stop_fails(argv, **kwargs):
+            return subprocess.CompletedProcess(argv, 1 if argv[1:2] == ["stop"] else 0, b"FedProtoabc" if argv[1:2] == ["info"] else b"", b"")
+        with preserved_signals(), mock.patch.object(self.start.subprocess, "run", stop_fails):
+            with self.assertRaises(self.start.CleanupError) as raised, self.start.interrupts_deferred():
+                self.start.discard_localdb("FedProtoabc")
+        self.assertIn("FedProtoabc", str(raised.exception))
+
+    HELPER = r'''
+import json, signal, subprocess, sys, threading
+sys.path.insert(0, sys.argv[1])
+import start
+marker, scoped, result = sys.argv[2], sys.argv[3] == "scoped", sys.argv[4]
+for s in (signal.SIGINT, signal.SIGBREAK):
+    signal.signal(s, signal.SIG_IGN)
+# GenerateConsoleCtrlEvent(CTRL_BREAK, 0) reaches every process attached to THIS helper's private console only.
+threading.Timer(1.0, lambda: __import__("ctypes").windll.kernel32.GenerateConsoleCtrlEvent(1, 0)).start()
+tool = [sys.executable, "-c", "import sys, time; time.sleep(3); open(sys.argv[1], 'w').write('survived')", marker]
+outcome = "completed"
+try:
+    if scoped:
+        with start.interrupts_deferred():
+            start.run_checked(tool, "cleanup tool failed", cleanup=True)
+    else:
+        start.run_checked(tool, "startup tool failed")
+except Exception as error:
+    outcome = "failed: " + str(error)
+open(result, "w").write(outcome)
+'''
+
+    def broadcast_break_in_private_console(self, scoped):
+        """Run the helper in its own hidden console, broadcast Ctrl+Break there, and report (tool survived, outcome)."""
+        with tempfile.TemporaryDirectory() as folder:
+            folder = Path(folder)
+            marker, result, helper = folder / "marker", folder / "result", folder / "helper.py"
+            helper.write_text(self.HELPER, encoding="utf-8")
+            hidden = subprocess.STARTUPINFO(dwFlags=subprocess.STARTF_USESHOWWINDOW, wShowWindow=0)
+            process = subprocess.Popen(
+                [sys.executable, "-B", str(helper), str(HERE), str(marker), "scoped" if scoped else "plain", str(result)],
+                creationflags=subprocess.CREATE_NEW_CONSOLE, startupinfo=hidden,
+                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=os.environ.copy())
+            try:
+                process.wait(timeout=60)
+            finally:
+                if process.poll() is None:
+                    process.kill()
+            return marker.exists(), result.read_text() if result.exists() else "no result"
+
+    def test_a_break_on_a_private_console_kills_an_unshielded_tool(self):
+        survived, outcome = self.broadcast_break_in_private_console(scoped=False)
+        self.assertFalse(survived, "control: the broadcast must reach a tool that shares the console")
+        self.assertTrue(outcome.startswith("failed"), outcome)
+
+    def test_a_break_on_a_private_console_does_not_reach_a_cleanup_tool(self):
+        survived, outcome = self.broadcast_break_in_private_console(scoped=True)
+        self.assertTrue(survived, "the cleanup tool was killed by the console event: " + outcome)
+        self.assertEqual("completed", outcome)
+
+
 class SeedingTests(unittest.TestCase):
     """The pure parts of seeding: what is loaded, in what order, and the single rewrite."""
 
