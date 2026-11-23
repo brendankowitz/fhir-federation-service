@@ -366,6 +366,64 @@ public sealed class PrimarySearchReverseChainTests
         host.Shards.Calls.Count.ShouldBe(calls);
     }
 
+    [Fact]
+    public async Task CurrentTransportLimitRefusesAnOwnerOnAGenuineContinuationBeforeCreatingTheClient()
+    {
+        using var ring = new IsolatedKeyRing();
+        using SearchHost issuer = Start(configure: s => s.Protection = ring.CreateProvider());
+        issuer.Shards.FilterGeneratedIds = true;
+        SearchResult first = await SendAsync(issuer, true, Paged);
+        first.StatusCode.ShouldBe(HttpStatusCode.OK);
+        string next = first.Link("next").ShouldNotBeNull();
+        using SearchHost redeemer = Start(configure: s =>
+        {
+            s.Protection = ring.CreateProvider();
+            s.Shards.RequestFits = request => request.Shard.Value != "west" || request.Type.Value != "Patient";
+        });
+
+        await AssertRestartWithoutClientAsync(redeemer, new Uri(next).Query["?ct=".Length..]);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task CurrentTransportChecksBothTheClampedOwnerCountAndTheExactReplayCount(bool exactReplayFits)
+    {
+        using var ring = new IsolatedKeyRing();
+        using SearchHost issuer = Start(configure: s => s.Protection = ring.CreateProvider());
+        issuer.Shards.FilterGeneratedIds = true;
+        SearchResult first = await SendAsync(issuer, true, Paged);
+        first.StatusCode.ShouldBe(HttpStatusCode.OK);
+        var (protector, issued, frame, codec, saved) = ReadBookmark(ring, first.Link("next").ShouldNotBeNull());
+        ShardSearchRequest[] templates = [.. saved.Streams.Select(request => Copy(request, pageSize: 3))];
+        ShardSearchRequest exact = Copy(templates[0], pageSize: 1);
+        var anchor = new ResourceKey(exact.Shard, exact.Type, ResourceId.Parse("dup"));
+        var snapshot = new UnsortedContinuationSnapshot(templates, 3, UnsortedContinuation.AtSearch(exact, anchor));
+        string token = IssueBookmark(protector, issued, frame, codec, snapshot, rawQuery: Has + "&_count=3");
+
+        using SearchHost redeemer = Start(configure: s =>
+        {
+            s.Protection = ring.CreateProvider();
+            s.Capabilities = Capabilities(SearchWorld.ReverseRegistry(extraWitnessShard: false,
+                new BackendProfile(SearchWorld.PostCapable.Name, SupportsPostSearch: true, 2, NextLinkRedemption.FollowGet, null)));
+            s.Shards.FilterGeneratedIds = true;
+            s.Shards.RequestFits = request => request.Shard.Value != "east"
+                || request.PageSize == 2 || (request.PageSize == 1 && exactReplayFits);
+        });
+
+        if (!exactReplayFits)
+        {
+            await AssertRestartWithoutClientAsync(redeemer, token);
+            return;
+        }
+
+        SearchResult second = await redeemer.GetAsync("/Patient?ct=" + token);
+        second.StatusCode.ShouldBe(HttpStatusCode.OK);
+        second.Entries.ShouldBe([(SearchWorld.WestDupUrl, Body("west"))]);
+        ShardCall east = redeemer.Shards.Calls.Single(c => c.Shard == "east");
+        (east.Method, east.Parameters, east.PageSize).ShouldBe((ShardSearchMethod.PostSearch, "_id=dup", 1));
+    }
+
     [Theory]
     [InlineData("owner order")]
     [InlineData("missing occurrence")]

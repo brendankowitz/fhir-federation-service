@@ -676,7 +676,8 @@ internal sealed class PrimarySearch
                 return UnsupportedShape();
             }
 
-            if (!ReverseChainReplay.TryRebuild(_registry, plan, snapshot, _limits.MaxChainKeys, out ShardSearchRequest[]? rebuilt))
+            if (!ReverseChainReplay.TryRebuild(
+                _registry, plan, snapshot, _limits.MaxChainKeys, _clients.FitsSearchRequest, out ShardSearchRequest[]? rebuilt))
             {
                 return SearchOutcome.Gone();
             }

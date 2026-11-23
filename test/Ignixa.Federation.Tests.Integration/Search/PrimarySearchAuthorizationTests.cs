@@ -49,7 +49,11 @@ public sealed class PrimarySearchAuthorizationTests
     public async Task RoleWithoutTheType_IsForbidden_WithoutAnyShardCall()
     {
         using var host = SearchHost.Start();
-        string token = host.Token(new SyntheticTokenRequest { Roles = [SearchWorld.ObservationRole] });
+        string token = host.Token(new SyntheticTokenRequest
+        {
+            ObjectId = SearchWorld.CallerObjectId,
+            Roles = [SearchWorld.ObservationRole],
+        });
 
         SearchResult result = await host.GetAsync("/Patient?name=Orchid", token);
 
@@ -62,7 +66,7 @@ public sealed class PrimarySearchAuthorizationTests
     public async Task NoRoles_IsForbidden()
     {
         using var host = SearchHost.Start();
-        string token = host.Token(new SyntheticTokenRequest());
+        string token = host.Token(new SyntheticTokenRequest { ObjectId = SearchWorld.CallerObjectId });
 
         SearchResult result = await host.GetAsync("/Patient", token);
 
@@ -76,7 +80,13 @@ public sealed class PrimarySearchAuthorizationTests
     public async Task SmartScopes_AreForbiddenEvenWithAGrantedRole(string? scp, string? scope)
     {
         using var host = SearchHost.Start();
-        string token = host.Token(new SyntheticTokenRequest { Roles = [SearchWorld.ReaderRole], Scp = scp, Scope = scope });
+        string token = host.Token(new SyntheticTokenRequest
+        {
+            ObjectId = SearchWorld.CallerObjectId,
+            Roles = [SearchWorld.ReaderRole],
+            Scp = scp,
+            Scope = scope,
+        });
 
         SearchResult result = await host.GetAsync("/Patient", token);
 

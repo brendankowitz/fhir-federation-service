@@ -7,11 +7,11 @@ using Ignixa.Federation.Core.Shards;
 
 namespace Ignixa.Federation.Api.Search;
 
-/// <summary>Reconstructs frozen reverse-chain owner requests without consulting a shard.</summary>
+/// <summary>Reconstructs frozen reverse-chain owner requests and checks current transport fit without consulting a shard.</summary>
 internal static class ReverseChainReplay
 {
     public static bool TryRebuild(ShardRegistry registry, QueryPlan plan, UnsortedContinuationSnapshot snapshot, int maxKeys,
-        [NotNullWhen(true)] out ShardSearchRequest[]? rebuilt)
+        Func<ShardSearchRequest, bool> fits, [NotNullWhen(true)] out ShardSearchRequest[]? rebuilt)
     {
         rebuilt = null;
         PlannedOccurrence[] outbound = [.. plan.Occurrences.Where(o => o.Action != OccurrenceAction.Remove)];
@@ -60,8 +60,14 @@ internal static class ReverseChainReplay
 
             IReadOnlyList<ParameterOccurrence> parameters = plan.BuildBackendParameters(replacements);
             ShardSearchMethod method = OwnerMethod(owner, parameters);
+            int sendCount = Math.Min(snapshot.PageSize, owner.Profile.MaxCount);
+            if (!fits(new ShardSearchRequest(saved.Shard, plan.Type, parameters, sendCount, method)))
+            {
+                return false;
+            }
+
             if (saved.Shard == snapshot.Continuation.Shard
-                && ((snapshot.Continuation.Search is { } sent && sent.PageSize > owner.Profile.MaxCount)
+                && ((snapshot.Continuation.Search is { } sent && (sent.PageSize > owner.Profile.MaxCount || !fits(sent)))
                     || (snapshot.Continuation.Cursor is { } cursor && cursor.Redemption != owner.Profile.RedemptionFor(method))))
             {
                 return false;
