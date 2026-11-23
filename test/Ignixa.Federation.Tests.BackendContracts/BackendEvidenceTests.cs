@@ -1,5 +1,7 @@
 using System.Net;
+using System.Text;
 using System.Text.Json.Nodes;
+using Docker.DotNet;
 
 namespace Ignixa.Federation.Tests.BackendContracts;
 
@@ -53,6 +55,45 @@ public sealed class BackendEvidenceTests
         Assert.Contains("HTTP 503", failure.Message, StringComparison.Ordinal);
         Assert.DoesNotContain(UntrustedBody, failure.Message, StringComparison.Ordinal);
         Assert.StartsWith("GET /metadata ", (await served).RequestLine, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Startup_log_tail_keeps_the_fatal_line_after_an_overlong_line()
+    {
+        const string Password = "synthetic-sql-password";
+        string input = $"earlier message\n{new string('x', 30 * 1024)}{Password}\nfatal schema error: {Password}\r\n";
+        using var logs = new MultiplexedStream(new MemoryStream(Encoding.UTF8.GetBytes(input)), false);
+
+        string diagnostic = await MicrosoftFhirSqlBackend.ReadContainerLogTailAsync(
+            logs, "SQL", Password, TestContext.Current.CancellationToken);
+
+        Assert.Equal("[SQL startup log tail, truncated]\n[SQL] fatal schema error: [redacted]", diagnostic);
+    }
+
+    [Fact]
+    public async Task Startup_log_tail_keeps_a_complete_line_starting_exactly_at_the_cutoff()
+    {
+        const string LastLine = "fatal schema error";
+        string firstRetainedLine = new('x', 12 * 1024 - LastLine.Length - 2);
+        string input = $"discarded\n{firstRetainedLine}\n{LastLine}\n";
+        using var logs = new MultiplexedStream(new MemoryStream(Encoding.UTF8.GetBytes(input)), false);
+
+        string diagnostic = await MicrosoftFhirSqlBackend.ReadContainerLogTailAsync(
+            logs, "SQL", "synthetic-sql-password", TestContext.Current.CancellationToken);
+
+        Assert.Equal($"[SQL startup log tail, truncated]\n[SQL] {firstRetainedLine}\n[SQL] {LastLine}", diagnostic);
+    }
+
+    [Fact]
+    public async Task Startup_log_tail_omits_an_unterminated_line_that_may_contain_a_partial_password()
+    {
+        const string Input = "complete message\npassword=synthetic-sql-pass";
+        using var logs = new MultiplexedStream(new MemoryStream(Encoding.UTF8.GetBytes(Input)), false);
+
+        string diagnostic = await MicrosoftFhirSqlBackend.ReadContainerLogTailAsync(
+            logs, "SQL", "synthetic-sql-password", TestContext.Current.CancellationToken);
+
+        Assert.Equal("[SQL startup log tail, truncated]\n[SQL] complete message", diagnostic);
     }
 
     private const string LocalQueryDescription = "subject=<own base>/Patient/dup";

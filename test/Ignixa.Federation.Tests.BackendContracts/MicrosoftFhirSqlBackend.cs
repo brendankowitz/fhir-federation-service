@@ -112,36 +112,58 @@ internal sealed class MicrosoftFhirSqlBackend : IAsyncDisposable
             using DockerClient docker = new DockerClientBuilder().WithEndpoint(DockerEndpoint).Build();
             using MultiplexedStream logs = await docker.Containers.GetContainerLogsAsync(
                 name, new ContainerLogsParameters { ShowStdout = true, ShowStderr = true, Tail = "60" }, budget.Token);
-            var bytes = new byte[LogByteLimit];
-            int length = 0;
-            while (length < bytes.Length)
-            {
-                MultiplexedStream.ReadResult result = await logs.ReadOutputAsync(bytes, length, bytes.Length - length, budget.Token);
-                if (result.EOF)
-                {
-                    break;
-                }
-
-                length += result.Count;
-            }
-
-            bool truncated = length == bytes.Length;
-            if (truncated)
-            {
-                // Don't print a partial final line that could end mid-credential.
-                length = bytes.AsSpan().LastIndexOf((byte)'\n') + 1;
-            }
-
-            string text = Encoding.UTF8.GetString(bytes, 0, length);
-            string printable = string.Concat(text.Where(c => c == '\n' || (!char.IsControl(c) && c is not '\u2028' and not '\u2029')));
-            printable = printable.Replace(password, "[redacted]", StringComparison.Ordinal);
-            string lines = string.Join('\n', printable.Split('\n', StringSplitOptions.RemoveEmptyEntries).Select(line => $"[{label}] {line}"));
-            await Console.Error.WriteLineAsync($"[{label} startup log tail{(truncated ? ", truncated" : string.Empty)}]\n{lines}");
+            await Console.Error.WriteLineAsync(await ReadContainerLogTailAsync(logs, label, password, budget.Token));
         }
         catch (Exception e)
         {
             await Console.Error.WriteLineAsync($"[{label} startup logs unavailable: {e.GetType().Name}]");
         }
+    }
+
+    internal static async Task<string> ReadContainerLogTailAsync(
+        MultiplexedStream logs, string label, string password, CancellationToken cancellationToken)
+    {
+        // The extra byte records whether the retained window starts at a line boundary.
+        var bytes = new byte[LogByteLimit + 1];
+        int next = 0;
+        bool wrapped = false;
+        while (true)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            MultiplexedStream.ReadResult result = await logs.ReadOutputAsync(bytes, next, bytes.Length - next, cancellationToken);
+            if (result.EOF)
+            {
+                break;
+            }
+
+            next += result.Count;
+            if (next == bytes.Length)
+            {
+                next = 0;
+                wrapped = true;
+            }
+        }
+
+        if (wrapped && next != 0)
+        {
+            // Put the circular buffer in chronological order without another buffer.
+            bytes.AsSpan(0, next).Reverse();
+            bytes.AsSpan(next).Reverse();
+            bytes.AsSpan().Reverse();
+        }
+
+        ReadOnlySpan<byte> tail = wrapped ? bytes.AsSpan(1) : bytes.AsSpan(0, next);
+        bool truncated = wrapped || (!tail.IsEmpty && tail[^1] != (byte)'\n');
+        int lastLineEnd = tail.LastIndexOf((byte)'\n');
+        // A clipped line could hold only part of a credential, which exact redaction cannot remove.
+        int firstLineStart = wrapped && bytes[0] != (byte)'\n'
+            ? tail.IndexOf((byte)'\n') + 1
+            : 0;
+        string text = Encoding.UTF8.GetString(tail[firstLineStart..(lastLineEnd + 1)]);
+        string printable = string.Concat(text.Where(c => c == '\n' || (!char.IsControl(c) && c is not '\u2028' and not '\u2029')));
+        printable = printable.Replace(password, "[redacted]", StringComparison.Ordinal);
+        string lines = string.Join('\n', printable.Split('\n', StringSplitOptions.RemoveEmptyEntries).Select(line => $"[{label}] {line}"));
+        return $"[{label} startup log tail{(truncated ? ", truncated" : string.Empty)}]\n{lines}";
     }
 
     [SuppressMessage("Design", "CA1031:Do not catch general exception types",
