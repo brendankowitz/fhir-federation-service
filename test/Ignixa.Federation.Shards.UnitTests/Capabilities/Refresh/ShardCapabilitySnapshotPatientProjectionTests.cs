@@ -95,6 +95,7 @@ public sealed class ShardCapabilitySnapshotPatientProjectionTests
         // Control: the same evidence and proofs, projected broadly, do carry them.
         broad.Resources.Single(r => r.Type == PatientType).SearchIncludes.ShouldBe(["Patient:organization"]);
         Plan(Planner(broad), "given:exact=Jones").Plan.ShouldNotBeNull();
+        Plan(Planner(broad), "given=a&given=b").Plan.ShouldNotBeNull();
         Plan(Planner(broad), "_id=1,2").Plan.ShouldNotBeNull();
         Plan(Planner(broad), "_id=1&_include=Patient:organization").Plan.ShouldNotBeNull();
         Plan(Planner(broad), "_count=0&_total=accurate").Plan.ShouldNotBeNull();
@@ -103,7 +104,8 @@ public sealed class ShardCapabilitySnapshotPatientProjectionTests
         patient.SearchIncludes.ShouldBeEmpty();
         patient.SearchRevIncludes.ShouldBeEmpty();
         Plan(Planner(view), "given:exact=Jones").Failure.ShouldNotBeNull().Code.ShouldBe(SearchFailureCode.UnsupportedModifier);
-        Plan(Planner(view), "_id=1,2").Failure.ShouldNotBeNull();
+        Plan(Planner(view), "given=a&given=b").Failure.ShouldNotBeNull().Code.ShouldBe(SearchFailureCode.UnsupportedRepetition);
+        Plan(Planner(view), "_id=1,2").Failure.ShouldNotBeNull().Code.ShouldBe(SearchFailureCode.UnsupportedAlternatives);
         Plan(Planner(view), "_id=1&_include=Patient:organization").Failure.ShouldNotBeNull();
         Plan(Planner(view), "_count=0&_total=accurate").Failure.ShouldNotBeNull().Code.ShouldBe(SearchFailureCode.ExactCountNotCertified);
         Plan(Planner(view), "_id=1&given=Jones").Plan.ShouldNotBeNull();
