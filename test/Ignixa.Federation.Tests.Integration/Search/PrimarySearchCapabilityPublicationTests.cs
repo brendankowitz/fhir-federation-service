@@ -335,6 +335,112 @@ public sealed class PrimarySearchCapabilityPublicationTests
         host.Services.GetService<IFederationCapabilityPublisher>().ShouldBeNull();
     }
 
+    [Fact]
+    public async Task PreparedGeneration_IsInvisibleUntilInstalled_AndAFailedPreparationDoesNotDisplaceTheInstalledOne()
+    {
+        using SearchHost host = StartCold();
+        var state = host.Services.GetRequiredService<PrimarySearchState>();
+        var evidence = new Evidence();
+
+        PrimarySearchState.Ready prepared = state.Prepare(ViewA(), evidence.IsCurrent);
+
+        state.Current.ShouldBeNull();
+        await AssertColdAsync(host);
+        evidence.Checks.ShouldBe(0);
+
+        state.Install(prepared);
+        state.Current.ShouldBeSameAs(prepared);
+        await host.WaitForReadinessAsync();
+        await AssertWarmAsync(host, given: false);
+
+        Should.Throw<InvalidOperationException>(() => state.Prepare(MismatchedView(), evidence.IsCurrent)).Message.ShouldContain("Federation:Shards");
+        state.Current.ShouldBeSameAs(prepared);
+        await AssertWarmAsync(host, given: false);
+    }
+
+    [Fact]
+    public async Task Evidence_IsNotEvaluatedEagerly_AndEachRequestEvaluatesItOnce()
+    {
+        using SearchHost host = StartCold();
+        var state = host.Services.GetRequiredService<PrimarySearchState>();
+        var evidence = new Evidence();
+        state.Install(state.Prepare(ViewA(), evidence.IsCurrent));
+        evidence.Checks.ShouldBe(0);
+
+        (await host.GetAsync("/Patient?name=Orchid")).StatusCode.ShouldBe(HttpStatusCode.OK);
+        evidence.Checks.ShouldBe(1);
+        (await host.PostFormAsync("/Patient/_search", "name=Orchid")).StatusCode.ShouldBe(HttpStatusCode.OK);
+        evidence.Checks.ShouldBe(2);
+        (await host.GetAsync("/metadata", token: null)).StatusCode.ShouldBe(HttpStatusCode.OK);
+        evidence.Checks.ShouldBe(3);
+    }
+
+    [Fact]
+    public async Task EvidenceThatTurnsFalse_RefusesEveryOutwardRouteAsNotReady_WithoutBackendWork_AndRecoversWhenItTurnsTrue()
+    {
+        var binding = new ScriptedReadBinding();
+        using SearchHost host = StartCold(setup => setup.ConfigureServices = services => services.AddSingleton<IShardReadBinding>(binding));
+        var state = host.Services.GetRequiredService<PrimarySearchState>();
+        var evidence = new Evidence();
+        state.Install(state.Prepare(ViewA(), evidence.IsCurrent));
+        await host.WaitForReadinessAsync();
+        await AssertWarmAsync(host, given: false);
+        string next = (await host.GetAsync(PagedQuery)).Link("next").ShouldNotBeNull();
+        (await host.FollowAsync(next)).StatusCode.ShouldBe(HttpStatusCode.OK);
+        (await ReadResponse.GetAsync(host, "/shards/k7q2/Patient/dup", host.Token())).Status.ShouldBe(200);
+        int createdClients = host.Shards.Views.Count;
+        int shardCalls = host.Shards.Calls.Count;
+        int readCalls = binding.Calls.Count;
+
+        evidence.Valid = false;
+
+        await AssertColdAsync(host);
+        SearchResult replay = await host.FollowAsync(next);
+        replay.StatusCode.ShouldBe(HttpStatusCode.ServiceUnavailable);
+        replay.Body.ShouldBe(NotReady);
+        host.Shards.Views.Count.ShouldBe(createdClients);
+        host.Shards.Calls.Count.ShouldBe(shardCalls);
+        binding.Calls.Count.ShouldBe(readCalls);
+
+        // Readers never clear the installed generation: it serves again once the evidence holds.
+        evidence.Valid = true;
+        await AssertWarmAsync(host, given: false);
+        (await host.FollowAsync(next)).StatusCode.ShouldBe(HttpStatusCode.OK);
+    }
+
+    [Fact]
+    public async Task EvidenceThatTurnsFalseAfterACapture_DoesNotAffectThatRequest_AndANewRequestIsRefused()
+    {
+        var gate = new Gate();
+        using SearchHost host = StartCold(setup => setup.ConfigureJwtBearer = options => options.Events.OnTokenValidated = HoldOnly(gate));
+        var state = host.Services.GetRequiredService<PrimarySearchState>();
+        var evidence = new Evidence();
+        SearchCapabilities a = ViewA();
+        state.Install(state.Prepare(a, evidence.IsCurrent));
+        await host.WaitForReadinessAsync();
+
+        Task<SearchResult> held = host.GetAsync(PagedQuery, HeldToken(host));
+        try
+        {
+            await Within(gate.Entered.Task);
+            evidence.Valid = false;
+            SearchResult fresh = await Within(host.GetAsync(PagedQuery));
+            fresh.StatusCode.ShouldBe(HttpStatusCode.ServiceUnavailable);
+            fresh.Body.ShouldBe(NotReady);
+            host.Shards.Calls.ShouldBeEmpty();
+            int checks = evidence.Checks;
+
+            gate.Release.TrySetResult();
+            (await Within(held)).StatusCode.ShouldBe(HttpStatusCode.OK);
+            host.Shards.Views.Single().ShouldBeSameAs(a);
+            evidence.Checks.ShouldBe(checks);
+        }
+        finally
+        {
+            gate.Release.TrySetResult();
+        }
+    }
+
     private static SearchHost StartCold(Action<SearchHostSetup>? configure = null) =>
         SearchHost.Start(setup =>
         {
@@ -445,6 +551,26 @@ public sealed class PrimarySearchCapabilityPublicationTests
         {
             Entered.TrySetResult();
             Release.Task.Wait(Guard);
+        }
+    }
+
+    /// <summary>A switchable evidence predicate that counts how often it is evaluated.</summary>
+    private sealed class Evidence
+    {
+        private int _checks;
+        private volatile bool _valid = true;
+
+        public bool Valid
+        {
+            set => _valid = value;
+        }
+
+        public int Checks => Volatile.Read(ref _checks);
+
+        public bool IsCurrent()
+        {
+            Interlocked.Increment(ref _checks);
+            return _valid;
         }
     }
 

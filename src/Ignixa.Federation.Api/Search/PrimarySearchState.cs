@@ -21,7 +21,8 @@ namespace Ignixa.Federation.Api.Search;
 /// Capture the raw search options at startup so publication cannot mix newly reloaded settings with the host's startup
 /// settings. Binding and validation wait for a view; bad search options must not prevent a cold host from listening.
 /// </para>
-/// Publications are serialized; readers do not take the writer lock.
+/// Readers do not take the writer lock. Manual <see cref="Publish"/> serializes its build and swap and uses unconditional
+/// currency. A proof-backed source prepares outside its commit gate and owns the order of its installs and withdrawals.
 /// </remarks>
 internal sealed class PrimarySearchState : IHealthCheck, IFederationCapabilityPublisher
 {
@@ -47,8 +48,47 @@ internal sealed class PrimarySearchState : IHealthCheck, IFederationCapabilityPu
             .Where(entry => entry.Value is not null)];
     }
 
-    /// <summary>Gets the bundle built from the latest published view, or <see langword="null"/> while the host has none.</summary>
-    public Ready? Current => Volatile.Read(ref _current);
+    /// <summary>
+    /// Gets the installed bundle if its evidence still holds, or <see langword="null"/> while the host has none or the evidence
+    /// has turned false.
+    /// </summary>
+    /// <remarks>
+    /// Reads the generation once and evaluates its <see cref="Ready.IsCurrent"/> once, so a caller must capture the result once
+    /// per request and not re-evaluate it in flight. The predicate must be trusted, thread-safe, synchronous, non-throwing and
+    /// free of I/O. A reader never clears the state; an invalid generation stays installed until replaced or withdrawn.
+    /// </remarks>
+    public Ready? Current => Volatile.Read(ref _current) is { } ready && ready.IsCurrent() ? ready : null;
+
+    /// <summary>
+    /// Builds a complete, coherent search and capability statement from <paramref name="capabilities"/> with the startup
+    /// settings, without installing it, taking the writer lock or evaluating <paramref name="isCurrent"/>.
+    /// </summary>
+    /// <param name="capabilities">The view to build from.</param>
+    /// <param name="isCurrent">The evidence that the view is still the one to serve; see <see cref="Current"/> for its contract.</param>
+    /// <returns>The prepared bundle; <see cref="Install"/> makes it visible.</returns>
+    /// <exception cref="InvalidOperationException">Search cannot be built (see <see cref="PrimarySearch.Create"/>); nothing is installed.</exception>
+    internal Ready Prepare(SearchCapabilities capabilities, Func<bool> isCurrent)
+    {
+        // Bound per build from the startup copy, so a malformed value fails here rather than when the host starts.
+        var options = new FederationOptions();
+        using (var snapshot = new ConfigurationManager())
+        {
+            snapshot.AddInMemoryCollection(_federation);
+            snapshot.Bind(options);
+        }
+
+        PrimarySearch search = PrimarySearch.Create(_services, _settings, options, capabilities);
+        DateTimeOffset publishedAt = _services.GetRequiredService<TimeProvider>().GetUtcNow();
+        byte[] statement = MetadataEndpoints.WriteStatement(_settings.PublicBase, publishedAt, capabilities.Resources, search.Reads);
+        return new Ready(search, statement, isCurrent);
+    }
+
+    /// <summary>Swaps in a bundle prepared by this state, without building, blocking or checking evidence.</summary>
+    /// <remarks>
+    /// The sole proof-backed publisher must call this under its evidence commit gate, ordered with its own
+    /// <c>Publish(null)</c> withdrawals. Do not run an independent manual publisher on that host.
+    /// </remarks>
+    internal void Install(Ready prepared) => Volatile.Write(ref _current, prepared);
 
     /// <summary>Builds the state, seeded from the registered view if there is one.</summary>
     /// <param name="services">The application services.</param>
@@ -68,24 +108,8 @@ internal sealed class PrimarySearchState : IHealthCheck, IFederationCapabilityPu
         // A withdrawal must wait for an in-progress build so the build cannot install after the withdrawal returns.
         lock (_writer)
         {
-            Volatile.Write(ref _current, capabilities is null ? null : Build(capabilities));
+            Volatile.Write(ref _current, capabilities is null ? null : Prepare(capabilities, static () => true));
         }
-    }
-
-    private Ready Build(SearchCapabilities capabilities)
-    {
-        // Bound per build from the startup copy, so a malformed value fails here rather than when the host starts.
-        var options = new FederationOptions();
-        using (var snapshot = new ConfigurationManager())
-        {
-            snapshot.AddInMemoryCollection(_federation);
-            snapshot.Bind(options);
-        }
-
-        PrimarySearch search = PrimarySearch.Create(_services, _settings, options, capabilities);
-        DateTimeOffset publishedAt = _services.GetRequiredService<TimeProvider>().GetUtcNow();
-        byte[] statement = MetadataEndpoints.WriteStatement(_settings.PublicBase, publishedAt, capabilities.Resources, search.Reads);
-        return new Ready(search, statement);
     }
 
     /// <inheritdoc />
@@ -95,5 +119,6 @@ internal sealed class PrimarySearchState : IHealthCheck, IFederationCapabilityPu
     /// <summary>What a view makes available: the search and the capability statement bytes written from the same view.</summary>
     /// <param name="Search">The search planned against the view.</param>
     /// <param name="Statement">The serialized CapabilityStatement.</param>
-    internal sealed record Ready(PrimarySearch Search, ReadOnlyMemory<byte> Statement);
+    /// <param name="IsCurrent">The evidence predicate, evaluated by <see cref="Current"/>.</param>
+    internal sealed record Ready(PrimarySearch Search, ReadOnlyMemory<byte> Statement, Func<bool> IsCurrent);
 }
