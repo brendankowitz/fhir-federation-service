@@ -137,7 +137,7 @@ internal sealed class PrimarySearch
     public RequestBudget StartBudget(CancellationToken caller) =>
         new(_limits, _timeouts, _registry.Shards.Count, _time, caller);
 
-    /// <summary>Builds the search from the registered view, transport and the <c>Federation</c> configuration.</summary>
+    /// <summary>Builds the search from a capabilities view, the registered transport and the <c>Federation</c> configuration.</summary>
     /// <remarks>
     /// To enable count-only searches, register an <see cref="IReadOnlyDictionary{TKey,TValue}"/> from <see cref="ShardId"/>
     /// to <see cref="CountDialect"/> for that view. A missing or invalid map disables count execution, including distributed
@@ -148,15 +148,14 @@ internal sealed class PrimarySearch
     /// </remarks>
     /// <param name="services">The application services.</param>
     /// <param name="settings">The validated host settings.</param>
+    /// <param name="capabilities">The view this search plans against; the same instance the capability statement describes.</param>
     /// <returns>The search.</returns>
     /// <exception cref="InvalidOperationException">
-    /// No view or transport is registered, the <c>Federation</c> options are invalid, or its shards do not describe
+    /// No transport is registered, the <c>Federation</c> options are invalid, or its shards do not describe
     /// exactly the view's registry. Messages carry only configuration paths.
     /// </exception>
-    public static PrimarySearch Create(IServiceProvider services, SearchHostSettings settings)
+    public static PrimarySearch Create(IServiceProvider services, SearchHostSettings settings, SearchCapabilities capabilities)
     {
-        SearchCapabilities capabilities = services.GetService<SearchCapabilities>()
-            ?? throw new InvalidOperationException("Search is configured but no SearchCapabilities view is registered.");
         IShardClientFactory clients = services.GetService<IShardClientFactory>()
             ?? throw new InvalidOperationException("Search is configured but no shard transport (IShardClientFactory) is registered.");
 

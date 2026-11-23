@@ -9,18 +9,21 @@ internal static class MetadataEndpoints
 {
     public static void MapFederatedMetadata(this WebApplication app)
     {
-        if (app.Services.GetService<SearchHostSettings>() is not { } settings)
+        if (app.Services.GetService<SearchHostSettings>() is null)
         {
             app.MapGet("/metadata", () => SearchOutcome.Unavailable("Federation capabilities are not configured on this host."));
             return;
         }
 
-        SearchCapabilities capabilities = app.Services.GetRequiredService<SearchCapabilities>();
-        bool proxiedReads = app.Services.GetRequiredService<PrimarySearch>().Reads.Enabled;
-        DateTimeOffset publishedAt = app.Services.GetRequiredService<TimeProvider>().GetUtcNow();
-        byte[] statement = WriteStatement(settings.PublicBase, publishedAt, capabilities.Resources, proxiedReads);
+        PrimarySearchState state = app.Services.GetRequiredService<PrimarySearchState>();
         app.MapGet("/metadata", (HttpRequest request) =>
         {
+            // Capture the view once; with none, refuse before looking at the request.
+            if (state.Current is not { } ready)
+            {
+                return SearchOutcome.Unavailable(PrimarySearchState.NotReady);
+            }
+
             if (request.Query.TryGetValue("_format", out var format))
             {
                 if (format.Count != 1)
@@ -35,11 +38,17 @@ internal static class MetadataEndpoints
                 }
             }
 
-            return Results.Bytes(statement, "application/fhir+json; charset=utf-8");
+            return Results.Bytes(ready.Statement, "application/fhir+json; charset=utf-8");
         });
     }
 
-    private static byte[] WriteStatement(string publicBase, DateTimeOffset publishedAt, IReadOnlyList<ResourceSearchSupport> resources, bool proxiedReads)
+    /// <summary>Writes the CapabilityStatement for a view.</summary>
+    /// <param name="publicBase">The public base URL the statement names.</param>
+    /// <param name="publishedAt">The statement's date.</param>
+    /// <param name="resources">The resources the view supports.</param>
+    /// <param name="proxiedReads">Whether the host serves the proxied read.</param>
+    /// <returns>The serialized statement.</returns>
+    internal static byte[] WriteStatement(string publicBase, DateTimeOffset publishedAt, IReadOnlyList<ResourceSearchSupport> resources, bool proxiedReads)
     {
         using var buffer = new MemoryStream();
         using (var json = new Utf8JsonWriter(buffer))

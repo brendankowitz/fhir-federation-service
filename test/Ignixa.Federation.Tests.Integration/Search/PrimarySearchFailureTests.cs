@@ -72,15 +72,6 @@ public sealed class PrimarySearchFailureTests
     }
 
     [Fact]
-    public void ConfiguredHostWithoutCapabilities_FailsStartup()
-    {
-        Should.Throw<Exception>(() =>
-        {
-            using var host = SearchHost.Start(setup => setup.Capabilities = null);
-        });
-    }
-
-    [Fact]
     public async Task FailingShard_FailsTheWholeRequestNamingOnlyItsAlias()
     {
         using var host = SearchHost.Start(setup => setup.Shards.FailingShard = "west");
