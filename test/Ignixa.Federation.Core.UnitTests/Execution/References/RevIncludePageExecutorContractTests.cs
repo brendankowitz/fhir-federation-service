@@ -99,4 +99,33 @@ public sealed class RevIncludePageExecutorContractTests
         thrown.Shard.ShouldBe(East);
         thrown.Reason.ShouldBe(ShardFailureReason.ContractViolation);
     }
+
+    [Theory]
+    [InlineData(1, "owner")]
+    [InlineData(1, "type")]
+    [InlineData(1, "next")]
+    [InlineData(2, "owner")]
+    public async Task AFirstPageThatCannotAddIncludesStillRequiresValidation(int maxParallelFetches, string violation)
+    {
+        ShardRegistry registry = Registry();
+        var backend = new RevIncludeBackend();
+        backend.OnSearch(East, Observation, Page(null, Entry(East, Observation, "o1"), Entry(East, Observation, "o2")));
+        ShardPage invalid = violation switch
+        {
+            "owner" => Page(null, Entry(East, Observation, "foreign")),
+            "type" => Page(null, Entry(West, Encounter, "foreign")),
+            "next" => Page(Cursor(registry, East, Observation, "2")),
+            _ => throw new ArgumentOutOfRangeException(nameof(violation)),
+        };
+        backend.OnSearch(West, Observation, invalid);
+
+        // East overflows before West's separate batch; in one batch West must be validated before any entries are used.
+        ShardFailureException thrown = await Should.ThrowAsync<ShardFailureException>(
+            Executor(backend.Client, registry, maxParallelFetches)
+                .ExecuteAsync(Plan(registry, Observations), [Match(East, "a")], ReadAll, 1, 2, Token));
+
+        thrown.Shard.ShouldBe(West);
+        thrown.Reason.ShouldBe(ShardFailureReason.ContractViolation);
+        backend.Client.Calls.Select(call => call.Search?.Shard).ShouldBe([East, West]);
+    }
 }

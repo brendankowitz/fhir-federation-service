@@ -8,10 +8,12 @@ namespace Ignixa.Federation.Core.UnitTests.Execution.References;
 
 /// <summary>
 /// Bounded first-page overlap, joining every sibling call, ordinal failure arbitration and caller cancellation. Gates
-/// order every interleaving; nothing waits on the wall clock.
+/// order every interleaving; timeouts only bound failed waits.
 /// </summary>
 public sealed class RevIncludePageExecutorConcurrencyTests
 {
+    private static readonly TimeSpan GateTimeout = TimeSpan.FromSeconds(10);
+
     private static CancellationToken Token => TestContext.Current.CancellationToken;
 
     // First pages overlap up to the bound within one occurrence, never across occurrences, and the includes keep plan
@@ -31,7 +33,7 @@ public sealed class RevIncludePageExecutorConcurrencyTests
 
         Task<RevIncludePage> execution = Executor(backend.Client, registry, maxParallelFetches)
             .ExecuteAsync(Plan(registry, Both), [Match(East, "a")], ReadAll, 10, 4, Token);
-        await backend.Client.WhenStarted(2);
+        await backend.Client.WhenStarted(2).WaitAsync(GateTimeout, Token);
         for (int yields = 0; yields < 10; yields++)
         {
             backend.Client.Calls.Count.ShouldBe(2);
@@ -40,7 +42,7 @@ public sealed class RevIncludePageExecutorConcurrencyTests
 
         westObservation.SetResult();
         eastObservation.SetResult();
-        await backend.Client.WhenStarted(4);
+        await backend.Client.WhenStarted(4).WaitAsync(GateTimeout, Token);
         westEncounter.SetResult();
         eastEncounter.SetResult();
         RevIncludePage page = await execution;
@@ -62,8 +64,8 @@ public sealed class RevIncludePageExecutorConcurrencyTests
 
         Task<RevIncludePage> execution = Executor(backend.Client, registry, 2)
             .ExecuteAsync(Plan(registry, Observations), [Match(East, "a")], ReadAll, 10, 2, Token);
-        await backend.Client.WhenStarted(2);
-        await backend.Client.Calls[0].Finished;
+        await backend.Client.WhenStarted(2).WaitAsync(GateTimeout, Token);
+        await backend.Client.Calls[0].Finished.WaitAsync(GateTimeout, Token);
 
         // West's call is parked on release, so a joined call cannot have ended. Yielding gives an unjoined one time to end.
         for (int yields = 0; yields < 10; yields++)
@@ -99,8 +101,8 @@ public sealed class RevIncludePageExecutorConcurrencyTests
 
         Task<RevIncludePage> execution = Executor(backend.Client, registry, 2)
             .ExecuteAsync(Plan(registry, Observations), [Match(East, "a")], ReadAll, 10, 2, Token);
-        await backend.Client.WhenStarted(2);
-        await backend.Client.Calls[1].Finished;
+        await backend.Client.WhenStarted(2).WaitAsync(GateTimeout, Token);
+        await backend.Client.Calls[1].Finished.WaitAsync(GateTimeout, Token);
         eastReleased.SetResult();
         ShardFailureException thrown = await Should.ThrowAsync<ShardFailureException>(execution);
 
@@ -119,7 +121,7 @@ public sealed class RevIncludePageExecutorConcurrencyTests
 
         Task<RevIncludePage> execution = Executor(backend.Client, registry, 2)
             .ExecuteAsync(Plan(registry, Observations), [Match(East, "a")], ReadAll, 10, 2, caller.Token);
-        await backend.Client.WhenStarted(2);
+        await backend.Client.WhenStarted(2).WaitAsync(GateTimeout, Token);
         await caller.CancelAsync();
 
         OperationCanceledException thrown = await Should.ThrowAsync<OperationCanceledException>(execution);
@@ -144,7 +146,7 @@ public sealed class RevIncludePageExecutorConcurrencyTests
 
         Task<RevIncludePage> execution = Executor(backend.Client, registry, 2)
             .ExecuteAsync(Plan(registry, Observations), [Match(East, "a")], ReadAll, 10, 2, caller.Token);
-        await backend.Client.WhenStarted(2);
+        await backend.Client.WhenStarted(2).WaitAsync(GateTimeout, Token);
         release.SetResult();
 
         OperationCanceledException thrown = await Should.ThrowAsync<OperationCanceledException>(execution);
@@ -168,7 +170,7 @@ public sealed class RevIncludePageExecutorConcurrencyTests
 
         Task<RevIncludePage> execution = Executor(backend.Client, registry, 2)
             .ExecuteAsync(Plan(registry, Observations), [Match(East, "a")], ReadAll, 10, 2, caller.Token);
-        await backend.Client.WhenStarted(1);
+        await backend.Client.WhenStarted(1).WaitAsync(GateTimeout, Token);
         execution.IsCompleted.ShouldBeFalse();
         release.SetResult();
 
@@ -191,7 +193,7 @@ public sealed class RevIncludePageExecutorConcurrencyTests
 
         Task<RevIncludePage> execution = Executor(backend.Client, registry)
             .ExecuteAsync(Plan(registry, Observations), [Match(East, "a")], ReadAll, 10, 3, caller.Token);
-        await backend.Client.WhenStarted(2);
+        await backend.Client.WhenStarted(2).WaitAsync(GateTimeout, Token);
         await caller.CancelAsync();
 
         OperationCanceledException thrown = await Should.ThrowAsync<OperationCanceledException>(execution);

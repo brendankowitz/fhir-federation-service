@@ -62,11 +62,8 @@ public sealed class RevIncludePageExecutorIncludeSetTests
         RevIncludePage page = await Executor(backend.Client, registry)
             .ExecuteAsync(Plan(registry, Observations), [Match(East, "a")], ReadAll, 1, 2, Token);
 
-        if (page.Includes is IList<ShardEntry> list)
-        {
-            Should.Throw<NotSupportedException>(list.Clear);
-        }
-
+        var list = page.Includes.ShouldBeAssignableTo<IList<ShardEntry>>();
+        Should.Throw<NotSupportedException>(list.Clear);
         page.Includes.ShouldBe([include]);
     }
 
