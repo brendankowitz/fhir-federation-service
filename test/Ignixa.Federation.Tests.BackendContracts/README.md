@@ -280,8 +280,9 @@ The project is intentionally outside the main solution; use the standalone comma
 ## Constraints
 
 - Images are pinned by digest:
-  `mcr.microsoft.com/healthcareapis/r4-fhir-server:5.2.84` and `mcr.microsoft.com/mssql/server:2022-CU28-ubuntu-22.04`.
-  This test targets SQL Server 2022-CU28, not the SQL Server 2025 image in the upstream example.
+  `mcr.microsoft.com/healthcareapis/r4-fhir-server:5.2.84` and `mcr.microsoft.com/mssql/server:2025-CU2-ubuntu-24.04`.
+  The pinned FHIR release's schema migration 119 requires the native `vector` type, which SQL Server
+  2022 lacks. The fixture uses SQL Server 2025 even though the tests don't query vectors.
   Running the test accepts the SQL Server licence terms (`ACCEPT_EULA=Y`).
 - A private Docker network is created per run. SQL Server is not published. Only the FHIR port is published, on
   `127.0.0.1` with a Docker-assigned port. Resource names and the SQL password are unique per run.

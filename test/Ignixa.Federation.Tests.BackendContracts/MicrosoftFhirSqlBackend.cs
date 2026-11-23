@@ -22,8 +22,9 @@ internal sealed class MicrosoftFhirSqlBackend : IAsyncDisposable
     private const string ServerImage =
         "mcr.microsoft.com/healthcareapis/r4-fhir-server:5.2.84@sha256:6f2798229c7f9f987909475c7ed99b1ddd87d30a08c55520f475f8a58c5c75f1";
 
+    // Schema migration 119 in this FHIR release requires SQL Server 2025's native vector type.
     private const string SqlImage =
-        "mcr.microsoft.com/mssql/server:2022-CU28-ubuntu-22.04@sha256:4525e3efac9f3e241cb003bb2ff2a82818b502f37e12049d788b1a9fa7e13b7f";
+        "mcr.microsoft.com/mssql/server:2025-CU2-ubuntu-24.04@sha256:5ffdffd2ba852051c2fc2f5b310391bf896dbaf8d16cc026a3c859d6214b30d1";
 
     private const ushort ServerContainerPort = 8080;
     private const string SqlAlias = "sql";
