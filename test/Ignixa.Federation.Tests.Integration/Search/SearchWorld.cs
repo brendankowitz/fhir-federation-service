@@ -26,9 +26,22 @@ internal static class SearchWorld
 
     public static readonly BackendProfile GetOnly = new("get-only", SupportsPostSearch: false, 100, NextLinkRedemption.FollowGet, null);
 
+    private static readonly LastUpdatedOrder StableOrder = new(TimeSpan.FromMilliseconds(1), StableTies: true);
+
     private static readonly Lazy<Corpus> Seeds = new(LoadCorpus);
 
     public static ShardRegistry Registry { get; } = ShardRegistry.Create(ShardOptions(), [PostCapable, GetOnly]);
+
+    /// <summary>
+    /// The same two shards, each with a certified stable <c>_lastUpdated</c> order, so the planner admits
+    /// <c>_sort=_lastUpdated</c> and only the host's own admission decides what happens next.
+    /// </summary>
+    public static ShardRegistry SortableRegistry { get; } = ShardRegistry.Create(
+        ShardOptions(),
+        [
+            new BackendProfile(PostCapable.Name, PostCapable.SupportsPostSearch, PostCapable.MaxCount, PostCapable.NextLinkRedemption, StableOrder),
+            new BackendProfile(GetOnly.Name, GetOnly.SupportsPostSearch, GetOnly.MaxCount, GetOnly.NextLinkRedemption, StableOrder),
+        ]);
 
     /// <summary>Gets each shard's seed resources in file order, as exact raw UTF-8 slices.</summary>
     public static IReadOnlyDictionary<string, IReadOnlyList<SeedResource>> Resources => Seeds.Value.Resources;
@@ -99,6 +112,10 @@ internal static class SearchWorld
     /// Whether <c>Condition.subject:Patient</c> is a second <c>_revinclude</c> source, advertised on <c>Patient</c>, so a request can
     /// mix an authorized and a denied include type. Used together with <paramref name="revInclude"/>.
     /// </param>
+    /// <param name="selfRevInclude">
+    /// Whether <c>Patient.link:Patient</c> is a <c>_revinclude</c> source, advertised on <c>Patient</c>, so the source type is the
+    /// primary type and a resolver can return a resource that is also a match.
+    /// </param>
     public static SearchCapabilities Capabilities(
         bool patientName = true,
         IEnumerable<string>? exactCountShapes = null,
@@ -112,7 +129,8 @@ internal static class SearchWorld
         bool organizationForward = false,
         bool revInclude = false,
         bool organizationInclude = false,
-        bool conditionRevInclude = false)
+        bool conditionRevInclude = false,
+        bool selfRevInclude = false)
     {
         registry ??= Registry;
         List<SearchParameterSupport> patientParameters =
@@ -123,6 +141,11 @@ internal static class SearchWorld
         if (patientName)
         {
             patientParameters.Add(new("name", SearchParamType.String, null));
+        }
+
+        if (selfRevInclude)
+        {
+            patientParameters.Add(new("link", SearchParamType.Reference, null));
         }
 
         if (organizationMissing || organizationForward || organizationInclude)
@@ -181,6 +204,11 @@ internal static class SearchWorld
                 revIncludes.Add("Condition:subject");
             }
 
+            if (selfRevInclude)
+            {
+                revIncludes.Add("Patient:link");
+            }
+
             resources.Insert(0, new(ResourceType.Parse("Patient"), patientParameters, organizationInclude ? ["Patient:organization"] : [], revIncludes));
         }
 
@@ -191,6 +219,13 @@ internal static class SearchWorld
             paths.Add(new(new ReferencePath(ResourceType.Parse("Condition"), "subject", ResourceType.Parse("Patient")),
                 ReferencePathOperations.RevIncludeSearch, ReferenceSearchForms.Relative, ReferenceSearchForms.CanonicalAbsolute,
                 registry.Version, null, "Condition?@Condition.subject:Patient"));
+        }
+
+        if (selfRevInclude)
+        {
+            paths.Add(new(new ReferencePath(ResourceType.Parse("Patient"), "link", ResourceType.Parse("Patient")),
+                ReferencePathOperations.RevIncludeSearch, ReferenceSearchForms.Relative, ReferenceSearchForms.CanonicalAbsolute,
+                registry.Version, null, "Patient?@Patient.link:Patient"));
         }
 
         if (organizationForward || organizationInclude)
@@ -211,7 +246,7 @@ internal static class SearchWorld
         SearchCertification Certify(IEnumerable<string> countShapes) => new(
             new Dictionary<SearchParamType, IReadOnlyCollection<string>> { [SearchParamType.String] = ["exact"], [SearchParamType.Reference] = ["missing"] },
             [SearchParamType.String, SearchParamType.Token],
-            distributedForward || revInclude || conditionRevInclude ? [SearchParamType.String, SearchParamType.Token, SearchParamType.Reference] : [SearchParamType.String, SearchParamType.Token],
+            distributedForward || revInclude || conditionRevInclude || selfRevInclude ? [SearchParamType.String, SearchParamType.Token, SearchParamType.Reference] : [SearchParamType.String, SearchParamType.Token],
             countShapes,
             paths);
 

@@ -715,7 +715,7 @@ internal sealed class PrimarySearch
                 return StagedIncludes.Refused(redeemed ? SearchOutcome.Gone() : UnsupportedShape());
             }
 
-            if (!stage.Accepts(result, _limits.MaxIncludesPerPage))
+            if (!stage.Accepts(result, _limits.MaxIncludesPerPage, page.Matches))
             {
                 return StagedIncludes.Refused(SearchOutcome.Error(
                     StatusCodes.Status502BadGateway, "exception", "The included resources cannot be served."));

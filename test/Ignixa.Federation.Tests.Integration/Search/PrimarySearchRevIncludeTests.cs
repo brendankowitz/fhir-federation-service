@@ -29,6 +29,7 @@ public sealed class PrimarySearchRevIncludeTests
     private const string Rev = "_revinclude=Observation:subject";
     private const string Paged = "name=Orchid&" + Rev + "&_count=1";
     private const string Mixed = "name=Orchid&" + Rev + "&_revinclude=Condition:subject&_count=1";
+    private const string CountShape = "Patient?name";
     private const string EastObservation = "https://fhir-east.example.org/Observation/obs-dup";
     private const string WestObservation = "https://fhir-west.example.org/Observation/obs-dup";
     private const string EastCondition = "https://fhir-east.example.org/Condition/cond-1";
@@ -145,21 +146,26 @@ public sealed class PrimarySearchRevIncludeTests
     {
         var resolver = new ScriptedRevIncludeResolver();
         string query = Paged;
-        HttpStatusCode? exact = null;
         using SearchHost host = Start(resolver, s =>
         {
             switch (shape)
             {
                 case "total":
+                    // The exact-count shape of this query is certified on every owner, so the planner admits it.
+                    s.Capabilities = SearchWorld.Capabilities(revInclude: true, exactCountShapes: [CountShape]);
                     query = Paged + "&_total=accurate";
                     break;
                 case "count zero":
+                    s.Capabilities = SearchWorld.Capabilities(revInclude: true, exactCountShapes: [CountShape]);
                     query = "name=Orchid&" + Rev + "&_count=0";
                     break;
                 case "summary count":
+                    s.Capabilities = SearchWorld.Capabilities(revInclude: true, exactCountShapes: [CountShape]);
                     query = Paged + "&_summary=count";
                     break;
                 case "sort":
+                    // Every owner certifies a stable _lastUpdated order, so the planner admits the sort and the host decides.
+                    s.Capabilities = SearchWorld.Capabilities(revInclude: true, registry: SearchWorld.SortableRegistry);
                     query = Paged + "&_sort=_lastUpdated";
                     break;
                 case "true include":
@@ -172,14 +178,12 @@ public sealed class PrimarySearchRevIncludeTests
                     s.ConfigureServices = services => services.AddSingleton<IReadOnlyDictionary<ShardId, CountDialect>>(
                         s.Capabilities!.Registry.Shards.ToDictionary(shard => shard.Id, _ => CountDialect.CountZero));
                     query = "_has:Observation:subject:code=oracle-code&" + Rev + "&_count=1";
-                    exact = HttpStatusCode.NotImplemented;
                     break;
                 case "forward chain":
                     s.Capabilities = SearchWorld.Capabilities(revInclude: true, organizationForward: true);
                     s.Settings["Federation:ChainResolution:Passthrough:0"] = "Patient.organization:Organization";
                     s.Settings[$"Federation:Host:Roles:{SearchWorld.ReaderRole}:2"] = "Organization";
                     query = "organization.name=Acme&" + Rev + "&_count=1";
-                    exact = HttpStatusCode.NotImplemented;
                     break;
                 default:
                     throw new InvalidOperationException("Unknown test case.");
@@ -188,12 +192,9 @@ public sealed class PrimarySearchRevIncludeTests
 
         SearchResult refused = await host.GetAsync("/Patient?" + query);
 
-        refused.StatusCode.ShouldNotBe(HttpStatusCode.OK);
-        if (exact is { } status)
-        {
-            refused.StatusCode.ShouldBe(status);
-        }
-
+        // A planner refusal is a 400; only the host's own admission gate answers 501 for a valid search it does not execute.
+        refused.StatusCode.ShouldBe(HttpStatusCode.NotImplemented);
+        refused.IssueCode.ShouldBe("not-supported");
         refused.Body.ShouldNotContain("Bundle");
         host.Shards.Views.ShouldBeEmpty();
         host.Shards.Calls.ShouldBeEmpty();
@@ -406,6 +407,42 @@ public sealed class PrimarySearchRevIncludeTests
         result.Body.ShouldNotContain("Bundle");
         result.Body.ShouldNotContain("obs-dup");
         result.Body.ShouldNotContain("cond-1");
+        result.Link("next").ShouldBeNull();
+    }
+
+    [Theory]
+    [InlineData("duplicate include")]
+    [InlineData("include that is a match")]
+    [InlineData("match at another version")]
+    public async Task ADuplicateIncludeOrAnIncludeThatIsAMatchIsRejectedWithoutBeingSerialized(string defect)
+    {
+        var resolver = new ScriptedRevIncludeResolver(call =>
+        {
+            ShardEntry match = call.Matches[0];
+            ShardEntry[] includes = defect switch
+            {
+                "duplicate include" => [ScriptedRevIncludeResolver.Entry("east", "Observation", "obs-dup"), ScriptedRevIncludeResolver.Entry("east", "Observation", "obs-dup")],
+                "include that is a match" => [match],
+                _ => [new ShardEntry(match.Key, "another-version", null, match.Resource.Span)],
+            };
+            return Task.FromResult<RevIncludePageResult?>(new RevIncludePageResult(includes, false));
+        });
+        using SearchHost host = Start(resolver, s =>
+        {
+            if (defect != "duplicate include")
+            {
+                s.Capabilities = SearchWorld.Capabilities(selfRevInclude: true);
+            }
+        });
+
+        SearchResult result = await SendAsync(host, false, defect == "duplicate include" ? Paged : "name=Orchid&_revinclude=Patient:link&_count=1");
+
+        resolver.Calls.ShouldHaveSingleItem();
+        result.StatusCode.ShouldBe(HttpStatusCode.BadGateway);
+        result.IssueCode.ShouldBe("exception");
+        result.Body.ShouldNotContain("Bundle");
+        result.Body.ShouldNotContain("obs-dup");
+        result.Body.ShouldNotContain("/Patient/dup");
         result.Link("next").ShouldBeNull();
     }
 

@@ -34,10 +34,23 @@ internal sealed record RevIncludeStage(QueryPlan Plan, IReadOnlySet<ResourceType
         return new RevIncludeStage(plan, new HashSet<ResourceType>(sources) { plan.Type }, sources, sources.Count != requested.Length);
     }
 
-    /// <summary>Whether a resolver's result is something this stage may serialize: within the limit and only authorized, planned source types.</summary>
+    /// <summary>
+    /// Whether a resolver's result is something this stage may serialize: within the limit, only authorized, planned source
+    /// types, each include distinct by key and version, and none a match already emitted on this page.
+    /// </summary>
     /// <param name="result">The result.</param>
     /// <param name="limit">The include limit handed to the resolver.</param>
+    /// <param name="matches">The matches emitted on this page. A match is excluded by physical key, whatever its version.</param>
     /// <returns><see langword="true"/> when every include may be served.</returns>
-    public bool Accepts(RevIncludePageResult result, int limit) =>
-        result.Includes.Count <= limit && result.Includes.All(e => Sources.Contains(e.Key.Type));
+    public bool Accepts(RevIncludePageResult result, int limit, IReadOnlyList<ShardEntry> matches)
+    {
+        if (result.Includes.Count > limit || !result.Includes.All(e => Sources.Contains(e.Key.Type)))
+        {
+            return false;
+        }
+
+        HashSet<ResourceKey> matched = [.. matches.Select(m => m.Key)];
+        HashSet<(ResourceKey, string?)> seen = [];
+        return result.Includes.All(e => !matched.Contains(e.Key) && seen.Add((e.Key, e.VersionId)));
+    }
 }
