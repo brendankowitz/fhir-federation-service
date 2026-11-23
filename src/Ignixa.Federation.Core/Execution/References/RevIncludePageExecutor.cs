@@ -98,14 +98,13 @@ public sealed class RevIncludePageExecutor
             throw new UnauthorizedAccessException("The caller is not authorized for this search.");
         }
 
+        cancellationToken.ThrowIfCancellationRequested();
         if (plan.PageSize is not { } pageSize)
         {
             return emittedMatches.Count == 0
                 ? new RevIncludePage([], false, false, 0)
                 : throw new ArgumentException("A count-only plan emits no matches.", nameof(emittedMatches));
         }
-
-        cancellationToken.ThrowIfCancellationRequested();
 
         bool omitted = false;
         var authorized = new List<PlannedOccurrence>();
@@ -141,6 +140,7 @@ public sealed class RevIncludePageExecutor
         var firstPages = new List<IReadOnlyList<FirstPage>>(authorized.Count);
         foreach (PlannedOccurrence occurrence in authorized)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             firstPages.Add(
             [
                 .. RevIncludeQueryCompiler.Compile(plan, occurrence, targets, owners, pageSize, _fits)
@@ -171,6 +171,7 @@ public sealed class RevIncludePageExecutor
             }
         }
 
+        cancellationToken.ThrowIfCancellationRequested();
         return new RevIncludePage(traversal.Includes, omitted, traversal.Truncated, scheduler.Started);
     }
 
@@ -206,19 +207,24 @@ public sealed class RevIncludePageExecutor
         public bool Truncated { get; private set; }
 
         /// <summary>
-        /// Starts every first page of <paramref name="batch"/> in order and joins them all, then validates each in order,
-        /// so the lowest ordinal failure wins, before taking any entry. Once truncated, first pages are still searched and
-        /// validated, as they are mandatory, but neither taken nor followed.
+        /// Starts first pages of <paramref name="batch"/> in order until cancelled, joins all started calls, then validates in
+        /// ordinal order before taking any entry. Once truncated, first pages are still searched and validated, as they are
+        /// mandatory, but neither taken nor followed.
         /// </summary>
         public async Task RunBatchAsync(FirstPage[] batch, CancellationToken cancellationToken)
         {
-            var searches = new Task<ShardPage>[batch.Length];
-            for (int i = 0; i < batch.Length; i++)
+            var searches = new List<Task<ShardPage>>(batch.Length);
+            foreach (FirstPage first in batch)
             {
-                searches[i] = scheduler.SearchAsync(batch[i].Request);
+                if (cancellationToken.IsCancellationRequested)
+                {
+                    break;
+                }
+
+                searches.Add(scheduler.SearchAsync(first.Request));
             }
 
-            _unstartedFirstPages -= batch.Length;
+            _unstartedFirstPages -= searches.Count;
             await ((Task)Task.WhenAll(searches)).ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
             cancellationToken.ThrowIfCancellationRequested();
 
@@ -231,7 +237,7 @@ public sealed class RevIncludePageExecutor
 
             for (int i = 0; i < batch.Length && !Truncated; i++)
             {
-                await DrainAsync(batch[i].Stream, pages[i]);
+                await DrainAsync(batch[i].Stream, pages[i], cancellationToken);
             }
         }
 
@@ -239,17 +245,19 @@ public sealed class RevIncludePageExecutor
         /// Takes a validated first page and follows its cursors until the stream ends or the includes are truncated. Every
         /// redeemed cursor is remembered before its response is validated, so a replayed cursor is a contract violation.
         /// </summary>
-        private async Task DrainAsync(ShardStream stream, ShardPage page)
+        private async Task DrainAsync(ShardStream stream, ShardPage page, CancellationToken cancellationToken)
         {
             var redeemed = new HashSet<ShardCursor>();
             while (true)
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 Take(page);
                 if (Truncated || page.Next is not { } next)
                 {
                     return;
                 }
 
+                cancellationToken.ThrowIfCancellationRequested();
                 // A follow that would leave a mandatory first page unaffordable cannot lead to a result: fail unsent.
                 if ((long)scheduler.Started + _unstartedFirstPages + 1 > allowance)
                 {

@@ -127,10 +127,8 @@ public sealed class RevIncludePageExecutorConcurrencyTests
         backend.Client.InFlight.ShouldBe(0);
     }
 
-    // The caller cancels while the batch is arbitrated: east's page arrives after the cancellation and breaks the contract,
-    // yet the cancellation wins.
     [Fact]
-    public async Task CallerCancellationDuringArbitrationWinsOverAViolation()
+    public async Task CallerCancellationBeforeArbitrationWinsOverAViolation()
     {
         ShardRegistry registry = Registry();
         var backend = new RevIncludeBackend();
@@ -154,6 +152,33 @@ public sealed class RevIncludePageExecutorConcurrencyTests
     }
 
     [Fact]
+    public async Task CallerCancellationStopsFurtherFirstPageAdmissionsButJoinsTheStartedCall()
+    {
+        ShardRegistry registry = Registry();
+        var backend = new RevIncludeBackend();
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var caller = CancellationTokenSource.CreateLinkedTokenSource(Token);
+        backend.OnSearch(East, Observation, async (_, _) =>
+        {
+            await caller.CancelAsync();
+            await release.Task.WaitAsync(Token);
+            return Page(null);
+        });
+        backend.OnSearch(West, Observation, Page(null));
+
+        Task<RevIncludePage> execution = Executor(backend.Client, registry, 2)
+            .ExecuteAsync(Plan(registry, Observations), [Match(East, "a")], ReadAll, 10, 2, caller.Token);
+        await backend.Client.WhenStarted(1);
+        execution.IsCompleted.ShouldBeFalse();
+        release.SetResult();
+
+        OperationCanceledException thrown = await Should.ThrowAsync<OperationCanceledException>(execution);
+        thrown.CancellationToken.ShouldBe(caller.Token);
+        backend.Client.Calls.Select(call => call.Shard).ShouldBe([East]);
+        backend.Client.InFlight.ShouldBe(0);
+    }
+
+    [Fact]
     public async Task CallerCancellationDuringANextWins()
     {
         ShardRegistry registry = Registry();
@@ -171,6 +196,42 @@ public sealed class RevIncludePageExecutorConcurrencyTests
 
         OperationCanceledException thrown = await Should.ThrowAsync<OperationCanceledException>(execution);
         thrown.CancellationToken.ShouldBe(caller.Token);
+        backend.Client.InFlight.ShouldBe(0);
+    }
+
+    [Theory]
+    [InlineData("failed")]
+    [InlineData("invalid")]
+    [InlineData("last")]
+    [InlineData("another")]
+    public async Task CallerCancellationWinsWhenANeededFollowIgnoresItsToken(string outcome)
+    {
+        ShardRegistry registry = Registry();
+        var backend = new RevIncludeBackend();
+        ShardCursor second = Cursor(registry, West, Observation, "2");
+        ShardCursor third = Cursor(registry, West, Observation, "3");
+        using var caller = CancellationTokenSource.CreateLinkedTokenSource(Token);
+        backend.OnSearch(East, Observation, Page(null));
+        backend.OnSearch(West, Observation, Page(second));
+        backend.OnContinue(second, async _ =>
+        {
+            await caller.CancelAsync();
+            return outcome switch
+            {
+                "failed" => throw new InvalidOperationException("backend failed"),
+                "invalid" => Page(second),
+                "another" => Page(third, Entry(West, Observation, "o1")),
+                _ => Page(null, Entry(West, Observation, "o1")),
+            };
+        });
+        backend.OnContinue(third, _ => Task.FromResult(Page(null)));
+
+        Task<RevIncludePage> execution = Executor(backend.Client, registry)
+            .ExecuteAsync(Plan(registry, Observations), [Match(East, "a")], ReadAll, 10, 4, caller.Token);
+
+        OperationCanceledException thrown = await Should.ThrowAsync<OperationCanceledException>(execution);
+        thrown.CancellationToken.ShouldBe(caller.Token);
+        backend.Client.Calls.Count.ShouldBe(3);
         backend.Client.InFlight.ShouldBe(0);
     }
 
