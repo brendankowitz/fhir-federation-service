@@ -289,6 +289,66 @@ public sealed class ForwardChainDrainTests
     }
 
     [Theory]
+    [InlineData(true, false)]
+    [InlineData(false, false)]
+    [InlineData(true, true)]
+    public async Task DeadlineDuringWitnessFinalization_RejectsTheResult(bool hasKeys, bool cancelCaller)
+    {
+        const int ordinal = 2;
+        using var caller = CancellationTokenSource.CreateLinkedTokenSource(Token);
+        using var chain = CancellationTokenSource.CreateLinkedTokenSource(caller.Token);
+        using var releaseKeys = new ManualResetEventSlim();
+        var readingKeys = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var gateTimeout = TimeSpan.FromSeconds(10);
+        ShardRegistry registry = Registry();
+
+        Task<ResourceKey[]> finalizing = Task.Run(
+            () => ForwardChainResolver.CompleteWitnessKeys(registry, PausedKeys(), ordinal, caller.Token, chain.Token), Token);
+        try
+        {
+            await readingKeys.Task.WaitAsync(gateTimeout, Token);
+            await chain.CancelAsync();
+            if (cancelCaller)
+            {
+                await caller.CancelAsync();
+            }
+        }
+        finally
+        {
+            releaseKeys.Set();
+        }
+
+        if (cancelCaller)
+        {
+            OperationCanceledException cancelled = await Should.ThrowAsync<OperationCanceledException>(
+                () => finalizing.WaitAsync(gateTimeout, Token));
+            cancelled.CancellationToken.ShouldBe(caller.Token);
+        }
+        else
+        {
+            ChainSubqueryTimeoutException timedOut = await Should.ThrowAsync<ChainSubqueryTimeoutException>(
+                () => finalizing.WaitAsync(gateTimeout, Token));
+            timedOut.Ordinal.ShouldBe(ordinal);
+            timedOut.InnerException.ShouldBeOfType<OperationCanceledException>().CancellationToken.ShouldBe(chain.Token);
+        }
+
+        IEnumerable<ResourceKey> PausedKeys()
+        {
+            if (hasKeys)
+            {
+                yield return Key(West, Patient, "p2");
+                yield return Key(East, Patient, "p1");
+            }
+
+            readingKeys.SetResult();
+            if (!releaseKeys.Wait(gateTimeout, Token))
+            {
+                throw new TimeoutException("The witness key gate was not released.");
+            }
+        }
+    }
+
+    [Theory]
     [InlineData(LateOutcome.Cancelled)]
     [InlineData(LateOutcome.Page)]
     [InlineData(LateOutcome.Fault)]

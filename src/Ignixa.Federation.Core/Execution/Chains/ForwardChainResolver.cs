@@ -371,10 +371,10 @@ public sealed class ForwardChainResolver
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         deadline.CancelAfter(_chainSubquery);
         var scheduler = new FetchScheduler(_client, allowance.Fetches, _maxParallelBackendCalls, deadline.Token);
+        var keys = new HashSet<ResourceKey>();
         try
         {
             scheduler.Speculate(streams.Skip(1).Select(s => s.FirstPage(int.MaxValue)));
-            var keys = new HashSet<ResourceKey>();
             foreach (ShardStream stream in streams)
             {
                 // Every cursor redeemed for this stream stays in the set, so Validate fails a page naming any of them again:
@@ -408,8 +408,6 @@ public sealed class ForwardChainResolver
                     page = await scheduler.ContinueAsync(next);
                 }
             }
-
-            return new Drained(ForwardChainPrimary.CanonicalOrder(_registry, keys), null);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -425,6 +423,26 @@ public sealed class ForwardChainResolver
             await scheduler.DisposeAsync();
             allowance.Fetches -= scheduler.Started;
         }
+
+        return new Drained(CompleteWitnessKeys(_registry, keys, chain.Occurrence.Ordinal, cancellationToken, deadline.Token), null);
+    }
+
+    /// <summary>Orders the successful witness set before the final cancellation and deadline check.</summary>
+    internal static ResourceKey[] CompleteWitnessKeys(
+        ShardRegistry registry,
+        IEnumerable<ResourceKey> keys,
+        int ordinal,
+        CancellationToken callerToken,
+        CancellationToken chainToken)
+    {
+        ResourceKey[] ordered = ForwardChainPrimary.CanonicalOrder(registry, keys);
+        callerToken.ThrowIfCancellationRequested();
+        if (chainToken.IsCancellationRequested)
+        {
+            throw new ChainSubqueryTimeoutException(ordinal, new OperationCanceledException(chainToken));
+        }
+
+        return ordered;
     }
 
     /// <summary>The request's shard calls and payload bytes still available, carried across every chain.</summary>
