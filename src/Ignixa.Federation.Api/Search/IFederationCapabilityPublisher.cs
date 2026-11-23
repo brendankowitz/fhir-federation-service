@@ -23,6 +23,7 @@ namespace Ignixa.Federation.Api.Search;
 /// call throws and leaves the previous view in force. Invalid search options are reported when a warm view is built,
 /// not while an unseeded host starts cold. Publishing a view does not apply configuration reloads.
 /// </para>
+/// <para>
 /// Thread-safe. Calls are serialized, but concurrent calls have no guaranteed order. A source must order its own updates.
 /// </para>
 /// </remarks>
