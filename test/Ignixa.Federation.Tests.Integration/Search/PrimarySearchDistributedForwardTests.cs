@@ -1,6 +1,7 @@
 using System.Net;
 using System.Text;
 using System.Text.Json;
+using Ignixa.Federation.Api.Budgets;
 using Ignixa.Federation.Api.Continuations;
 using Ignixa.Federation.Api.Search;
 using Ignixa.Federation.Core.Configuration;
@@ -28,6 +29,7 @@ public sealed class PrimarySearchDistributedForwardTests
     private const string EastObservation = "https://fhir-east.example.org/Observation/obs-dup";
     private const string WestCrossReference = "https://fhir-west.example.org/Observation/obs-dup-xref";
     private const string EastPatient = "https://fhir-east.example.org/Patient/dup";
+    private const string EastCursorTarget = "https://fhir-east.example.org/Observation?_getpages=opaque-east&_offset=1&_count=1";
 
     private static readonly string EastRewrite = Subject("Patient/dup", EastPatient);
     private static readonly string WestRewrite = Subject(EastPatient);
@@ -69,6 +71,39 @@ public sealed class PrimarySearchDistributedForwardTests
         strategy.Rebuilds.ShouldHaveSingleItem();
         ShardCall west = host.Shards.Calls.Skip(calls).ShouldHaveSingleItem();
         (west.Shard, west.Method, west.Parameters, west.PageSize).ShouldBe(("west", ShardSearchMethod.Get, WestRewrite, 1));
+    }
+
+    /// <summary>
+    /// Pins only the HTTP glue for one certified kept predicate: the chain alone is covered elsewhere. The kept <c>code</c> term comes
+    /// first, so the original order is observable. Over POST it carries a raw wire escape, which the form body forwards verbatim to every
+    /// owner request, initial and replayed.
+    /// </summary>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ACertifiedKeptPredicateSurvivesBothOwnersInitialAndReplayedRequestsInOrder(bool post)
+    {
+        string kept = post ? "code=oracle%2Dcode" : "code=oracle-code";
+        var strategy = new ScriptedDistributedForward();
+        using SearchHost host = Start(strategy);
+
+        SearchResult first = await SendAsync(host, post, kept + "&" + Paged);
+
+        first.StatusCode.ShouldBe(HttpStatusCode.OK, first.Body);
+        first.Entries.ShouldBe([(EastObservation, Body("east", "obs-dup"))]);
+        ShardCall east = host.Shards.Calls.Single(IsOwnerCall);
+        (east.Shard, east.Method, east.Parameters, east.PageSize).ShouldBe(("east", ShardSearchMethod.PostSearch, kept + "&" + EastRewrite, 1));
+        int calls = host.Shards.Calls.Count;
+
+        SearchResult second = await host.FollowAsync(first.Link("next").ShouldNotBeNull());
+
+        second.StatusCode.ShouldBe(HttpStatusCode.OK, second.Body);
+        second.Entries.ShouldBe([(WestCrossReference, Body("west", "obs-dup-xref"))]);
+        ShardCall west = host.Shards.Calls.Skip(calls).ShouldHaveSingleItem();
+        (west.Shard, west.Method, west.Parameters, west.PageSize).ShouldBe(("west", ShardSearchMethod.Get, kept + "&" + WestRewrite, 1));
+        host.Shards.Calls.Where(c => !IsOwnerCall(c)).ShouldAllBe(c => c.Parameters == "given=Eli");
+        strategy.Resolves.ShouldHaveSingleItem();
+        strategy.Rebuilds.ShouldHaveSingleItem();
     }
 
     [Fact]
@@ -242,6 +277,130 @@ public sealed class PrimarySearchDistributedForwardTests
         result.StatusCode.ShouldBe(HttpStatusCode.GatewayTimeout);
         result.IssueCode.ShouldBe("timeout");
         result.Body.ShouldNotContain("k7q2");
+    }
+
+    /// <summary>
+    /// A strategy's own <see cref="TimeoutException"/> is a live-deadline signal: a gateway timeout with no owner call. The budget still
+    /// speaks first: a request-budget breach the strategy swallowed stays latched and wins as too costly.
+    /// </summary>
+    [Theory]
+    [InlineData(false, HttpStatusCode.GatewayTimeout, "timeout")]
+    [InlineData(true, HttpStatusCode.BadRequest, "too-costly")]
+    public async Task AStrategyTimeoutIsAGatewayTimeoutUnlessARecordedBudgetBreachComesFirst(bool breach, HttpStatusCode status, string code)
+    {
+        var strategy = new ScriptedDistributedForward
+        {
+            ResolveScript = async call =>
+            {
+                await ScriptedDistributedForward.DiscoverAsync(call);
+                try
+                {
+                    // One more witness-shaped call: it fits the default pool, but exceeds the two-call pool of the breach row.
+                    await call.Client.SearchAsync(new ShardSearchRequest(call.Capabilities.Registry.Shards[0].Id, ResourceType.Parse("Patient"),
+                        [new ParameterOccurrence("given", "Eli")], 100, ShardSearchMethod.Get), call.Token);
+                }
+                catch (RequestTooCostlyException)
+                {
+                }
+
+                throw new TimeoutException();
+            },
+        };
+        using SearchHost host = Start(strategy, s =>
+        {
+            if (breach)
+            {
+                s.Settings["Federation:Limits:BackendCallsPerShard"] = "1";
+            }
+        });
+
+        SearchResult result = await host.GetAsync("/Observation?" + Paged);
+
+        result.StatusCode.ShouldBe(status, result.Body);
+        result.IssueCode.ShouldBe(code);
+        result.Entries.ShouldBeEmpty();
+        result.Link("next").ShouldBeNull();
+        host.Shards.Calls.Count(IsOwnerCall).ShouldBe(0);
+    }
+
+    /// <summary>
+    /// Witness discovery and owner paging are one request on one budget. The strategy here understates its use and claims the whole
+    /// allowance remains, so only the host's shared physical count can refuse the owners; the other row proves an exact fit passes.
+    /// </summary>
+    [Theory]
+    [InlineData(2, HttpStatusCode.OK)]
+    [InlineData(1, HttpStatusCode.BadRequest)]
+    public async Task WitnessAndOwnerSendsShareOnePhysicalCallBudgetWhateverTheStrategyReports(int callsPerShard, HttpStatusCode status)
+    {
+        var strategy = new ScriptedDistributedForward
+        {
+            ResolveScript = async call => (await ScriptedDistributedForward.DiscoverAsync(call))!.Value with { RemainingFetches = call.FetchAllowance },
+        };
+        using SearchHost host = Start(strategy, s =>
+            s.Settings["Federation:Limits:BackendCallsPerShard"] = callsPerShard.ToString(System.Globalization.CultureInfo.InvariantCulture));
+
+        SearchResult result = await host.GetAsync("/Observation?" + Chain + "&_count=2");
+
+        result.StatusCode.ShouldBe(status, result.Body);
+        host.Shards.Calls.Count.ShouldBe(callsPerShard * 2);
+        if (status == HttpStatusCode.OK)
+        {
+            result.Entries.Count.ShouldBe(2);
+        }
+        else
+        {
+            result.IssueCode.ShouldBe("too-costly");
+            result.Entries.ShouldBeEmpty();
+            host.Shards.Calls.Count(IsOwnerCall).ShouldBe(0);
+        }
+    }
+
+    /// <summary>
+    /// Witness bytes and owner bytes are each within the limit alone but not together: the shared response-byte budget, not a
+    /// per-phase one, decides. The other row sits exactly on the limit and passes.
+    /// </summary>
+    [Theory]
+    [InlineData(0, HttpStatusCode.OK)]
+    [InlineData(-1, HttpStatusCode.BadRequest)]
+    public async Task WitnessAndOwnerResponsesShareOneByteBudget(int adjustment, HttpStatusCode status)
+    {
+        long witness = SearchWorld.Slice("east", "Patient", "dup").Length;
+        long owners = SearchWorld.Slice("east", "Observation", "obs-dup").Length + SearchWorld.Slice("west", "Observation", "obs-dup-xref").Length;
+        long limit = witness + owners + adjustment;
+        limit.ShouldBeGreaterThanOrEqualTo(owners);
+        using SearchHost host = Start(new ScriptedDistributedForward(), s =>
+            s.Settings["Federation:Limits:MaxResponseBytes"] = limit.ToString(System.Globalization.CultureInfo.InvariantCulture));
+
+        SearchResult result = await host.GetAsync("/Observation?" + Chain + "&_count=2");
+
+        result.StatusCode.ShouldBe(status, result.Body);
+        if (status == HttpStatusCode.OK)
+        {
+            result.Entries.Count.ShouldBe(2);
+        }
+        else
+        {
+            result.IssueCode.ShouldBe("too-costly");
+            result.Entries.ShouldBeEmpty();
+        }
+    }
+
+    /// <summary>The host fit authority judges what an owner is actually sent: the plan's count clamped to that owner's maximum.</summary>
+    [Fact]
+    public async Task HostFitJudgesTheClampedCountNotThePlanCount()
+    {
+        SearchCapabilities view = Capabilities(EastRegistry(maxCount: 1, NextLinkRedemption.FollowGet));
+        using SearchHost host = Start(new ScriptedDistributedForward(), s =>
+        {
+            s.Capabilities = view;
+            s.Shards.RequestFits = r => r.Shard.Value != "east" || r.PageSize <= 1;
+        });
+
+        SearchResult result = await host.GetAsync("/Observation?" + Chain + "&_count=2");
+
+        result.StatusCode.ShouldBe(HttpStatusCode.OK, result.Body);
+        result.Entries.Count.ShouldBe(2);
+        host.Shards.Calls.Single(c => IsOwnerCall(c) && c.Shard == "east").PageSize.ShouldBe(1);
     }
 
     [Theory]
@@ -436,6 +595,118 @@ public sealed class PrimarySearchDistributedForwardTests
         await AssertRestartWithoutClientAsync(trusting, forged);
     }
 
+    [Fact]
+    public async Task ASignedSearchReplayContinuesFromItsAnchorWithNoNewDiscovery()
+    {
+        using var ring = new IsolatedKeyRing();
+        SearchCapabilities view = Capabilities(EastRegistry(maxCount: 100, NextLinkRedemption.FollowGet));
+        string token = await IssueSearchReplayAsync(ring, view);
+        var strategy = new ScriptedDistributedForward();
+        using SearchHost redeemer = Start(strategy, s => (s.Protection, s.Capabilities) = (ring.CreateProvider(), view));
+
+        SearchResult result = await redeemer.GetAsync("/Observation?ct=" + token);
+
+        result.StatusCode.ShouldBe(HttpStatusCode.OK, result.Body);
+        result.Entries.ShouldBe([(WestCrossReference, Body("west", "obs-dup-xref"))]);
+        result.Link("next").ShouldBeNull();
+        strategy.Resolves.ShouldBeEmpty();
+        strategy.Rebuilds.ShouldHaveSingleItem();
+        redeemer.Shards.Calls.Select(c => (c.Shard, c.Method, c.Parameters, c.PageSize)).Order().ShouldBe(
+        [
+            ("east", ShardSearchMethod.PostSearch, EastRewrite, 2),
+            ("west", ShardSearchMethod.Get, WestRewrite, 2),
+        ]);
+    }
+
+    [Fact]
+    public async Task ASignedSearchReplayLargerThanTheOwnersCurrentMaxCountRestartsBeforeAnyClient()
+    {
+        using var ring = new IsolatedKeyRing();
+
+        // The same snapshot as the passing replay above, issued under and redeemed on a registry whose east maximum is now 1:
+        // revisions match, so only the replay-profile check can refuse it.
+        SearchCapabilities view = Capabilities(EastRegistry(maxCount: 1, NextLinkRedemption.FollowGet));
+        string token = await IssueSearchReplayAsync(ring, view);
+        var strategy = new ScriptedDistributedForward();
+        using SearchHost redeemer = Start(strategy, s => (s.Protection, s.Capabilities) = (ring.CreateProvider(), view));
+
+        await AssertRestartWithoutClientAsync(redeemer, token);
+        strategy.Rebuilds.ShouldHaveSingleItem();
+    }
+
+    [Fact]
+    public async Task ACursorOfTheOwnersCurrentRedemptionPolicyContinuesTheSavedPostStream()
+    {
+        using var ring = new IsolatedKeyRing();
+        SearchCapabilities view = Capabilities(EastRegistry(maxCount: 100, NextLinkRedemption.FollowGet));
+        string token = await IssuePostCursorReplayAsync(ring, view);
+        var strategy = new ScriptedDistributedForward();
+        using SearchHost redeemer = Start(strategy, s => (s.Protection, s.Capabilities) = (ring.CreateProvider(), view));
+
+        SearchResult result = await redeemer.GetAsync("/Observation?ct=" + token);
+
+        result.StatusCode.ShouldBe(HttpStatusCode.OK, result.Body);
+        result.Entries.ShouldBe([(WestCrossReference, Body("west", "obs-dup-xref"))]);
+        strategy.Resolves.ShouldBeEmpty();
+        redeemer.Shards.Calls.Select(c => (c.Shard, c.Method, c.Parameters, c.PageSize, c.Target)).Order().ShouldBe(
+        [
+            ("east", null, null, 0, EastCursorTarget),
+            ("west", ShardSearchMethod.Get, WestRewrite, 1, null),
+        ]);
+    }
+
+    [Fact]
+    public async Task APostStreamCursorWhoseRedemptionNoLongerMatchesTheOwnersPolicyRestartsBeforeAnyClient()
+    {
+        using var ring = new IsolatedKeyRing();
+
+        // The saved cursor is a structurally valid FollowGet cursor of a POST stream. Under the repost policy the owner's POST
+        // stream must redeem by re-posting, so only the replay-profile check can refuse it. The registry revision is unchanged.
+        SearchCapabilities view = Capabilities(EastRegistry(maxCount: 100, NextLinkRedemption.RepostToSearch));
+        string token = await IssuePostCursorReplayAsync(ring, view);
+        var strategy = new ScriptedDistributedForward();
+        using SearchHost redeemer = Start(strategy, s => (s.Protection, s.Capabilities) = (ring.CreateProvider(), view));
+
+        await AssertRestartWithoutClientAsync(redeemer, token);
+        strategy.Rebuilds.ShouldHaveSingleItem();
+    }
+
+    /// <summary>
+    /// Issues a real, signed bookmark whose snapshot is replaying the east stream at <c>_count=2</c> from <c>Observation/obs-dup</c>,
+    /// under the dependency revisions of <paramref name="view"/>. The page size 2 is the saved replay count too.
+    /// </summary>
+    private static async Task<string> IssueSearchReplayAsync(IsolatedKeyRing ring, SearchCapabilities view)
+    {
+        using SearchHost issuer = Start(new ScriptedDistributedForward(), s => (s.Protection, s.Capabilities) = (ring.CreateProvider(), view));
+        SearchResult first = await issuer.GetAsync("/Observation?" + Paged);
+        first.StatusCode.ShouldBe(HttpStatusCode.OK, first.Body);
+        var (protector, issued, frame, codec, saved) = ReadBookmark(ring, first.Link("next").ShouldNotBeNull(), view);
+        ShardSearchRequest[] streams = [.. saved.Streams.Select(s => new ShardSearchRequest(s.Shard, s.Type, s.Parameters, 2, s.Method))];
+        var anchor = new ResourceKey(streams[0].Shard, streams[0].Type, ResourceId.Parse("obs-dup"));
+        return IssueBookmark(protector, issued, frame, codec,
+            new UnsortedContinuationSnapshot(streams, 2, UnsortedContinuation.AtSearch(streams[0], anchor)), Chain + "&_count=2");
+    }
+
+    /// <summary>Issues a real, signed bookmark that continues the east POST stream from an opaque cursor past its only observation.</summary>
+    private static async Task<string> IssuePostCursorReplayAsync(IsolatedKeyRing ring, SearchCapabilities view)
+    {
+        using SearchHost issuer = Start(new ScriptedDistributedForward(), s => (s.Protection, s.Capabilities) = (ring.CreateProvider(), view));
+        SearchResult first = await issuer.GetAsync("/Observation?" + Paged);
+        first.StatusCode.ShouldBe(HttpStatusCode.OK, first.Body);
+        var (protector, issued, frame, codec, saved) = ReadBookmark(ring, first.Link("next").ShouldNotBeNull(), view);
+        saved.Streams[0].Method.ShouldBe(ShardSearchMethod.PostSearch);
+        var cursor = new ShardCursor(saved.Streams[0].Shard, saved.Streams[0].Type, EastCursorTarget, NextLinkRedemption.FollowGet);
+        return IssueBookmark(protector, issued, frame, codec,
+            new UnsortedContinuationSnapshot(saved.Streams, saved.PageSize, UnsortedContinuation.AtCursor(cursor, null, CursorCycleState.Initial)));
+    }
+
+    private static ShardRegistry EastRegistry(int maxCount, NextLinkRedemption redemption) =>
+        SearchWorld.ReverseRegistry(extraWitnessShard: false,
+            new BackendProfile(SearchWorld.PostCapable.Name, SupportsPostSearch: true, maxCount, redemption, null));
+
+    private static SearchCapabilities Capabilities(ShardRegistry registry) =>
+        SearchWorld.Capabilities(distributedForward: true, patientGiven: true, registry: registry);
+
     private static async Task<(SearchHost Issuer, string Next)> IssueAsync(IsolatedKeyRing ring)
     {
         SearchHost issuer = Start(new ScriptedDistributedForward(), s => s.Protection = ring.CreateProvider());
@@ -482,7 +753,8 @@ public sealed class PrimarySearchDistributedForwardTests
         };
     }
 
-    private static bool IsOwnerCall(ShardCall call) => call.Parameters?.StartsWith("subject=", StringComparison.Ordinal) == true;
+    private static bool IsOwnerCall(ShardCall call) =>
+        call.Parameters?.Split('&').Any(p => p.StartsWith("subject=", StringComparison.Ordinal)) == true;
 
     private static string Subject(params string[] forms) => "subject=" + Uri.EscapeDataString(string.Join(',', forms));
 
@@ -502,6 +774,9 @@ public sealed class PrimarySearchDistributedForwardTests
                 ("Observation", "subject") => doc.RootElement.TryGetProperty("subject", out JsonElement subject)
                     && subject.TryGetProperty("reference", out JsonElement reference)
                     && value.Split(',').Contains(reference.GetString(), StringComparer.Ordinal),
+                ("Observation", "code") => doc.RootElement.TryGetProperty("code", out JsonElement code)
+                    && code.TryGetProperty("coding", out JsonElement codings)
+                    && codings.EnumerateArray().Any(c => c.TryGetProperty("code", out JsonElement id) && id.GetString() == value),
                 _ => true,
             };
             if (!ok)
@@ -550,9 +825,9 @@ public sealed class PrimarySearchDistributedForwardTests
                 : null;
 
     private static (ContinuationProtector Protector, RedeemedContinuation Issued, SearchContinuationFrame Frame,
-        UnsortedSnapshotCodec Codec, UnsortedContinuationSnapshot Saved) ReadBookmark(IsolatedKeyRing ring, string next)
+        UnsortedSnapshotCodec Codec, UnsortedContinuationSnapshot Saved) ReadBookmark(IsolatedKeyRing ring, string next, SearchCapabilities? currentView = null)
     {
-        SearchCapabilities view = Capabilities();
+        SearchCapabilities view = currentView ?? Capabilities();
         ContinuationProtector protector = Protector(ring);
         RedeemedContinuation issued = protector.Redeem(Token(next), Binding(), (group, key) => Revision(view, group, key))
             .Continuation.ShouldNotBeNull();
@@ -564,10 +839,10 @@ public sealed class PrimarySearchDistributedForwardTests
     }
 
     private static string IssueBookmark(ContinuationProtector protector, RedeemedContinuation issued, SearchContinuationFrame frame,
-        UnsortedSnapshotCodec codec, UnsortedContinuationSnapshot snapshot)
+        UnsortedSnapshotCodec codec, UnsortedContinuationSnapshot snapshot, string? rawQuery = null)
     {
         codec.Encode(snapshot, out byte[]? encoded).ShouldBe(UnsortedSnapshotOutcome.Success);
-        return protector.IssueSuccessor(issued, new SearchContinuationFrame(frame.Post, frame.RawQuery, encoded.ShouldNotBeNull()).ToArray())
+        return protector.IssueSuccessor(issued, new SearchContinuationFrame(frame.Post, rawQuery ?? frame.RawQuery, encoded.ShouldNotBeNull()).ToArray())
             .InlineToken.ShouldNotBeNull();
     }
 }

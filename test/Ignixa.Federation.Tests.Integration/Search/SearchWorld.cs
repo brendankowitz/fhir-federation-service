@@ -189,7 +189,7 @@ internal static class SearchWorld
             ReferencePath subjectPath = new(ResourceType.Parse("Observation"), "subject", ResourceType.Parse("Patient"));
             paths.Add(distributedForward || revInclude
                 ? new(subjectPath, subject, ReferenceSearchForms.Relative, ReferenceSearchForms.CanonicalAbsolute, registry.Version,
-                    distributedForward ? ["Observation?@Observation.subject:Patient"] : null,
+                    distributedForward ? ["Observation?@Observation.subject:Patient", "Observation?code=oracle-code&@Observation.subject:Patient"] : null,
                     revInclude ? "Observation?@Observation.subject:Patient" : null)
                 : new(subjectPath, subject, ReferenceSearchForms.None, ReferenceSearchForms.None));
         }
