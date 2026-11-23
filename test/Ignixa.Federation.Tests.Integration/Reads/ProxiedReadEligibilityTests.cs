@@ -77,7 +77,7 @@ public sealed class ProxiedReadEligibilityTests
     }
 
     [Fact]
-    public async Task ReplacingAndWithdrawingTheView_ChangesWhichTypesAreReadable_WithTheStatementAndLinks()
+    public async Task ReplacingAndWithdrawingTheView_ChangesWhichTypesAreReadableAndAdvertised()
     {
         var binding = new ScriptedReadBinding();
         using SearchHost host = Start(binding, PatientOnly());

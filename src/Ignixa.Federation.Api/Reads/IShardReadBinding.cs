@@ -12,14 +12,15 @@ namespace Ignixa.Federation.Api.Reads;
 /// </summary>
 /// <remarks>
 /// <para>
-/// The host registers no implementation. Registering one, with <c>Federation:ProxyReads</c> on, is what enables the
-/// route, the <c>read</c> capability and the search <c>alternate</c> links, all from one snapshot taken at startup.
+/// The host registers no implementation. With one registered and <c>Federation:ProxyReads</c> on, each published
+/// capability view determines which types the route serves, the statement advertises for <c>read</c>, and search links to.
 /// </para>
 /// <para>
 /// <b>Input.</b> Only a validated <see cref="ShardRegistry"/> (the current tenant's), the validated
 /// <see cref="ResourceKey"/>, the request's <see cref="RequestBudget"/> and its token arrive. No query string, header,
 /// claim or other caller input is passed, and the binding must not accept any: the shard credential is its own and is
-/// never exposed to the caller. The host has already authenticated the caller and authorised the type.
+/// never exposed to the caller. The host has already authorised the caller for the type and checked that the request's
+/// capability view publishes it.
 /// </para>
 /// <para>
 /// <b>Contract.</b> The implementation must (1) build the backend path from <see cref="ResourceKey.Type"/> and
