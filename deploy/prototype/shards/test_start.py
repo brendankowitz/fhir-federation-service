@@ -474,7 +474,7 @@ class FlowTests(unittest.TestCase):
                 raise self.start.CleanupError(cleanup_error)
         return manager
 
-    def run_main(self, *flags, west_cleanup_error=None, sleep=None, east=None):
+    def run_main(self, *flags, west_cleanup_error=None, sleep=None, east=None, west=None):
         start, events = self.start, self.events
 
         class Stdout(io.StringIO):
@@ -495,7 +495,7 @@ class FlowTests(unittest.TestCase):
             for target, replacement in (
                     ("check_prerequisites", mock.Mock(return_value=prerequisites)),
                     ("private_localdb", east or self.resource("east", r"(localdb)\FedProtoabc")),
-                    ("west_catalog", self.resource("west", "FedProtoWest_x", west_cleanup_error)),
+                    ("west_catalog", west or self.resource("west", "FedProtoWest_x", west_cleanup_error)),
                     ("ignixa_command", mock.Mock(return_value=([], {}))),
                     ("microsoft_command", mock.Mock(return_value=([], {}))),
                     ("start_child", child), ("await_ready", ready),
@@ -592,6 +592,25 @@ class FlowTests(unittest.TestCase):
         self.assertIn("remove west", self.events, "the other cleanup still runs")
         self.assertIn("remove workdir", self.events)
 
+    def test_a_catalog_whose_identity_cannot_be_read_fails_the_run_and_is_named(self):
+        start, server = self.start, FakeDeveloperInstance()
+        real_west_catalog = start.west_catalog  # run_main replaces the module attribute with this very test double
+
+        @contextlib.contextmanager
+        def west():
+            with real_west_catalog() as name:
+                yield name
+                server.unreadable.add(name)  # by the time cleanup reads it, ownership can no longer be proven
+        with mock.patch.object(start, "run_tool", server):
+            status, out, err = self.run_main("--verify", west=west)
+        self.assertEqual(3, status)
+        self.assertEqual("", out)
+        self.assertRegex(err, r"FedProtoWest_[0-9a-f]{32}")
+        self.assertIn("left in place", err)
+        self.assertNotIn("verified", err)
+        self.assertEqual([], server.drops)
+        self.assertIn("remove workdir", self.events, "the other cleanup still runs")
+
     def test_interrupts_are_ignored_only_while_cleanup_runs(self):
         import start
         with preserved_signals():
@@ -626,7 +645,7 @@ class CleanupShieldingTests(unittest.TestCase):
                 return subprocess.CompletedProcess(argv, 0, " ".join(created).encode(), b"")
             if argv[0] == "sqlcmd":
                 query = argv[argv.index("-Q") + 1]
-                text = marker if ("create database [FedProtoWest" in query or "select isnull" in query) else ""
+                text = f"1 1 {marker}" if ("create database [FedProtoWest" in query or "from sys.databases" in query) else ""
                 return subprocess.CompletedProcess(argv, 0, text.encode(), b"")
             return subprocess.CompletedProcess(argv, 0, b"", b"")
         return run
@@ -790,6 +809,143 @@ class LocalDbInventoryTests(unittest.TestCase):
         with self.stub_tools(listings=[(0, b""), self.LISTS_CREATED]):
             self.enter_and_leave()
         self.assertEqual(["info", "create", "sqlcmd", "info", "stop", "delete"], self.calls)
+
+
+class FakeDeveloperInstance:
+    """Stands in for ``sqlcmd`` against the local Developer instance. No SQL Server is involved.
+
+    It answers only the statements ``west_catalog`` issues: create, the identity probe and the guarded drop. A catalog
+    is a name mapped to its ``database_guid``. A name in ``unreadable`` still exists but exposes no guid, as for a
+    database that is not online. The probe answers ``"<sees all> <exists> <guid>"``, where ``sees_all`` is whether the
+    caller may see every database; ``probe_stdout`` and ``probe_returncode`` let a test spoil what it answers.
+    """
+
+    def __init__(self):
+        self.databases, self.unreadable, self.drops = {}, set(), []
+        self.sees_all, self.probe_stdout, self.probe_returncode, self._serial = True, None, 0, 0
+
+    def __call__(self, argv, **kwargs):
+        query = argv[argv.index("-Q") + 1]
+        done = lambda code=0, out="": subprocess.CompletedProcess(argv, code, out.encode(), b"")
+        dropped = re.search(r"drop database \[([^\]]+)\]", query)
+        if dropped:
+            guard = re.search(r"database_guid='([^']+)'", query)
+            if self.databases.get(dropped[1]) != guard[1]:
+                return done(1)  # the guard's throw
+            del self.databases[dropped[1]]
+            self.drops.append(dropped[1])
+            return done()
+        created = re.search(r"create database \[([^\]]+)\]", query)
+        if created:
+            self._serial += 1
+            self.databases[created[1]] = f"00000000-0000-0000-0000-{self._serial:012d}"
+        name = re.search(r"db_id\(N'([^']+)'\)", query)[1]
+        if self.probe_returncode:
+            return done(self.probe_returncode)
+        if self.probe_stdout is not None:
+            return subprocess.CompletedProcess(argv, 0, self.probe_stdout, b"")
+        guid = "" if name not in self.databases or name in self.unreadable else self.databases[name]
+        return done(0, f"{int(self.sees_all)} {int(name in self.databases)} {guid}".strip())
+
+
+class CatalogOwnershipTests(unittest.TestCase):
+    """The west catalog is dropped only when it is proven to be the one this run created, against a SQL double.
+
+    A catalog that is verifiably gone is not an error. One whose identity cannot be read is neither dropped nor
+    reported as removed: ownership is unproven, so cleanup is incomplete and says so.
+    """
+
+    def setUp(self):
+        import start
+        self.start = start
+        self.server = FakeDeveloperInstance()
+        self.err = io.StringIO()
+        patches = contextlib.ExitStack()
+        patches.enter_context(mock.patch.object(start, "run_tool", self.server))
+        patches.enter_context(contextlib.redirect_stderr(self.err))
+        self.addCleanup(patches.close)
+
+    def run_catalog(self, change=lambda name: None):
+        with self.start.west_catalog() as name:
+            change(name)
+        return name
+
+    def test_the_catalog_this_run_created_is_dropped_while_it_is_still_ours(self):
+        name = self.run_catalog()
+        self.assertEqual([name], self.server.drops)
+        self.assertEqual({}, self.server.databases)
+
+    def test_a_catalog_verified_absent_is_reported_and_is_not_an_error(self):
+        name = self.run_catalog(lambda name: self.server.databases.pop(name))
+        self.assertEqual([], self.server.drops)
+        self.assertIn(f"west catalog {name} was already removed", self.err.getvalue())
+
+    def test_an_empty_listing_is_not_absence_when_the_caller_may_not_see_every_database(self):
+        """sys.databases hides other principals' offline databases from a caller without the visibility permissions."""
+        def hidden(name):
+            self.server.databases.pop(name)
+            self.server.sees_all = False
+        with self.assertRaises(self.start.CleanupError) as raised:
+            self.run_catalog(hidden)
+        self.assertRegex(str(raised.exception), r"FedProtoWest_[0-9a-f]{32}")
+        self.assertIn("manually", str(raised.exception))
+        self.assertNotIn("already removed", self.err.getvalue())
+        self.assertEqual([], self.server.drops)
+
+    def test_a_replaced_catalog_is_refused_and_left_in_place(self):
+        replacement = "99999999-9999-9999-9999-999999999999"
+        with self.assertRaisesRegex(self.start.CleanupError, r"FedProtoWest_[0-9a-f]{32} was replaced") as raised:
+            self.run_catalog(lambda name: self.server.databases.update({name: replacement}))
+        self.assertEqual([], self.server.drops)
+        self.assertEqual(replacement, next(iter(self.server.databases.values())), str(raised.exception))
+
+    def test_a_catalog_whose_identity_cannot_be_read_is_left_in_place_and_reported(self):
+        with self.assertRaises(self.start.CleanupError) as raised:
+            self.run_catalog(lambda name: self.server.unreadable.add(name))
+        message = str(raised.exception)
+        self.assertRegex(message, r"FedProtoWest_[0-9a-f]{32}")
+        self.assertIn("left in place", message)
+        self.assertIn("manually", message)
+        self.assertNotIn("replaced", message, "an unreadable identity is not a replacement")
+        self.assertNotIn("already removed", self.err.getvalue(), "it was not verified absent")
+        self.assertEqual([], self.server.drops)
+        self.assertEqual(1, len(self.server.databases), "an unproven catalog must never be dropped")
+
+    def test_an_identity_answer_that_cannot_be_trusted_is_never_taken_as_absence_or_ownership(self):
+        answers = {"nothing at all": b"", "sqlcmd error text": b"Msg 229, Level 14, State 5",
+                   "a truncated guid": b"1 1 1234",
+                   "a braced guid": b"1 1 {00000000-0000-0000-0000-000000000001}",
+                   "no visibility column": b"0", "a bad visibility flag": b"2 0", "trailing text": b"1 0 x",
+                   "undecodable bytes": b"\xff\xfe\x00"}
+        for label, stdout in answers.items():
+            with self.subTest(label):
+                self.server.drops.clear(), self.server.databases.clear()
+                self.server.probe_stdout = None
+                self.err.truncate(0), self.err.seek(0)
+
+                def spoil(name):
+                    self.server.probe_stdout = stdout
+                with self.assertRaises(self.start.CleanupError) as raised:
+                    self.run_catalog(spoil)
+                self.assertRegex(str(raised.exception), r"FedProtoWest_[0-9a-f]{32}")
+                self.assertIn("manually", str(raised.exception))
+                self.assertNotIn("already removed", self.err.getvalue())
+                self.assertEqual([], self.server.drops)
+
+    def test_an_identity_probe_that_cannot_run_names_the_catalog(self):
+        def probe_fails(name):
+            self.server.probe_returncode = 1
+        with self.assertRaisesRegex(self.start.CleanupError, r"FedProtoWest_[0-9a-f]{32} could not be removed"):
+            self.run_catalog(probe_fails)
+        self.assertEqual([], self.server.drops)
+
+    def test_a_new_catalog_whose_identity_is_not_proven_stops_the_launch_and_names_it(self):
+        for label, answer in (("unreadable", b"1"), ("reported absent", b"1 0"), ("visibility unknown", b"0 0")):
+            with self.subTest(label):
+                self.server.probe_stdout = answer
+                with self.assertRaisesRegex(self.start.LaunchError, r"FedProtoWest_[0-9a-f]{32}"):
+                    self.run_catalog()
+                self.assertEqual([], self.server.drops)
 
 
 

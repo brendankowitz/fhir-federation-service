@@ -253,7 +253,10 @@ def sql(server: str, database: str, query: str) -> str:
                      "-Q", "set nocount on; " + query], timeout=60)
     if done.returncode:
         raise LaunchError("SQL Server did not complete the requested operation")
-    return done.stdout.decode(errors="strict").strip()
+    try:
+        return done.stdout.decode(errors="strict").strip()
+    except UnicodeDecodeError:
+        raise LaunchError("SQL Server produced output that could not be read") from None
 
 
 @contextlib.contextmanager
@@ -312,32 +315,63 @@ def run_checked(argv: list[str], failure: str, *, cleanup: bool = False) -> None
         raise error(failure)
 
 
+CATALOG_ABSENT = "absent"
+_GUID = r"[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}"
+
+
+def read_identity(answer: str) -> str | None:
+    """Interpret an identity probe answer ``"<sees all> <0 | 1 [guid]>"``: CATALOG_ABSENT, the database_guid, or None.
+
+    None means ownership is unproven. An empty listing counts as absence only when the caller is known to see every
+    database, because sys.databases hides other principals' offline databases from callers without the permissions the
+    probe tests. The GUID must have the 8-4-4-4-12 shape; hex case does not change the identity.
+    """
+    match = re.fullmatch(rf"([01]) (?:0|1 ({_GUID}))", answer)
+    if not match:
+        return None
+    sees_all, guid = match.groups()
+    if guid:
+        return guid.upper()
+    return CATALOG_ABSENT if sees_all == "1" else None
+
+
 @contextlib.contextmanager
 def west_catalog():
     """Create a fresh catalog on the Developer instance; drop it only if it is still the catalog created here.
 
-    Raises CleanupError, leaving any replacement untouched, when the name now belongs to a different database,
-    and when the catalog cannot be removed; the message always names the catalog.
+    Only a catalog the server verifiably reports as absent is ignored. Raises CleanupError, leaving the database
+    untouched, when the name now belongs to a different database, when its identity cannot be read (ownership is
+    unproven), and when the catalog cannot be removed; the message always names the catalog.
     """
     name = "FedProtoWest_" + uuid.uuid4().hex
-    guid_of = ("select isnull((select convert(varchar(36), database_guid) from sys.database_recovery_status "
-               f"where database_id=db_id(N'{name}')), '')")
+    # One answer carries the three facts read_identity needs. The caller sees every database, offline ones included,
+    # when it holds ALTER ANY DATABASE (server) or CREATE DATABASE (master); a missing permission yields 0 or NULL,
+    # never 1. The guid is empty when the database exposes none, for example when it is not online.
+    identity = ("select case when has_perms_by_name(null, null, 'ALTER ANY DATABASE') = 1 "
+                "or has_perms_by_name(N'master', 'DATABASE', 'CREATE DATABASE') = 1 then 1 else 0 end, "
+                f"(select count(*) from sys.databases where name=N'{name}'), "
+                "isnull((select convert(varchar(36), database_guid) from sys.database_recovery_status "
+                f"where database_id=db_id(N'{name}')), '')")
     try:
-        marker = sql(DEVELOPER_SERVER, "master",
-                     f"if db_id(N'{name}') is not null throw 50001, 'Name already in use', 1; create database [{name}]; {guid_of}")
+        marker = read_identity(sql(DEVELOPER_SERVER, "master",
+                                   f"if db_id(N'{name}') is not null throw 50001, 'Name already in use', 1; "
+                                   f"create database [{name}]; {identity}"))
     except BaseException:
-        # An interrupt or timeout can land after the server created it; without its GUID it is not safe to drop.
+        # A timeout or failure can land after the server created it; without its GUID it is not safe to drop.
         log(f"west catalog {name} may exist because its creation did not finish; if it does, remove it manually")
         raise
-    if not re.fullmatch(r"[0-9A-Fa-f-]{36}", marker):
+    if marker in (None, CATALOG_ABSENT):
         raise LaunchError(f"could not identify the new catalog; it may need manual removal: {name}")
     try:
         yield name
     finally:
         try:
-            current = sql(DEVELOPER_SERVER, "master", guid_of)
-            if current == "":
+            current = read_identity(sql(DEVELOPER_SERVER, "master", identity))
+            if current == CATALOG_ABSENT:
                 log(f"west catalog {name} was already removed")
+            elif current is None:
+                raise CleanupError(f"west catalog {name} could not be identified as the one this run created; "
+                                   "left in place, remove it manually if it is yours")
             elif current != marker:
                 raise CleanupError(f"west catalog {name} was replaced by another database; left in place")
             else:

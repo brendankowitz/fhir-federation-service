@@ -106,8 +106,13 @@ any other placeholder host fails the launch.
   transport statement, not a certificate-validation bypass.
 - The Developer instance is touched only through `lpc:localhost` and only for one new catalog named
   `FedProtoWest_<guid>`. Its `database_guid` is recorded at creation, and cleanup drops the catalog only if
-  the GUID still matches. A missing catalog is reported and ignored; a replaced one is refused and left in
-  place. No other database is read or written.
+  the GUID still matches. Only a catalog the server verifiably reports as absent is ignored (and reported), and
+  an empty listing counts as absent only when the probe proves the login can see every database, offline ones
+  included (ALTER ANY DATABASE on the server, or CREATE DATABASE in `master`); otherwise `sys.databases` may be
+  hiding it. A replaced catalog, one whose identity cannot be read, and one whose absence cannot be proven are
+  refused and left in place; stderr names the catalog so you can remove it by hand once you know it is yours, and
+  the launcher exits `3` if the run had otherwise succeeded (a run that already failed keeps its own exit code).
+  No other database is read or written.
 - The east database lives on a private `FedProto<hex>` LocalDB instance created and deleted by the launcher.
 - Children receive an allow-listed environment (no inherited host overrides, credentials or proxies) and a
   fresh temporary working folder; their authority is an unroutable `.invalid` placeholder.
