@@ -60,8 +60,12 @@ printed to stdout (progress and diagnostics go to stderr):
 
 The process then stays in the foreground. **Ctrl+C or Ctrl+Break** stops both servers and removes every
 resource the launcher created. Pressing it during startup does the same for whatever exists by then, and
-exits `130`. While cleanup runs, further Ctrl+C/Ctrl+Break presses are ignored, and the `SqlLocalDB` and `sqlcmd`
-cleanup commands run on a hidden console of their own so a press cannot kill them either.
+exits `130`. A press is recorded the moment it arrives and acted on at the next safe point in the launcher (after each
+resource is registered for cleanup, before each child start, and on every readiness or run-loop pass), so it can never
+interrupt a resource halfway between being created and being registered. While a tool such as `sqlcmd` is running, the
+launcher acts on the press once that tool returns, at most its own timeout later. Repeated presses are harmless. While
+cleanup runs, presses are ignored. Setup and cleanup helpers such as `SqlLocalDB` and `sqlcmd` do not share the
+launcher's console, so a press cannot cut them off before the launcher can establish what they created.
 
 `--verify` runs the identical launch, seed and live reads, then stops and cleans up. It prints
 `{"verified": true}` only after cleanup has finished without a problem; if any resource could not be removed

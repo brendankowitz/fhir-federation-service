@@ -155,21 +155,52 @@ def preserved_signals():
             signal.signal(sig, handler)
 
 
+LAUNCHER_STOP_SECONDS = 120  # bounded graceful teardown: the launcher's own cleanup stops hosts and removes SQL state
+
+
+def stop_launcher(proc):
+    """Give the launcher time to clean up its resources; force only the process this test holds a handle to."""
+    if proc.poll() is not None:
+        return
+    try:
+        proc.send_signal(signal.CTRL_BREAK_EVENT)
+    except OSError as error:
+        if proc.poll() is not None:
+            return  # it exited between the check and the signal
+        reason = error
+    else:
+        try:
+            proc.wait(timeout=LAUNCHER_STOP_SECONDS)
+            return
+        except subprocess.TimeoutExpired as error:
+            reason = error
+    if proc.poll() is None:
+        proc.kill()
+        proc.wait(timeout=30)
+        raise RuntimeError(f"launcher {proc.pid} was force-stopped; shard cleanup may be incomplete") from reason
+
+
 class RunningLauncher:
     """start.py in run mode, in its own process group so the test can send it Ctrl+Break."""
 
     def __init__(self):
+        self.proc = None
         self._stderr = tempfile.TemporaryFile()
-        self.proc = subprocess.Popen(launcher_args(), stdout=subprocess.PIPE, stderr=self._stderr, text=True,
-                                     creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
-        first = queue.Queue()
-        threading.Thread(target=lambda: first.put(self.proc.stdout.readline()), daemon=True).start()
         try:
-            self.line = first.get(timeout=600)
-        except queue.Empty:
-            self.line = ""
-            self.proc.kill()
-        self.endpoints = json.loads(self.line) if self.line else None
+            self.proc = subprocess.Popen(launcher_args(), stdout=subprocess.PIPE, stderr=self._stderr, text=True,
+                                         creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
+            first = queue.Queue()
+            threading.Thread(target=lambda: first.put(self.proc.stdout.readline()), daemon=True).start()
+            try:
+                self.line = first.get(timeout=600)
+            except queue.Empty:
+                self.line = ""
+            self.endpoints = json.loads(self.line) if self.line else None
+            if not self.line:
+                stop_launcher(self.proc)  # the caller reads stderr for the reason, then close()s
+        except BaseException:
+            self.close()
+            raise
 
     def stderr(self):
         self._stderr.seek(0)
@@ -183,16 +214,17 @@ class RunningLauncher:
         try:
             return self.proc.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
-            self.proc.kill()
-            self.proc.wait(timeout=30)
+            stop_launcher(self.proc)
             raise
 
     def close(self):
-        if self.proc.poll() is None:
-            self.proc.kill()
-            self.proc.wait(timeout=30)
-        self.proc.stdout.close()
-        self._stderr.close()
+        try:
+            if self.proc is not None:
+                stop_launcher(self.proc)
+        finally:
+            if self.proc is not None and self.proc.stdout is not None:
+                self.proc.stdout.close()
+            self._stderr.close()
 
 
 # Test-side harness that runs the real launcher in its own process and parks it at a named point, so a test
@@ -226,7 +258,8 @@ def hold(*resources):
     print("BARRIER", point, *east, *resources, file=sys.stderr, flush=True)
     deadline = time.monotonic() + 300
     while time.monotonic() < deadline:
-        time.sleep(0.05)  # Ctrl+Break raises KeyboardInterrupt here, through the real cleanup stack
+        time.sleep(0.05)
+        start.checkpoint()  # a recorded Ctrl+Break is acted on here, through the real cleanup stack
     raise SystemExit(99)
 
 
@@ -592,6 +625,16 @@ class FlowTests(unittest.TestCase):
         self.assertIn("remove west", self.events, "the other cleanup still runs")
         self.assertIn("remove workdir", self.events)
 
+    def test_an_interrupt_in_run_mode_stops_and_cleans_up_through_the_real_handlers(self):
+        for sig in (signal.SIGINT, signal.SIGBREAK):
+            with self.subTest(signal=sig.name):
+                self.events.clear()
+                status, out, err = self.run_main(sleep=lambda seconds: signal.raise_signal(sig))
+                self.assertEqual(0, status, err)
+                self.assertEqual(1, len(out.splitlines()), "the bases are printed once")
+                self.assertEqual(["remove west", "remove east", "remove workdir"],
+                                 [e for e in self.events if e.startswith("remove ")])
+
     def test_a_catalog_whose_identity_cannot_be_read_fails_the_run_and_is_named(self):
         start, server = self.start, FakeDeveloperInstance()
         real_west_catalog = start.west_catalog  # run_main replaces the module attribute with this very test double
@@ -687,6 +730,13 @@ class CleanupShieldingTests(unittest.TestCase):
                 self.start.run_tool(["SqlLocalDB", "info"], timeout=5)
             self.start.run_tool(["SqlLocalDB", "info"], timeout=5)
         self.assertEqual([0, self.NO_WINDOW, self.NO_WINDOW, 0], [flags for _, _, flags, _ in calls])
+
+    def test_setup_tools_in_the_launcher_do_not_share_its_interruptible_console(self):
+        calls = []
+        with preserved_signals(), self.start.interrupt_policy(), \
+                mock.patch.object(self.start.subprocess, "run", self.fake_tools(calls)):
+            self.start.run_tool(["SqlLocalDB", "info"], timeout=5)
+        self.assertEqual([self.NO_WINDOW], [flags for _, _, flags, _ in calls])
 
     def test_a_failing_cleanup_tool_is_still_reported_not_swallowed(self):
         def stop_fails(argv, **kwargs):
@@ -947,6 +997,201 @@ class CatalogOwnershipTests(unittest.TestCase):
                     self.run_catalog()
                 self.assertEqual([], self.server.drops)
 
+
+class StartupInterruptTests(unittest.TestCase):
+    """A Ctrl+C or Ctrl+Break pressed while something is created must still reach that thing's cleanup.
+
+    Each signal is delivered with ``signal.raise_signal``, which runs the installed handler in the main thread
+    before it returns, at the point where a creation call is about to hand its result back: the instant the
+    resource exists but is not yet registered. No tool, SQL Server or shard host starts in these cases.
+    A real console event reaches the same handler; the opt-in native tests exercise that path.
+    """
+
+    SIGNALS = (signal.SIGINT, signal.SIGBREAK)
+
+    class Host:
+        """A started-process double that records how it is stopped."""
+
+        def __init__(self, label, events):
+            self.label, self.events, self.running = label, events, True
+
+        def poll(self):
+            return None if self.running else 0
+
+        def terminate(self):
+            self.events.append("terminate " + self.label)
+            self.running = False
+
+        def wait(self, timeout=None):
+            return 0
+
+        def kill(self):
+            self.events.append("kill " + self.label)
+
+    class AfterEnter:
+        """Delivers the interrupt just as the wrapped resource finishes entering, before the caller sees it."""
+
+        def __init__(self, manager, deliver):
+            self.manager, self.deliver = manager, deliver
+
+        def __enter__(self):
+            value = self.manager.__enter__()
+            self.deliver()
+            return value
+
+        def __exit__(self, *exception):
+            return self.manager.__exit__(*exception)
+
+    def setUp(self):
+        import start
+        self.start = start
+        self.events = []
+        self.root = Path(tempfile.mkdtemp(prefix="fed-test-"))
+        self.addCleanup(shutil.rmtree, self.root, True)
+
+    def run_serve(self, at, *signals, during_shutdown=()):
+        """Run ``start.serve``, pressing ``signals`` as ``at`` ("workdir", "east", "west", "host 1" or "host 2") is created.
+
+        ``during_shutdown`` is pressed at the first instant of cleanup, before the shield that ignores signals is up.
+        The run must end in KeyboardInterrupt, with the folder gone and the signal handlers restored.
+        """
+        start, events, hosts = self.start, self.events, []
+        interrupt = lambda: [signal.raise_signal(s) for s in signals]
+        real_mkdtemp, real_remove, real_deferred = tempfile.mkdtemp, start.remove_tree, start.interrupts_deferred
+
+        @contextlib.contextmanager
+        def deferred():
+            [signal.raise_signal(s) for s in during_shutdown]
+            with real_deferred():
+                yield
+
+        def mkdtemp(prefix):
+            path = real_mkdtemp(prefix=prefix, dir=self.root)
+            if at == "workdir":
+                interrupt()
+            return path
+
+        def resource(name):
+            @contextlib.contextmanager
+            def manager():
+                events.append("create " + name)
+                try:
+                    yield name
+                finally:
+                    events.append("remove " + name)
+            return self.AfterEnter(manager(), interrupt) if at == name else manager()
+
+        def popen(argv, **kwargs):
+            hosts.append(self.Host(argv[0], events))
+            events.append("start " + argv[0])
+            if at == f"host {len(hosts)}":
+                interrupt()
+            return hosts[-1]
+
+        prerequisites = start.Prerequisites(Path("dotnet.exe"), Path("i.dll"), Path("m.dll"), Path("curl.exe"))
+        caught, problems = None, []
+        with preserved_signals(), contextlib.ExitStack() as patches:
+            for sig in self.SIGNALS:
+                signal.signal(sig, signal.default_int_handler)  # what the interpreter and main() leave in place
+            before = [signal.getsignal(sig) for sig in self.SIGNALS]
+            for target, replacement in (
+                    ("private_localdb", lambda workdir: resource("east")), ("west_catalog", lambda: resource("west")),
+                    ("ignixa_command", mock.Mock(return_value=(["east-host"], {}))),
+                    ("microsoft_command", mock.Mock(return_value=(["west-host"], {}))),
+                    ("remove_tree", lambda path: (real_remove(path), events.append("remove workdir"))),
+                    ("interrupts_deferred", deferred)):
+                patches.enter_context(mock.patch.object(start, target, replacement))
+            patches.enter_context(mock.patch.object(start.tempfile, "mkdtemp", mkdtemp))
+            patches.enter_context(mock.patch.object(start.subprocess, "Popen", popen))
+            try:
+                start.serve(prerequisites, False, problems)
+            except KeyboardInterrupt as error:
+                caught = error  # keeps the traceback frames alive until the checks below have run
+            self.assertIsNotNone(caught, "the interrupt must still end the run")
+            self.assertEqual(before, [signal.getsignal(sig) for sig in self.SIGNALS], "the run must restore the handlers")
+        self.assertEqual([], problems)
+        self.assertEqual([], list(self.root.iterdir()), "the working directory must be gone")
+
+    def test_an_interrupt_as_anything_is_created_still_removes_everything_in_reverse_order(self):
+        """One run per creation point, pressing Ctrl+C, Ctrl+Break and Ctrl+C again as the thing comes into being."""
+        host1, host2 = ["start east-host", "terminate east-host"], ["start east-host", "start west-host", "terminate west-host", "terminate east-host"]
+        both = ["create east", "create west"]
+        for at, expected in (
+                ("workdir", ["remove workdir"]),
+                ("east", ["create east", "remove east", "remove workdir"]),
+                ("west", [*both, "remove west", "remove east", "remove workdir"]),
+                ("host 1", [*both, *host1, "remove west", "remove east", "remove workdir"]),
+                ("host 2", [*both, *host2, "remove west", "remove east", "remove workdir"])):
+            with self.subTest(at=at):
+                self.events.clear()
+                self.run_serve(at, signal.SIGINT, signal.SIGBREAK, signal.SIGINT)
+                self.assertEqual(expected, self.events)
+
+    def test_presses_as_cleanup_begins_cannot_skip_it(self):
+        """The window between the failing launch and the cleanup shield, and presses inside the cleanup itself."""
+        self.run_serve("host 1", signal.SIGINT, during_shutdown=(signal.SIGINT, signal.SIGBREAK))
+        self.assertEqual(["create east", "create west", "start east-host", "terminate east-host",
+                          "remove west", "remove east", "remove workdir"], self.events)
+
+    def test_the_policy_records_presses_without_raising_and_restores_the_handlers(self):
+        with preserved_signals():
+            for sig in self.SIGNALS:
+                signal.signal(sig, signal.default_int_handler)
+            with self.start.interrupt_policy():
+                self.start.checkpoint()
+                for sig in (*self.SIGNALS, *self.SIGNALS):
+                    signal.raise_signal(sig)  # no exception from the handler, wherever it lands
+                with self.assertRaises(KeyboardInterrupt):
+                    self.start.checkpoint()
+            self.assertEqual([signal.default_int_handler] * 2, [signal.getsignal(sig) for sig in self.SIGNALS])
+            with self.start.interrupt_policy():
+                self.start.checkpoint()  # a new run does not inherit the previous run's request
+
+
+class LauncherTeardownTests(unittest.TestCase):
+    def test_close_gives_the_owned_launcher_a_bounded_grace_period_before_force(self):
+        timeout = subprocess.TimeoutExpired("launcher", LAUNCHER_STOP_SECONDS)
+        for graceful_result in (0, timeout):
+            with self.subTest(graceful_result=graceful_result):
+                proc = mock.Mock(pid=1)
+                proc.stdout = io.StringIO('{"east": "https://localhost:1", "west": "https://localhost:2"}\n')
+                proc.poll.return_value = None
+                proc.wait.side_effect = [graceful_result, 0]
+                with mock.patch.object(subprocess, "Popen", return_value=proc):
+                    run = RunningLauncher()
+                expected = [mock.call.poll(), mock.call.send_signal(signal.CTRL_BREAK_EVENT),
+                            mock.call.wait(timeout=LAUNCHER_STOP_SECONDS)]
+                if graceful_result is timeout:
+                    with self.assertRaisesRegex(RuntimeError, "cleanup may be incomplete"):
+                        run.close()
+                    expected += [mock.call.poll(), mock.call.kill(), mock.call.wait(timeout=30)]
+                else:
+                    run.close()
+                self.assertEqual(expected, proc.mock_calls)
+                self.assertTrue(proc.stdout.closed and run._stderr.closed)
+
+    def test_signal_error_does_not_skip_stopping_a_still_running_launcher(self):
+        for exited in (True, False):
+            with self.subTest(exited=exited):
+                proc = mock.Mock(pid=1)
+                proc.poll.return_value = None
+                proc.send_signal.side_effect = OSError("signalling failed")
+                if exited:
+                    proc.poll.side_effect = [None, 0]
+                    stop_launcher(proc)
+                    proc.kill.assert_not_called()
+                else:
+                    with self.assertRaisesRegex(RuntimeError, "cleanup may be incomplete"):
+                        stop_launcher(proc)
+                    proc.kill.assert_called_once_with()
+
+    def test_a_launcher_that_cannot_be_started_leaves_no_open_handle(self):
+        handle = io.BytesIO()
+        with mock.patch.object(tempfile, "TemporaryFile", return_value=handle), \
+                mock.patch.object(subprocess, "Popen", side_effect=FileNotFoundError("python")):
+            with self.assertRaises(FileNotFoundError):
+                RunningLauncher()
+        self.assertTrue(handle.closed)
 
 
 class SeedingTests(unittest.TestCase):

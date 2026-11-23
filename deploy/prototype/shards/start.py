@@ -65,15 +65,17 @@ def child_environment() -> dict[str, str]:
 
 _cleanup_running = False
 
+# None outside serve(); otherwise records a Ctrl+C or Ctrl+Break request.
+_stop_requested: bool | None = None
+
 
 def run_tool(argv: list[str], *, timeout: int, stdin: bytes | None = None) -> subprocess.CompletedProcess[bytes]:
-    """Run a helper tool. During cleanup (see ``interrupts_deferred``) the tool gets no console of its own to share.
+    """Run a helper tool without exposing setup or cleanup commands to the launcher's console signals.
 
-    A console Ctrl+C / Ctrl+Break reaches every process attached to the launcher's console, so a cleanup tool left on
-    it would be killed by the very interrupt cleanup is shielding itself from. CREATE_NO_WINDOW starts it on a hidden
-    console instead. Startup tools keep the shared console and stay interruptible.
+    A tool on the launcher's console can be interrupted before it returns the identity of a resource it just created.
+    CREATE_NO_WINDOW isolates that operation without changing its standard streams.
     """
-    flags = subprocess.CREATE_NO_WINDOW if _cleanup_running else 0
+    flags = subprocess.CREATE_NO_WINDOW if _cleanup_running or _stop_requested is not None else 0
     try:
         return subprocess.run(argv, input=stdin, capture_output=True, timeout=timeout, env=child_environment(),
                               creationflags=flags)
@@ -422,6 +424,7 @@ def await_ready(child: Child, curl: Path, path_suffix: str, deadline: float) -> 
     """Wait for the child's loopback port, then for a real CapabilityStatement."""
     listening = re.compile(r"Now listening on: https://127\.0\.0\.1:(\d+)")
     while time.monotonic() < deadline:
+        checkpoint()
         if child.process.poll() is not None:
             raise LaunchError(f"{child.label} exited with code {child.process.returncode} before it was ready "
                               f"(exception types: {child.exception_types()})")
@@ -519,15 +522,50 @@ def remove_tree(path: Path) -> None:
 def serve(prereq: Prerequisites, verify_only: bool, problems: list[str]) -> int:
     """Launch, seed and read; in run mode print the bases and wait. Everything created is removed before returning.
 
-    Returns 0 after a verified ``--verify`` pass or a Ctrl+C stop. Cleanup shields itself from further interrupts so a
-    second Ctrl+C cannot abandon it half way; failures are appended to ``problems``.
+    Returns 0 after a verified ``--verify`` pass or a Ctrl+C stop; failures are appended to ``problems``.
+
+    While this runs, Ctrl+C and Ctrl+Break only record that a stop was requested (see interrupt_policy); the run
+    acts on it at checkpoint() calls, each placed right after something was registered for cleanup or inside a wait.
+    So no signal can raise between a resource's creation and its registration, nor inside the cleanup in the
+    ``finally``, however many arrive or when.
     """
     stack = contextlib.ExitStack()
+    with interrupt_policy():
+        try:
+            return launch(stack, prereq, verify_only, problems)
+        finally:
+            with interrupts_deferred():
+                stack.close()
+
+
+def _record_stop_request(signum, frame) -> None:
+    global _stop_requested
+    _stop_requested = True
+
+
+def checkpoint() -> None:
+    """Raise KeyboardInterrupt if a stop was requested; called only where everything created so far is registered."""
+    if _stop_requested:
+        raise KeyboardInterrupt
+
+
+@contextlib.contextmanager
+def interrupt_policy():
+    """Make Ctrl+C and Ctrl+Break record a stop request instead of raising, restoring the old handlers afterwards.
+
+    A raising handler can fire between any two bytecodes, including between ``mkdtemp`` returning and its cleanup
+    being registered. A recording handler cannot, which also makes repeated presses harmless.
+    """
+    global _stop_requested
+    signals = (signal.SIGINT, signal.SIGBREAK)
+    previous, _stop_requested = _stop_requested, False
+    saved = [signal.signal(s, _record_stop_request) for s in signals]
     try:
-        return launch(stack, prereq, verify_only, problems)
+        yield
     finally:
-        with interrupts_deferred():
-            stack.close()
+        for s, handler in zip(signals, saved):
+            signal.signal(s, handler)
+        _stop_requested = previous
 
 
 @contextlib.contextmanager
@@ -552,19 +590,24 @@ def interrupts_deferred():
 def launch(stack: contextlib.ExitStack, prereq: Prerequisites, verify_only: bool, problems: list[str]) -> int:
     workdir = Path(tempfile.mkdtemp(prefix="fed-shards-"))
     stack.callback(guarded, problems, "working directory", remove_tree, workdir)
+    checkpoint()
     east_folder, west_folder = workdir / "east", workdir / "west"
     east_folder.mkdir(), west_folder.mkdir()
 
     east_server = stack.enter_context(guarded_context(problems, "east LocalDB", private_localdb(workdir)))
+    checkpoint()
     catalog = stack.enter_context(guarded_context(problems, "west catalog", west_catalog()))
+    checkpoint()
 
     children = []
     for label, folder, (argv, env) in (
             ("east (Ignixa)", east_folder, ignixa_command(prereq, east_server, east_folder)),
             ("west (Microsoft)", west_folder, microsoft_command(prereq, catalog, west_folder))):
+        checkpoint()
         child = start_child(label, argv, env, folder)
         stack.callback(guarded, problems, f"stop {label}", child.stop)
         children.append(child)
+        checkpoint()
 
     deadline = time.monotonic() + STARTUP_BUDGET_SECONDS
     east = await_ready(children[0], prereq.curl, "/tenant/1", deadline)
@@ -574,15 +617,19 @@ def launch(stack: contextlib.ExitStack, prereq: Prerequisites, verify_only: bool
     east_resources, west_resources = collision_corpus(east.base)
     for endpoint, resources in ((east, east_resources), (west, west_resources)):
         for resource in resources:
+            checkpoint()
             endpoint.put(resource)
+    checkpoint()
     verify(east, west)
 
     if verify_only:
+        checkpoint()
         return 0  # main reports success once cleanup has finished and succeeded
     print(json.dumps({"east": east.base, "west": west.base}), flush=True)
     log("serving; press Ctrl+C to stop and clean up")
     try:
         while True:
+            checkpoint()
             for child in children:
                 if child.process.poll() is not None:
                     raise LaunchError(f"{child.label} exited with code {child.process.returncode} after it was ready")
