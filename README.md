@@ -54,20 +54,20 @@ FHIR R4 is the only certified release today. The VP1 follow-up will make search 
 
 | Capability | Status | Spec |
 |---|---|---|
-| .NET solution, shard registry contract, identity types, and options validation | Done ([#4](https://github.com/brendankowitz/fhir-federation-service/pull/4)) | [§4.2](docs/superpowers/specs/2026-11-19-fhir-federation-service-design.md#42-shard-registry), [§12.1](docs/superpowers/specs/2026-11-19-fhir-federation-service-design.md#121-projects) |
-| CI, health endpoints, and telemetry foundations | Done ([#4](https://github.com/brendankowitz/fhir-federation-service/pull/4)) | [§14](docs/superpowers/specs/2026-11-19-fhir-federation-service-design.md#14-observability), [§16](docs/superpowers/specs/2026-11-19-fhir-federation-service-design.md#16-phases) |
-| Query planner, classifier, rewriter, and reference classifier | Done ([#10](https://github.com/brendankowitz/fhir-federation-service/pull/10), [#12](https://github.com/brendankowitz/fhir-federation-service/pull/12)) | [§6](docs/superpowers/specs/2026-11-19-fhir-federation-service-design.md#6-search-planning), [§7.7](docs/superpowers/specs/2026-11-19-fhir-federation-service-design.md#77-reference-classifier-shared) |
-| Unsorted primary page executor | Done ([#9](https://github.com/brendankowitz/fhir-federation-service/pull/9)) | [§7.1](docs/superpowers/specs/2026-11-19-fhir-federation-service-design.md#71-primary-search-and-emission-order) |
-| Forward include, reverse include, distributed forward chains, and `_has` | Done ([#13](https://github.com/brendankowitz/fhir-federation-service/pull/13), [#15](https://github.com/brendankowitz/fhir-federation-service/pull/15), [#18](https://github.com/brendankowitz/fhir-federation-service/pull/18)) | [§7.5](docs/superpowers/specs/2026-11-19-fhir-federation-service-design.md#75-chains-and-_has-depth-1), [§7.6](docs/superpowers/specs/2026-11-19-fhir-federation-service-design.md#76-includes-and-revincludes-targeted-per-page) |
-| Sorted `_lastUpdated` page executor | Done ([#16](https://github.com/brendankowitz/fhir-federation-service/pull/16)) | [§7.3](docs/superpowers/specs/2026-11-19-fhir-federation-service-design.md#73-merge-sorted) |
-| Exact federated count execution | Done ([#14](https://github.com/brendankowitz/fhir-federation-service/pull/14)) | [§7.1](docs/superpowers/specs/2026-11-19-fhir-federation-service-design.md#71-primary-search-and-emission-order), [§7.2](docs/superpowers/specs/2026-11-19-fhir-federation-service-design.md#72-count-only) |
-| Authenticated FHIR R4 search API, `/metadata`, and Redis continuations | In review ([#17](https://github.com/brendankowitz/fhir-federation-service/pull/17)) | [§5](docs/superpowers/specs/2026-11-19-fhir-federation-service-design.md#5-request-surface), [§7.4](docs/superpowers/specs/2026-11-19-fhir-federation-service-design.md#74-continuation-tokens), [§9](docs/superpowers/specs/2026-11-19-fhir-federation-service-design.md#9-capabilities), [§10](docs/superpowers/specs/2026-11-19-fhir-federation-service-design.md#10-security) |
-| Verified HTTPS shard backend and configuration | In review ([#19](https://github.com/brendankowitz/fhir-federation-service/pull/19)) | [§6.2](docs/superpowers/specs/2026-11-19-fhir-federation-service-design.md#62-backend-strictness-fail-closed-on-dropped-filters), [§9.2](docs/superpowers/specs/2026-11-19-fhir-federation-service-design.md#92-backend-profiles), [§10.2](docs/superpowers/specs/2026-11-19-fhir-federation-service-design.md#102-backend-credentials) |
-| Sample client | Done ([#8](https://github.com/brendankowitz/fhir-federation-service/pull/8)); scripted tests only | [samples/README.md](samples/README.md) |
-| Live backend compatibility and differential federation tests | Planned | [§15](docs/superpowers/specs/2026-11-19-fhir-federation-service-design.md#15-testing) |
-| Load tests at 16 and 50 shards | Planned | [§3](docs/superpowers/specs/2026-11-19-fhir-federation-service-design.md#3-constraints), [§15](docs/superpowers/specs/2026-11-19-fhir-federation-service-design.md#15-testing) |
-| Search version-provider selection via `Federation:Version` (VP1) | Planned | [§17](docs/superpowers/specs/2026-11-19-fhir-federation-service-design.md#17-left-to-the-builder) |
-| Write placement, import/export, and shard rebalancing | Proposed for vNext; not implemented | [Write placement](docs/vnext/write-placement.md), [Import and export](docs/vnext/import-export.md), [vNext overview](docs/vnext/README.md) |
+| 🏗️ .NET solution, shard registry contract, identity types, and options validation | Done ([#4](https://github.com/brendankowitz/fhir-federation-service/pull/4)) | [§4.2](docs/superpowers/specs/2026-11-19-fhir-federation-service-design.md#42-shard-registry), [§12.1](docs/superpowers/specs/2026-11-19-fhir-federation-service-design.md#121-projects) |
+| 📊 CI, health endpoints, and telemetry foundations | Done ([#4](https://github.com/brendankowitz/fhir-federation-service/pull/4)) | [§14](docs/superpowers/specs/2026-11-19-fhir-federation-service-design.md#14-observability), [§16](docs/superpowers/specs/2026-11-19-fhir-federation-service-design.md#16-phases) |
+| 🔎 Query planner, classifier, rewriter, and reference classifier | Done ([#10](https://github.com/brendankowitz/fhir-federation-service/pull/10), [#12](https://github.com/brendankowitz/fhir-federation-service/pull/12)) | [§6](docs/superpowers/specs/2026-11-19-fhir-federation-service-design.md#6-search-planning), [§7.7](docs/superpowers/specs/2026-11-19-fhir-federation-service-design.md#77-reference-classifier-shared) |
+| 🔎 Unsorted primary page executor | Done ([#9](https://github.com/brendankowitz/fhir-federation-service/pull/9)) | [§7.1](docs/superpowers/specs/2026-11-19-fhir-federation-service-design.md#71-primary-search-and-emission-order) |
+| 🔎 Forward include, reverse include, distributed forward chains, and `_has` | Done ([#13](https://github.com/brendankowitz/fhir-federation-service/pull/13), [#15](https://github.com/brendankowitz/fhir-federation-service/pull/15), [#18](https://github.com/brendankowitz/fhir-federation-service/pull/18)) | [§7.5](docs/superpowers/specs/2026-11-19-fhir-federation-service-design.md#75-chains-and-_has-depth-1), [§7.6](docs/superpowers/specs/2026-11-19-fhir-federation-service-design.md#76-includes-and-revincludes-targeted-per-page) |
+| 🧭 Sorted `_lastUpdated` page executor | Done ([#16](https://github.com/brendankowitz/fhir-federation-service/pull/16)) | [§7.3](docs/superpowers/specs/2026-11-19-fhir-federation-service-design.md#73-merge-sorted) |
+| 🧭 Exact federated count execution | Done ([#14](https://github.com/brendankowitz/fhir-federation-service/pull/14)) | [§7.1](docs/superpowers/specs/2026-11-19-fhir-federation-service-design.md#71-primary-search-and-emission-order), [§7.2](docs/superpowers/specs/2026-11-19-fhir-federation-service-design.md#72-count-only) |
+| 🛡️ Authenticated FHIR R4 search API, `/metadata`, and Redis continuations | In review ([#17](https://github.com/brendankowitz/fhir-federation-service/pull/17)) | [§5](docs/superpowers/specs/2026-11-19-fhir-federation-service-design.md#5-request-surface), [§7.4](docs/superpowers/specs/2026-11-19-fhir-federation-service-design.md#74-continuation-tokens), [§9](docs/superpowers/specs/2026-11-19-fhir-federation-service-design.md#9-capabilities), [§10](docs/superpowers/specs/2026-11-19-fhir-federation-service-design.md#10-security) |
+| 🛡️ Verified HTTPS shard backend and configuration | In review ([#19](https://github.com/brendankowitz/fhir-federation-service/pull/19)) | [§6.2](docs/superpowers/specs/2026-11-19-fhir-federation-service-design.md#62-backend-strictness-fail-closed-on-dropped-filters), [§9.2](docs/superpowers/specs/2026-11-19-fhir-federation-service-design.md#92-backend-profiles), [§10.2](docs/superpowers/specs/2026-11-19-fhir-federation-service-design.md#102-backend-credentials) |
+| 💻 Sample client | Done ([#8](https://github.com/brendankowitz/fhir-federation-service/pull/8)); scripted tests only | [samples/README.md](samples/README.md) |
+| 🧪 Live backend compatibility and differential federation tests | Planned | [§15](docs/superpowers/specs/2026-11-19-fhir-federation-service-design.md#15-testing) |
+| 🧪 Load tests at 16 and 50 shards | Planned | [§3](docs/superpowers/specs/2026-11-19-fhir-federation-service-design.md#3-constraints), [§15](docs/superpowers/specs/2026-11-19-fhir-federation-service-design.md#15-testing) |
+| 🔎 Search version-provider selection via `Federation:Version` (VP1) | Planned | [§17](docs/superpowers/specs/2026-11-19-fhir-federation-service-design.md#17-left-to-the-builder) |
+| 🚧 Write placement, import/export, and shard rebalancing | Proposed for vNext; not implemented | [Write placement](docs/vnext/write-placement.md), [Import and export](docs/vnext/import-export.md), [vNext overview](docs/vnext/README.md) |
 
 ## Architecture
 
@@ -165,6 +165,29 @@ Federation:
 ```
 
 `Auth.Type` supports `ManagedIdentity` and `ClientCredentials`; `SecretName` points to an externally held secret, never a secret value. Defaults and validation are defined in the Core options types. The in-review API/backend work ([#17](https://github.com/brendankowitz/fhir-federation-service/pull/17), [#19](https://github.com/brendankowitz/fhir-federation-service/pull/19)) is not part of this `main` snapshot. `Federation:Version` is not currently an option; it is planned for VP1.
+
+For example, the following two-owner registry and policy section is accepted by the Core options validator when the `MicrosoftFhirServer` profile is supplied:
+
+```json
+{
+  "Federation": {
+    "ProxyReads": true,
+    "ChainResolution": {
+      "Default": "Distributed",
+      "Passthrough": [ "Observation.subject:Patient", "Encounter.subject:Patient", "Condition.subject:Patient" ]
+    },
+    "Shards": [
+      { "Id": "east", "Alias": "k7q2", "BaseUrl": "https://fhir-east.internal/", "Profile": "MicrosoftFhirServer",
+        "Auth": { "Type": "ManagedIdentity", "Resource": "https://fhir-east.internal" },
+        "LinkBaseAliases": [] },
+      { "Id": "west", "Alias": "p9xm", "BaseUrl": "https://fhir-west.internal/", "Profile": "MicrosoftFhirServer",
+        "Auth": { "Type": "ManagedIdentity", "Resource": "https://fhir-west.internal" } }
+    ]
+  }
+}
+```
+
+The hostnames and token audiences are placeholders, not runnable endpoints. The passthrough paths are illustrative operator assertions that those references are shard-local; use them only when that is true. This is not everything needed to run a gateway, and it does not make the current host bind the section or serve searches.
 
 ## Repository layout
 
