@@ -33,7 +33,7 @@ internal static class PrimarySearchEndpoints
     /// <summary>Registers the search services when the host is configured for search.</summary>
     /// <param name="builder">The application builder.</param>
     /// <returns>The same builder.</returns>
-    /// <exception cref="InvalidOperationException">The <c>Federation:Host</c> section is present but invalid.</exception>
+    /// <exception cref="InvalidOperationException">The backend mode or host configuration is invalid, or the selected mode requires missing host settings.</exception>
     public static WebApplicationBuilder AddPrimarySearch(this WebApplicationBuilder builder)
     {
         builder.Services.Configure<RouteOptions>(o =>
@@ -46,7 +46,7 @@ internal static class PrimarySearchEndpoints
         if (SearchHostSettings.Read(builder.Configuration) is not { } settings)
         {
             return catalog
-                ? throw new InvalidOperationException($"{CatalogBackendSelection.ModePath} requires a valid Federation:Host section.")
+                ? throw new InvalidOperationException($"{CatalogBackendSelection.ModePath} requires a valid {SearchHostSettings.SectionName} section.")
                 : builder;
         }
 

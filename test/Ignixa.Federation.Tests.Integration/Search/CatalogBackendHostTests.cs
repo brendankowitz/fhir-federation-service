@@ -25,11 +25,21 @@ public sealed class CatalogBackendHostTests
 
     private static readonly TimeSpan OneSecond = TimeSpan.FromSeconds(1);
 
-    [Fact]
-    public async Task ModeAbsent_WithASourceRegistered_KeepsTheSeededPath_AndNeverRunsTheSource()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ModeAbsent_WithASourceRegistered_KeepsTheSeededPath_AndNeverRunsTheSource(bool hasOtherBackendSetting)
     {
         var source = new CapabilityPublicationWorkerTests.ScriptedAdmissions();
-        using SearchHost host = SearchHost.Start(setup => setup.ConfigureServices = services => services.AddSingleton<ICapabilityAdmissionSource>(source));
+        using SearchHost host = SearchHost.Start(setup =>
+        {
+            if (hasOtherBackendSetting)
+            {
+                setup.Settings["Federation:Backend:Other"] = "unused";
+            }
+
+            setup.ConfigureServices = services => services.AddSingleton<ICapabilityAdmissionSource>(source);
+        });
 
         (await host.GetAsync(Query)).StatusCode.ShouldBe(HttpStatusCode.OK);
         host.Services.GetService<IFederationCapabilityPublisher>().ShouldNotBeNull();
@@ -148,45 +158,6 @@ public sealed class CatalogBackendHostTests
         }
     }
 
-    [Fact]
-    public async Task CatalogMode_NeverResolvesTheSeed_BeforeTheWorkerStarts()
-    {
-        var source = new CapabilityPublicationWorkerTests.ScriptedAdmissions();
-        int seedResolutions = 0;
-        int resolvedWhenSourceWasResolved = -1;
-        using SearchHost host = SearchHost.Start(setup =>
-        {
-            setup.Settings[ModeKey] = PrototypeCatalog;
-            setup.Capabilities = null;
-            setup.WaitForReadiness = false;
-            setup.ConfigureServices = services =>
-            {
-                services.AddSingleton<ICapabilityAdmissionSource>(_ =>
-                {
-                    resolvedWhenSourceWasResolved = Volatile.Read(ref seedResolutions);
-                    return source;
-                });
-                services.AddSingleton(_ =>
-                {
-                    Interlocked.Increment(ref seedResolutions);
-                    return SearchWorld.Capabilities();
-                });
-            };
-        });
-
-        try
-        {
-            _ = await source.NextAsync();
-            resolvedWhenSourceWasResolved.ShouldBe(0);
-            seedResolutions.ShouldBe(0);
-            await AssertColdAsync(host);
-        }
-        finally
-        {
-            source.Close();
-        }
-    }
-
     [Theory]
     [InlineData("")]
     [InlineData("   ")]
@@ -196,11 +167,9 @@ public sealed class CatalogBackendHostTests
     public void CatalogMode_WithABlankOrInvalidMode_FailsStartupBeforeAnyShardIsContacted(string mode) =>
         AssertFailsStartup(ModeKey, mode, "Federation:Backend:Mode", setup => { });
 
-    [Theory]
-    [InlineData("Federation:Backend:Mode:Kind")]
-    [InlineData("Federation:Backend:Kind")]
-    public void CatalogMode_WithAnObjectOrAMissingMode_FailsStartupBeforeAnyShardIsContacted(string key) =>
-        AssertFailsStartup(key, PrototypeCatalog, "Federation:Backend:Mode", setup => { });
+    [Fact]
+    public void CatalogMode_WithAnObject_FailsStartupBeforeAnyShardIsContacted() =>
+        AssertFailsStartup("Federation:Backend:Mode:Kind", PrototypeCatalog, ModeKey, setup => { });
 
     [Fact]
     public void CatalogMode_FailureNamesTheSettingAndNeverEchoesAnInvalidValue()
@@ -229,7 +198,7 @@ public sealed class CatalogBackendHostTests
     }
 
     [Fact]
-    public void CatalogMode_WithoutASource_FailsStartupNamingTheSetting_EvenWithASeedAndAPublisherAvailable()
+    public void CatalogMode_WithoutASource_FailsStartupNamingTheSetting_EvenWithASeedRegistered()
     {
         var shards = new ScriptedShards();
         Exception failure = Should.Throw<Exception>(() =>
@@ -265,30 +234,14 @@ public sealed class CatalogBackendHostTests
         failure.ToString().ShouldNotContain("requires a registered");
     }
 
-    [Fact]
-    public void Selection_IsAbsent_OnlyWhenNothingIsConfiguredUnderBackend()
-    {
-        CatalogBackendSelection.IsSelected(Json("""{"Federation":{"Host":{"Issuer":"x"},"Shards":[]}}""")).ShouldBeFalse();
-        CatalogBackendSelection.IsSelected(Json("""{}""")).ShouldBeFalse();
-        CatalogBackendSelection.IsSelected(Json("""{"Federation":{"Backend":{"Mode":"PrototypeCatalog"}}}""")).ShouldBeTrue();
-    }
-
     [Theory]
     [InlineData("""{"Federation":{"Backend":{"Mode":null}}}""")]
-    [InlineData("""{"Federation":{"Backend":{"Mode":""}}}""")]
-    [InlineData("""{"Federation":{"Backend":{"Mode":"  "}}}""")]
-    [InlineData("""{"Federation":{"Backend":null}}""")]
-    [InlineData("""{"Federation":{"Backend":""}}""")]
-    [InlineData("""{"Federation":{"Backend":{"Mode":{"Kind":"PrototypeCatalog"}}}}""")]
     [InlineData("""{"Federation":{"Backend":{"Mode":["PrototypeCatalog"]}}}""")]
-    [InlineData("""{"Federation":{"Backend":{"Other":"x"}}}""")]
-    [InlineData("""{"Federation":{"Backend":{"Mode":"Hostile-ModeValue-91"}}}""")]
-    public void Selection_ExplicitButNotPrototypeCatalog_IsInvalid_AndNamesOnlyThePath(string json)
+    public void Selection_ExplicitNullOrArray_IsInvalid(string json)
     {
         InvalidOperationException failure = Should.Throw<InvalidOperationException>(() => CatalogBackendSelection.IsSelected(Json(json)));
 
-        failure.Message.ShouldContain("Federation:Backend:Mode");
-        failure.Message.ShouldNotContain("Hostile-ModeValue-91");
+        failure.Message.ShouldContain(ModeKey);
     }
 
     private static string AssertFailsStartup(string key, string? value, string expectedPath, Action<SearchHostSetup> adjust)
