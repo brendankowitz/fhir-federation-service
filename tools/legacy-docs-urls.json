@@ -1,0 +1,155 @@
+{
+  "index.html": [
+    "ignixa-federation"
+  ],
+  "operator.html": [
+    "operate-a-gateway"
+  ],
+  "architecture.html": [
+    "gateway-architecture",
+    "follow-one-search",
+    "why-metadata-and-search-agree"
+  ],
+  "quickstart.html": [
+    "run-a-local-gateway",
+    "1-start-one-host",
+    "2-check-process-readiness-then-service",
+    "3-verify-the-next-state-without-connecting-a-shard"
+  ],
+  "deployment.html": [
+    "deploy-and-validate-replicas",
+    "run-the-configured-image",
+    "ingress-and-probes",
+    "rollout-checklist-for-a-composed-host"
+  ],
+  "binding.html": [
+    "bind-the-api-to-a-backend",
+    "choose-one-publication-path",
+    "check-what-the-host-actually-registered",
+    "diagnose-validation-in-the-right-order"
+  ],
+  "configuration.html": [
+    "configuration-reference"
+  ],
+  "shards.html": [
+    "register-and-verify-shards",
+    "describe-each-owner",
+    "check-placement-before-enabling-passthrough",
+    "verify-before-admitting-traffic"
+  ],
+  "authentication.html": [
+    "authenticate-callers-and-grant-access",
+    "configure-the-gateway-audience",
+    "verify-grants-on-a-composed-host"
+  ],
+  "status.html": [
+    "search-support",
+    "what-can-run-through-the-api",
+    "not-available-over-http",
+    "discovery-reads-and-identity"
+  ],
+  "server-paging.html": [
+    "paging-and-continuations",
+    "follow-a-page-not-a-shard-cursor",
+    "what-protects-the-link",
+    "replica-and-rollout-checklist",
+    "size-and-expiration",
+    "where-redis-fits-and-where-it-does-not",
+    "triage-a-failed-next-get"
+  ],
+  "limits.html": [
+    "limits-and-budgets",
+    "choose-limits-for-a-deployment",
+    "check-who-enforces-time-and-cost",
+    "work-a-request-budget-before-changing-it",
+    "distinguish-size-refusals-from-exhausted-work"
+  ],
+  "errors.html": [
+    "diagnose-http-errors-and-operationoutcome",
+    "recognize-the-response",
+    "map-the-status-to-an-action",
+    "when-the-obvious-diagnosis-is-wrong",
+    "rollout-checks"
+  ],
+  "observability.html": [
+    "observability",
+    "probe-a-replica-before-putting-it-in-rotation",
+    "know-what-you-can-collect",
+    "acceptance-test-for-your-instrumentation"
+  ],
+  "security.html": [
+    "secure-a-federation-gateway",
+    "which-credential-goes-where",
+    "admit-the-caller-before-using-shard-authority",
+    "confine-the-gateways-outgoing-requests",
+    "protect-paging-logs-and-audit-data",
+    "before-routing-real-traffic"
+  ],
+  "troubleshooting.html": [
+    "troubleshoot-by-symptom",
+    "the-container-is-healthy-but-every-search-returns-503",
+    "metadata-works-the-same-caller-gets-401-or-403",
+    "a-basic-search-works-but-my-filter-count-or-sort-doesnt",
+    "the-first-page-worked-then-paging-broke",
+    "search-times-out-costs-too-much-or-names-a-failing-shard",
+    "an-entry-is-missing-duplicated-or-unreadable"
+  ],
+  "contracts.html": [
+    "shard-api-reference",
+    "ishardclient",
+    "shardregistry"
+  ],
+  "client-developer-guide.html": [
+    "client-developer-guide",
+    "work-through-the-collision",
+    "what-counts-as-success"
+  ],
+  "client-http.html": [
+    "send-a-fhir-search",
+    "make-the-first-request",
+    "use-form-post-when-the-initial-parameters-belong-in-a-body",
+    "if-the-first-search-returns-503"
+  ],
+  "client-bundles.html": [
+    "interpret-a-searchset-bundle",
+    "keep-three-collections",
+    "aggregate-across-pages"
+  ],
+  "client-reads.html": [
+    "read-a-match-from-the-right-owner",
+    "choose-one-of-two-destinations",
+    "constrain-the-url-before-attaching-a-token"
+  ],
+  "client-paging.html": [
+    "follow-opaque-search-pages",
+    "request-exactly-the-next-page-offered",
+    "stop-early-without-calling-it-a-complete-search",
+    "recover-without-replaying-a-cursor"
+  ],
+  "client-errors.html": [
+    "handle-operationoutcome-and-request-failures",
+    "read-a-page-warning",
+    "handle-failure-by-status-and-request",
+    "translate-failures-for-a-cli-or-library-caller"
+  ],
+  "sample-client.html": [
+    "run-and-adapt-the-net-sample-client",
+    "exercise-the-cli-without-starting-a-service",
+    "run-a-collision-search-on-a-configured-federation",
+    "use-the-client-in-code"
+  ],
+  "client-api.html": [
+    "sample-client-api-reference",
+    "federationclient",
+    "federationclientoptions",
+    "shardreadoptions",
+    "searchpage",
+    "federatedentry",
+    "entrymode",
+    "searchresultset",
+    "operationissue",
+    "federationrequestexception",
+    "searchexpiredexception",
+    "linkrejectedexception"
+  ]
+}

@@ -6,14 +6,14 @@ description: Exercise the client offline, interpret its collision transcript, an
 
 # Run and adapt the .NET sample client
 
-The [.NET sample](https://github.com/brendankowitz/fhir-federation-service/tree/REVISION/samples/Ignixa.Federation.SampleClient)
+The [.NET sample](../../samples/Ignixa.Federation.SampleClient)
 uses the public HTTP interface, not the federation's server projects. It includes a CLI and internal types you can
-copy. It is not a published client SDK or token acquisition library. Use the [generated client API reference](client-api.md)
+copy. It is not a published client SDK or token acquisition library. Use the [generated client API reference](https://brendankowitz.github.io/fhir-federation-service/client-api/)
 to look up the types while adapting the examples.
 
 ## Exercise the CLI without starting a service
 
-From the repository root, select the SDK in [global.json](https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/global.json)
+From the repository root, select the SDK in [global.json](../../global.json)
 (11.0.100). Restore the test project while package sources are available; it references the sample:
 
 ```sh
@@ -29,8 +29,8 @@ dotnet test --project test/Ignixa.Federation.SampleClient.UnitTests/Ignixa.Feder
 ```
 
 Help prints the accepted arguments without issuing a search. The
-[scripted handler](https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/test/Ignixa.Federation.SampleClient.UnitTests/ScriptedHandler.cs)
-returns synthetic responses and records requests. In the [sample transcript](https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/samples/Ignixa.Federation.SampleClient/README.md#output),
+[scripted handler](../../test/Ignixa.Federation.SampleClient.UnitTests/ScriptedHandler.cs)
+returns synthetic responses and records requests. In the [sample transcript](../../samples/Ignixa.Federation.SampleClient/README.md#output),
 two matches share `Patient/123` but have different owners. One include appears on both pages and one outcome
 warns about truncation. The CLI reports `summary: pages=2 matches=2 includes=1 outcomes=1`, then reads the first
 match via the alternate link. This is not output from a public deployment.
@@ -38,7 +38,7 @@ match via the alternate link. This is not output from a public deployment.
 ## Run a collision search on a configured federation
 
 Use disposable synthetic data. The following command is illustrative: replace the example base with an
-authenticated, search-capable deployment holding the [oracle collision seeds](https://github.com/brendankowitz/fhir-federation-service/tree/REVISION/test/fixtures/federation-oracle/seeds/collision).
+authenticated, search-capable deployment holding the [oracle collision seeds](../../test/fixtures/federation-oracle/seeds/collision).
 In PowerShell, enter a federation bearer token without echoing it or putting it on the command line:
 
 ```powershell
@@ -80,7 +80,7 @@ foreach (FederatedEntry match in results.Matches)
 
 `FromAsync` consumes all pages and keeps distinct matches and includes by `fullUrl`. Processing the
 [page stream](client-paging.md) directly avoids collecting those resources. It does **not** guarantee constant
-memory: the [client](https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/samples/Ignixa.Federation.SampleClient/FederationClient.cs)
+memory: the [client](../../samples/Ignixa.Federation.SampleClient/FederationClient.cs)
 retains followed URLs to detect paging cycles. For a fixture-specific body assertion, see
 [Interpret a searchset Bundle](client-bundles.md). Handle [failures](client-errors.md) during enumeration; the
 sample does not refresh credentials, follow redirects or restart an expired search on your behalf.

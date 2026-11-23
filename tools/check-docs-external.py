@@ -1,4 +1,4 @@
-"""Optional network check: python tools/check-docs-external.py artifacts/docs/_site"""
+"""Optional network check: python tools/check-docs-external.py docs/site/dist"""
 
 import argparse
 from html.parser import HTMLParser
@@ -10,25 +10,26 @@ from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
 
-# Only hand-written articles staged by build-docs.ps1, not generated references.
-ARTICLES = ("index.html", "operator.html", "status.html", "client-developer-guide.html")
+GENERATED = {"configuration", "contracts", "client-api"}
 REPO_PATH = "/brendankowitz/fhir-federation-service"
 
 
 class ArticleLinks(HTMLParser):
     def __init__(self):
         super().__init__()
-        self.in_article = False
+        self.content_depth = 0
         self.code_depth = 0
         self.saw_article = False
         self.links = {}
 
     def handle_starttag(self, tag, attrs):
-        if tag == "article":
-            self.in_article = self.saw_article = True
+        if tag == "div":
+            if self.content_depth or "sl-markdown-content" in dict(attrs).get("class", "").split():
+                self.content_depth += 1
+                self.saw_article = True
         elif tag in ("pre", "code"):
             self.code_depth += 1
-        elif tag == "a" and self.in_article and not self.code_depth:
+        elif tag == "a" and self.content_depth and not self.code_depth:
             href = dict(attrs).get("href") or ""
             if href.startswith("//"):
                 href = "https:" + href
@@ -40,8 +41,8 @@ class ArticleLinks(HTMLParser):
             self.links.setdefault(url._replace(fragment="").geturl(), self.getpos()[0])
 
     def handle_endtag(self, tag):
-        if tag == "article":
-            self.in_article = False
+        if tag == "div" and self.content_depth:
+            self.content_depth -= 1
         elif tag in ("pre", "code"):
             self.code_depth -= 1
 
@@ -66,12 +67,16 @@ def probe(url):
 
 def check(site):
     targets = {}
-    for name in ARTICLES:
+    articles = [site / "index.html", *sorted(site.glob("*/index.html"))]
+    for path in articles:
+        if path.parent.name in GENERATED:
+            continue
+        name = path.relative_to(site).as_posix()
         parser = ArticleLinks()
-        parser.feed((site / name).read_text(encoding="utf-8-sig"))
+        parser.feed(path.read_text(encoding="utf-8-sig"))
         parser.close()
         if not parser.saw_article:
-            raise ValueError(f"{name}: missing DocFX article")
+            raise ValueError(f"{name}: missing article content")
         for url, line in parser.links.items():
             targets.setdefault(url, f"{name}:{line}")
     failures = 0

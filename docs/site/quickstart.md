@@ -45,13 +45,13 @@ To exercise a **successful search** in this checkout without mistaking a test do
 dotnet test --project test/Ignixa.Federation.Tests.Integration/Ignixa.Federation.Tests.Integration.csproj -c Release --filter-class '*PrimarySearchTests'
 ```
 
-[compose]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/deploy/compose.yaml
-[sdk]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/global.json
-[run]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/AGENTS.md
-[startup]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/src/Ignixa.Federation.Api/Program.cs
-[routes]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/src/Ignixa.Federation.Api/Search/PrimarySearchEndpoints.cs
-[probes]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/test/Ignixa.Federation.Tests.Integration/HealthEndpointTests.cs
-[metadata]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/src/Ignixa.Federation.Api/Metadata/MetadataEndpoints.cs
-[cold]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/test/Ignixa.Federation.Tests.Integration/Search/PrimarySearchColdHostTests.cs
-[catalog]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/test/Ignixa.Federation.Tests.Integration/Search/CatalogBackendHostTests.cs
-[search]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/test/Ignixa.Federation.Tests.Integration/Search/PrimarySearchTests.cs
+[compose]: ../../deploy/compose.yaml
+[sdk]: ../../global.json
+[run]: ../../AGENTS.md
+[startup]: ../../src/Ignixa.Federation.Api/Program.cs
+[routes]: ../../src/Ignixa.Federation.Api/Search/PrimarySearchEndpoints.cs
+[probes]: ../../test/Ignixa.Federation.Tests.Integration/HealthEndpointTests.cs
+[metadata]: ../../src/Ignixa.Federation.Api/Metadata/MetadataEndpoints.cs
+[cold]: ../../test/Ignixa.Federation.Tests.Integration/Search/PrimarySearchColdHostTests.cs
+[catalog]: ../../test/Ignixa.Federation.Tests.Integration/Search/CatalogBackendHostTests.cs
+[search]: ../../test/Ignixa.Federation.Tests.Integration/Search/PrimarySearchTests.cs

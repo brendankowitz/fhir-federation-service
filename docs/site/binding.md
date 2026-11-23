@@ -33,18 +33,18 @@ In catalog mode the source may decline admission, leaving the host cold. When it
 2. If it **listens but stays cold**, do not treat that as successful shard validation. The state captures raw startup options; binding and validation wait for a view. Correct the deployment settings and rebuild the generation with the intended registry. [Generation state][state].
 3. If **metadata works but search does not**, check signer readiness, type grants, then the [search support matrix](status.md). Adding a serializer, count map or resolver cannot make an arbitrary combination executable. [Signing tests][signing] · [Dispatch][dispatch].
 
-[fixture]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/test/Ignixa.Federation.Tests.Integration/Search/SearchHost.cs
-[routes]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/src/Ignixa.Federation.Api/Search/PrimarySearchEndpoints.cs
-[dispatch]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/src/Ignixa.Federation.Api/Search/PrimarySearch.cs
-[state]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/src/Ignixa.Federation.Api/Search/PrimarySearchState.cs
-[source]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/src/Ignixa.Federation.Api/Search/ICapabilityAdmissionSource.cs
-[worker]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/src/Ignixa.Federation.Api/Search/CapabilityPublicationWorker.cs
-[catalog]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/test/Ignixa.Federation.Tests.Integration/Search/CatalogBackendHostTests.cs
-[publication]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/test/Ignixa.Federation.Tests.Integration/Search/PrimarySearchCapabilityPublicationTests.cs
-[metadata]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/src/Ignixa.Federation.Api/Metadata/MetadataEndpoints.cs
-[factory]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/src/Ignixa.Federation.Api/Search/IShardClientFactory.cs
-[counts]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/test/Ignixa.Federation.Tests.Integration/Search/PrimarySearchReverseCountTests.cs
-[forward]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/test/Ignixa.Federation.Tests.Integration/Search/PrimarySearchDistributedForwardTests.cs
-[includes]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/test/Ignixa.Federation.Tests.Integration/Search/PrimarySearchRevIncludeTests.cs
-[reads]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/test/Ignixa.Federation.Tests.Integration/Reads/ProxiedReadEligibilityTests.cs
-[signing]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/test/Ignixa.Federation.Tests.Integration/Search/SigningReadinessTests.cs
+[fixture]: ../../test/Ignixa.Federation.Tests.Integration/Search/SearchHost.cs
+[routes]: ../../src/Ignixa.Federation.Api/Search/PrimarySearchEndpoints.cs
+[dispatch]: ../../src/Ignixa.Federation.Api/Search/PrimarySearch.cs
+[state]: ../../src/Ignixa.Federation.Api/Search/PrimarySearchState.cs
+[source]: ../../src/Ignixa.Federation.Api/Search/ICapabilityAdmissionSource.cs
+[worker]: ../../src/Ignixa.Federation.Api/Search/CapabilityPublicationWorker.cs
+[catalog]: ../../test/Ignixa.Federation.Tests.Integration/Search/CatalogBackendHostTests.cs
+[publication]: ../../test/Ignixa.Federation.Tests.Integration/Search/PrimarySearchCapabilityPublicationTests.cs
+[metadata]: ../../src/Ignixa.Federation.Api/Metadata/MetadataEndpoints.cs
+[factory]: ../../src/Ignixa.Federation.Api/Search/IShardClientFactory.cs
+[counts]: ../../test/Ignixa.Federation.Tests.Integration/Search/PrimarySearchReverseCountTests.cs
+[forward]: ../../test/Ignixa.Federation.Tests.Integration/Search/PrimarySearchDistributedForwardTests.cs
+[includes]: ../../test/Ignixa.Federation.Tests.Integration/Search/PrimarySearchRevIncludeTests.cs
+[reads]: ../../test/Ignixa.Federation.Tests.Integration/Reads/ProxiedReadEligibilityTests.cs
+[signing]: ../../test/Ignixa.Federation.Tests.Integration/Search/SigningReadinessTests.cs

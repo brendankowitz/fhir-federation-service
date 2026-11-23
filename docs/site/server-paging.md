@@ -57,19 +57,19 @@ For teams evaluating a separate host integration, the component contract differs
 | **410 Gone** | Restart the original search, not the failed next URL. Compare clocks and elapsed time, then check relevant revision/plan drift or a missing replay anchor. An unrelated definition change alone does not invalidate the link. Do not splice a restarted result set onto an old one as if they were a single snapshot. [HTTP replay tests][http-tests] · [design §7.4][spec]. |
 | **503 cannot link next page** | The gateway cannot represent the next state inline or accept the resulting URL; this is not a successful last page. Check the saved query size, rewrites, public path and request-line budget before increasing limits. [Issuance and `NextTooLarge`][route] · [protector bounds][protector]. |
 
-[route]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/src/Ignixa.Federation.Api/Search/PrimarySearch.cs
-[host]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/src/Ignixa.Federation.Api/Search/PrimarySearchEndpoints.cs
-[spec]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/docs/superpowers/specs/2026-11-19-fhir-federation-service-design.md
-[http-tests]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/test/Ignixa.Federation.Tests.Integration/Search/PrimarySearchContinuationTests.cs
-[codec]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/src/Ignixa.Federation.Api/Continuations/UnsortedSnapshotCodec.cs
-[protector]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/src/Ignixa.Federation.Api/Continuations/ContinuationProtector.cs
-[binding]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/src/Ignixa.Federation.Api/Continuations/ContinuationBinding.cs
-[redemption]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/test/Ignixa.Federation.Tests.Integration/Continuations/ContinuationRedemptionTests.cs
-[options]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/src/Ignixa.Federation.Core/Configuration/TokenOptions.cs
-[lifetime]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/test/Ignixa.Federation.Tests.Integration/Continuations/ContinuationLifetimeTests.cs
-[bounds]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/test/Ignixa.Federation.Tests.Integration/Continuations/ContinuationBoundsTests.cs
-[cached]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/src/Ignixa.Federation.Api/Continuations/ContinuationTokenService.cs
-[cache-tests]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/test/Ignixa.Federation.Tests.Integration/Continuations/CachedContinuationIssuanceTests.cs
-[successors]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/test/Ignixa.Federation.Tests.Integration/Continuations/CachedContinuationSuccessorTests.cs
-[redis]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/src/Ignixa.Federation.Api/Continuations/RedisContinuationCache.cs
-[redis-tests]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/test/Ignixa.Federation.Tests.Integration/Continuations/RedisContinuationCache.md
+[route]: ../../src/Ignixa.Federation.Api/Search/PrimarySearch.cs
+[host]: ../../src/Ignixa.Federation.Api/Search/PrimarySearchEndpoints.cs
+[spec]: ../superpowers/specs/2026-11-19-fhir-federation-service-design.md
+[http-tests]: ../../test/Ignixa.Federation.Tests.Integration/Search/PrimarySearchContinuationTests.cs
+[codec]: ../../src/Ignixa.Federation.Api/Continuations/UnsortedSnapshotCodec.cs
+[protector]: ../../src/Ignixa.Federation.Api/Continuations/ContinuationProtector.cs
+[binding]: ../../src/Ignixa.Federation.Api/Continuations/ContinuationBinding.cs
+[redemption]: ../../test/Ignixa.Federation.Tests.Integration/Continuations/ContinuationRedemptionTests.cs
+[options]: ../../src/Ignixa.Federation.Core/Configuration/TokenOptions.cs
+[lifetime]: ../../test/Ignixa.Federation.Tests.Integration/Continuations/ContinuationLifetimeTests.cs
+[bounds]: ../../test/Ignixa.Federation.Tests.Integration/Continuations/ContinuationBoundsTests.cs
+[cached]: ../../src/Ignixa.Federation.Api/Continuations/ContinuationTokenService.cs
+[cache-tests]: ../../test/Ignixa.Federation.Tests.Integration/Continuations/CachedContinuationIssuanceTests.cs
+[successors]: ../../test/Ignixa.Federation.Tests.Integration/Continuations/CachedContinuationSuccessorTests.cs
+[redis]: ../../src/Ignixa.Federation.Api/Continuations/RedisContinuationCache.cs
+[redis-tests]: ../../test/Ignixa.Federation.Tests.Integration/Continuations/RedisContinuationCache.md

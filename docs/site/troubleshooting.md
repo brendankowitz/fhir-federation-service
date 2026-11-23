@@ -14,7 +14,7 @@ Start with one replica, a known synthetic query and the route that failed: **fir
 - [ ] Live but not ready, and metadata also returns 503? Check whether a **current usable view** was installed. A missing, withdrawn or no-longer-eligible view can refuse requests before authentication or any backend connection. In manual publication mode, verify that the host supplied the transport and that publication succeeded. In `PrototypeCatalog` mode, verify that the host registered an admission source; a missing source is a startup error, not a warm-up delay. Adding URLs alone does not install these components. [Registration][routes] · [publication tests][publication] · [cold-host tests][cold]
 - [ ] Metadata succeeds but protected routes return a signing-unavailable outcome? Check authority reachability from the replica, discovery issuer and signing-key availability. Restore discovery and wait for fresh keys; do not disable token validation or restart healthy replicas to chase a readiness failure. Confirm with a protected synthetic search, not just metadata. [Signing recovery tests][signing] · [authentication](authentication.md)
 
-If the process **never starts**, compare [binding](binding.md) and [configuration](configuration.md) with the settings actually supplied. Distinguish invalid mode, missing required service and invalid options when constructing a warm view from an intentionally cold host. Restart with corrected settings rather than assuming a later publication rereads startup settings. [Route composition][routes] · [publication and settings tests][publication]
+If the process **never starts**, compare [binding](binding.md) and [configuration](https://brendankowitz.github.io/fhir-federation-service/configuration/) with the settings actually supplied. Distinguish invalid mode, missing required service and invalid options when constructing a warm view from an intentionally cold host. Restart with corrected settings rather than assuming a later publication rereads startup settings. [Route composition][routes] · [publication and settings tests][publication]
 
 ## “Metadata works; the same caller gets 401 or 403”
 
@@ -53,20 +53,20 @@ Confirm recovery by following two successive pages across replicas. See [server 
 
 For escalation, attach the revision, replica, time window, route template, status/issue code, affected alias if disclosed, the three probe results, and whether the same synthetic request succeeds on a second replica. Include sanitized counts and durations rather than a raw trace. See [observability](observability.md) for which signals require host instrumentation and [errors](errors.md) for the full response map.
 
-[program]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/src/Ignixa.Federation.Api/Program.cs
-[routes]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/src/Ignixa.Federation.Api/Search/PrimarySearchEndpoints.cs
-[search]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/src/Ignixa.Federation.Api/Search/PrimarySearch.cs
-[reads]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/src/Ignixa.Federation.Api/Reads/ProxiedReads.cs
-[budget]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/src/Ignixa.Federation.Api/Budgets/RequestBudget.cs
-[cold]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/test/Ignixa.Federation.Tests.Integration/Search/PrimarySearchColdHostTests.cs
-[publication]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/test/Ignixa.Federation.Tests.Integration/Search/PrimarySearchCapabilityPublicationTests.cs
-[signing]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/test/Ignixa.Federation.Tests.Integration/Search/SigningReadinessTests.cs
-[auth]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/test/Ignixa.Federation.Tests.Integration/Search/PrimarySearchAuthorizationTests.cs
-[replay]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/test/Ignixa.Federation.Tests.Integration/Search/PrimarySearchContinuationTests.cs
-[lifetime]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/test/Ignixa.Federation.Tests.Integration/Continuations/ContinuationLifetimeTests.cs
-[failure]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/test/Ignixa.Federation.Tests.Integration/Search/PrimarySearchFailureTests.cs
-[count]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/test/Ignixa.Federation.Tests.Integration/Search/PrimarySearchCountTests.cs
-[read-tests]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/test/Ignixa.Federation.Tests.Integration/Reads/ProxiedReadFailureTests.cs
-[includes]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/test/Ignixa.Federation.Tests.Integration/Search/PrimarySearchRevIncludeTests.cs
-[bundle]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/test/Ignixa.Federation.Tests.Integration/Responses/SearchsetResponseTests.cs
-[privacy]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/docs/guides/CallerCorrelation.md
+[program]: ../../src/Ignixa.Federation.Api/Program.cs
+[routes]: ../../src/Ignixa.Federation.Api/Search/PrimarySearchEndpoints.cs
+[search]: ../../src/Ignixa.Federation.Api/Search/PrimarySearch.cs
+[reads]: ../../src/Ignixa.Federation.Api/Reads/ProxiedReads.cs
+[budget]: ../../src/Ignixa.Federation.Api/Budgets/RequestBudget.cs
+[cold]: ../../test/Ignixa.Federation.Tests.Integration/Search/PrimarySearchColdHostTests.cs
+[publication]: ../../test/Ignixa.Federation.Tests.Integration/Search/PrimarySearchCapabilityPublicationTests.cs
+[signing]: ../../test/Ignixa.Federation.Tests.Integration/Search/SigningReadinessTests.cs
+[auth]: ../../test/Ignixa.Federation.Tests.Integration/Search/PrimarySearchAuthorizationTests.cs
+[replay]: ../../test/Ignixa.Federation.Tests.Integration/Search/PrimarySearchContinuationTests.cs
+[lifetime]: ../../test/Ignixa.Federation.Tests.Integration/Continuations/ContinuationLifetimeTests.cs
+[failure]: ../../test/Ignixa.Federation.Tests.Integration/Search/PrimarySearchFailureTests.cs
+[count]: ../../test/Ignixa.Federation.Tests.Integration/Search/PrimarySearchCountTests.cs
+[read-tests]: ../../test/Ignixa.Federation.Tests.Integration/Reads/ProxiedReadFailureTests.cs
+[includes]: ../../test/Ignixa.Federation.Tests.Integration/Search/PrimarySearchRevIncludeTests.cs
+[bundle]: ../../test/Ignixa.Federation.Tests.Integration/Responses/SearchsetResponseTests.cs
+[privacy]: ../guides/CallerCorrelation.md

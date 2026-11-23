@@ -34,18 +34,18 @@ Use a synthetic principal and records. First check `GET /metadata` and `/health/
 
 For a backend permission failure, check the shard's audience and read-only identity separately. Do not forward the caller token or grant direct access to all owners as a workaround. See [Shard registry](shards.md) and the [transport contract][factory].
 
-[settings]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/src/Ignixa.Federation.Api/Search/SearchHostSettings.cs
-[jwt]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/src/Ignixa.Federation.Api/Authentication/FederationCallerAuthentication.cs
-[keys]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/src/Ignixa.Federation.Api/Authentication/SigningConfiguration.cs
-[jwt-tests]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/test/Ignixa.Federation.Tests.Integration/Authentication/FederationCallerAuthenticationTests.cs
-[grants]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/src/Ignixa.Federation.Api/Authorization/CallerAccess.cs
-[access-tests]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/test/Ignixa.Federation.Tests.Integration/Authorization/CallerAccessTests.cs
-[factory]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/src/Ignixa.Federation.Api/Search/IShardClientFactory.cs
-[design]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/docs/superpowers/specs/2026-11-19-fhir-federation-service-design.md
-[metadata]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/src/Ignixa.Federation.Api/Metadata/MetadataEndpoints.cs
-[ready]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/test/Ignixa.Federation.Tests.Integration/Search/SigningReadinessTests.cs
-[authorization]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/test/Ignixa.Federation.Tests.Integration/Search/PrimarySearchAuthorizationTests.cs
-[forward]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/test/Ignixa.Federation.Tests.Integration/Search/PrimarySearchForwardChainTests.cs
-[include]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/test/Ignixa.Federation.Tests.Integration/Search/PrimarySearchRevIncludeTests.cs
-[paging]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/test/Ignixa.Federation.Tests.Integration/Search/PrimarySearchContinuationTests.cs
-[read]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/test/Ignixa.Federation.Tests.Integration/Reads/ProxiedReadEligibilityTests.cs
+[settings]: ../../src/Ignixa.Federation.Api/Search/SearchHostSettings.cs
+[jwt]: ../../src/Ignixa.Federation.Api/Authentication/FederationCallerAuthentication.cs
+[keys]: ../../src/Ignixa.Federation.Api/Authentication/SigningConfiguration.cs
+[jwt-tests]: ../../test/Ignixa.Federation.Tests.Integration/Authentication/FederationCallerAuthenticationTests.cs
+[grants]: ../../src/Ignixa.Federation.Api/Authorization/CallerAccess.cs
+[access-tests]: ../../test/Ignixa.Federation.Tests.Integration/Authorization/CallerAccessTests.cs
+[factory]: ../../src/Ignixa.Federation.Api/Search/IShardClientFactory.cs
+[design]: ../superpowers/specs/2026-11-19-fhir-federation-service-design.md
+[metadata]: ../../src/Ignixa.Federation.Api/Metadata/MetadataEndpoints.cs
+[ready]: ../../test/Ignixa.Federation.Tests.Integration/Search/SigningReadinessTests.cs
+[authorization]: ../../test/Ignixa.Federation.Tests.Integration/Search/PrimarySearchAuthorizationTests.cs
+[forward]: ../../test/Ignixa.Federation.Tests.Integration/Search/PrimarySearchForwardChainTests.cs
+[include]: ../../test/Ignixa.Federation.Tests.Integration/Search/PrimarySearchRevIncludeTests.cs
+[paging]: ../../test/Ignixa.Federation.Tests.Integration/Search/PrimarySearchContinuationTests.cs
+[read]: ../../test/Ignixa.Federation.Tests.Integration/Reads/ProxiedReadEligibilityTests.cs

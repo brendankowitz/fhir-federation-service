@@ -8,7 +8,7 @@ description: Choose a proxied or direct read, validate its URL, and keep federat
 
 Once you select an entry, keep the entry itself. A read reconstructed from just `resourceType` and `id` loses
 the owner. In the collision corpus, `GET [base]/Patient/dup` could mean Eli or Gus. The
-[unqualified read route](https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/src/Ignixa.Federation.Api/Reads/ProxiedReads.cs)
+[unqualified read route](../../src/Ignixa.Federation.Api/Reads/ProxiedReads.cs)
 returns `400` with an `OperationOutcome` explaining the ambiguity; it never searches for an owner.
 
 ## Choose one of two destinations
@@ -37,15 +37,15 @@ Expect a Patient resource, not another Bundle. In the fixture, check for east's 
 An absent alternate is normal if proxy reads are disabled or the resource is ineligible. Do not invent an
 alternate or silently try a direct read: that is a different authorization decision. A qualified read returning
 `410` means the resource was deleted, **not** that a search page expired. See the
-[proxied read tests](https://github.com/brendankowitz/fhir-federation-service/tree/REVISION/test/Ignixa.Federation.Tests.Integration/Reads).
+[proxied read tests](../../test/Ignixa.Federation.Tests.Integration/Reads).
 
 ## Constrain the URL before attaching a token
 
-For both methods the [sample endpoint](https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/samples/Ignixa.Federation.SampleClient/ScopedEndpoint.cs)
+For both methods the [sample endpoint](../../samples/Ignixa.Federation.SampleClient/ScopedEndpoint.cs)
 checks HTTPS, host, port and path boundaries: allowing `https://shard.example/fhir/` does not allow
 `https://shard.example/fhirx/Patient/dup`. Configure nonoverlapping bases. A matching alias or familiar-looking
 hostname in the Bundle is not permission to send a credential. Redirects are not followed, even if the first
-URL was trusted. The [credential tests](https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/test/Ignixa.Federation.SampleClient.UnitTests/CredentialConfinementTests.cs)
+URL was trusted. The [credential tests](../../test/Ignixa.Federation.SampleClient.UnitTests/CredentialConfinementTests.cs)
 inspect which handler received each request and bearer header, and check that rejected links sent nothing.
 
 In the [sample CLI](sample-client.md), `--read alternate` follows the first match's offered link. To choose the

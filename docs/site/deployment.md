@@ -36,16 +36,16 @@ Use `/health/live` for process liveness and `/health/ready` for traffic admissio
 3. **Prove permissions and ownership.** Exercise one granted and one denied resource type, then verify two equal IDs on different shards produce distinct owner links. Test an eligible alternate read only if the host supplies a read binding. Do not use live patient data for a smoke test. [Authorization tests][auth] · [Response tests][entries] · [Read eligibility tests][reads].
 4. **Drain before rollback.** If the candidate fails the checks, keep traffic on the previous image and matching configuration. Retain still-needed keys; do not promise old next links survive an incompatible view. Do not try to solve oversized HTTP tokens by adding Redis: issuance/redemption in this checkout is inline. [Dispatcher][dispatch] · [Continuation tests][paging].
 
-[image]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/deploy/Dockerfile
-[settings]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/src/Ignixa.Federation.Api/Search/SearchHostSettings.cs
-[cold]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/test/Ignixa.Federation.Tests.Integration/Search/PrimarySearchColdHostTests.cs
-[routes]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/src/Ignixa.Federation.Api/Search/PrimarySearchEndpoints.cs
-[startup]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/src/Ignixa.Federation.Api/Program.cs
-[signing]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/test/Ignixa.Federation.Tests.Integration/Search/SigningReadinessTests.cs
-[metadata]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/src/Ignixa.Federation.Api/Metadata/MetadataEndpoints.cs
-[state]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/src/Ignixa.Federation.Api/Search/PrimarySearchState.cs
-[dispatch]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/src/Ignixa.Federation.Api/Search/PrimarySearch.cs
-[paging]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/test/Ignixa.Federation.Tests.Integration/Search/PrimarySearchContinuationTests.cs
-[auth]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/test/Ignixa.Federation.Tests.Integration/Search/PrimarySearchAuthorizationTests.cs
-[entries]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/test/Ignixa.Federation.Tests.Integration/Responses/SearchsetResponseTests.cs
-[reads]: https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/test/Ignixa.Federation.Tests.Integration/Reads/ProxiedReadEligibilityTests.cs
+[image]: ../../deploy/Dockerfile
+[settings]: ../../src/Ignixa.Federation.Api/Search/SearchHostSettings.cs
+[cold]: ../../test/Ignixa.Federation.Tests.Integration/Search/PrimarySearchColdHostTests.cs
+[routes]: ../../src/Ignixa.Federation.Api/Search/PrimarySearchEndpoints.cs
+[startup]: ../../src/Ignixa.Federation.Api/Program.cs
+[signing]: ../../test/Ignixa.Federation.Tests.Integration/Search/SigningReadinessTests.cs
+[metadata]: ../../src/Ignixa.Federation.Api/Metadata/MetadataEndpoints.cs
+[state]: ../../src/Ignixa.Federation.Api/Search/PrimarySearchState.cs
+[dispatch]: ../../src/Ignixa.Federation.Api/Search/PrimarySearch.cs
+[paging]: ../../test/Ignixa.Federation.Tests.Integration/Search/PrimarySearchContinuationTests.cs
+[auth]: ../../test/Ignixa.Federation.Tests.Integration/Search/PrimarySearchAuthorizationTests.cs
+[entries]: ../../test/Ignixa.Federation.Tests.Integration/Responses/SearchsetResponseTests.cs
+[reads]: ../../test/Ignixa.Federation.Tests.Integration/Reads/ProxiedReadEligibilityTests.cs

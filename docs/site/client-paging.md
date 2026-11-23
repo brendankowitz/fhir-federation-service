@@ -31,8 +31,8 @@ Authorization: Bearer REDACTED
 
 This is a GET even if the first page came from a form POST. `ct` must be the only parameter. The scoped URL,
 not a byte-for-byte copy of a string, is what the .NET client uses: `System.Uri` may normalize an escape.
-See the [client loop](https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/samples/Ignixa.Federation.SampleClient/FederationClient.cs)
-and the [host continuation tests](https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/test/Ignixa.Federation.Tests.Integration/Search/PrimarySearchContinuationTests.cs).
+See the [client loop](../../samples/Ignixa.Federation.SampleClient/FederationClient.cs)
+and the [host continuation tests](../../test/Ignixa.Federation.Tests.Integration/Search/PrimarySearchContinuationTests.cs).
 
 ## Stop early without calling it a complete search
 
@@ -53,7 +53,7 @@ await foreach (SearchPage page in client.SearchAsync("Patient", [new("_count", "
 ```
 
 The CLI's `--max-pages` does the same kind of bounded traversal; a successful exit can still be an incomplete
-search. In the [CLI tests](https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/test/Ignixa.Federation.SampleClient.UnitTests/CliAppTests.cs)
+search. In the [CLI tests](../../test/Ignixa.Federation.SampleClient.UnitTests/CliAppTests.cs)
 the limit is reached without fetching the next page. Use the [collection pattern](client-bundles.md) when you
 actually want to consume every page.
 
@@ -63,6 +63,6 @@ A `410 Gone` **on a continuation** ends that search. `SearchExpiredException` (C
 search with your original parameters and fresh result collections; the sample does not retry or restart for you.
 Do not silently combine the prefix of the old result with the suffix of a new one. A malformed continuation can
 instead get `400`, and a continuation belonging to a different caller can get `403`. They are not instructions to
-keep trying. The [host](https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/src/Ignixa.Federation.Api/Search/PrimarySearch.cs)
+keep trying. The [host](../../src/Ignixa.Federation.Api/Search/PrimarySearch.cs)
 currently issues inline continuations: if a required next link cannot fit, it can return `503`, not a successful
 final page. For the same status on a **read**, use the [error guide](client-errors.md).

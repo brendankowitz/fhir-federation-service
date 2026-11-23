@@ -8,7 +8,7 @@ description: Build a read-only FHIR client that keeps shard identities, continua
 
 Suppose two shards each return `Patient/dup`. Which patient should appear in your results, and which server
 should receive a follow-up read? **Keep both patients.** Use each entry's owning `fullUrl` as its identity.
-The federation's [collision fixture](https://github.com/brendankowitz/fhir-federation-service/blob/REVISION/test/fixtures/federation-oracle/README.md)
+The federation's [collision fixture](../../test/fixtures/federation-oracle/README.md)
 makes the difference observable: east's patient is Eli Orchid; west's is Gus Orchid.
 
 ## Work through the collision

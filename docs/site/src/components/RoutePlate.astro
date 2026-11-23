@@ -1,0 +1,31 @@
+<figure class="route-plate">
+  <div class="plate-heading"><span>Fig. 01</span><b>Search trace</b></div>
+  <div class="plate-query"><span>GET</span> /Patient?name=Orchid</div>
+  <svg class="plate-map" viewBox="0 0 480 244" role="img" aria-labelledby="trace-title trace-desc">
+    <title id="trace-title">One search, two owner-qualified matches</title>
+    <desc id="trace-desc">East and west each find a local Patient/42. Their fullUrls are https://east.example/Patient/42 and https://west.example/Patient/42.</desc>
+    <defs>
+      <pattern id="trace-grid" width="24" height="24" patternUnits="userSpaceOnUse"><path d="M1 4V1h3" fill="none" stroke="#9faedf" stroke-opacity=".28"/></pattern>
+      <path id="ring" d="M-85 7C-93-29-44-57-14-62S57-77 82-45 125 6 96 36 26 80-16 64-71 43-85 7Z"/>
+    </defs>
+    <rect width="480" height="244" fill="url(#trace-grid)"/>
+    <g fill="none" stroke="#acbce1" stroke-opacity=".15">
+      <g transform="translate(107 139) rotate(-33)"><use href="#ring"/><use href="#ring" transform="scale(1.13)"/><use href="#ring" transform="scale(1.28)"/><use href="#ring" transform="scale(1.45)"/><use href="#ring" transform="scale(1.64)"/></g>
+      <g transform="translate(425 110) rotate(22)"><use href="#ring"/><use href="#ring" transform="scale(1.13)"/><use href="#ring" transform="scale(1.28)"/><use href="#ring" transform="scale(1.45)"/><use href="#ring" transform="scale(1.64)"/></g>
+    </g>
+    <g fill="none" stroke-width="3.5" stroke-linecap="round">
+      <path d="M-7 116H76C116 116 128 51 180 51H209" stroke="#8dedcd"/>
+      <path d="M-7 124H76C116 124 128 182 180 182H209" stroke="#ffc990"/>
+    </g>
+    <g fill="#192649" stroke-width="3"><circle cx="209" cy="51" r="8" stroke="#8dedcd"/><path d="m209 173 9 9-9 9-9-9Z" stroke="#ffc990"/></g>
+    <g class="map-label">
+      <text x="234" y="35" fill="#8dedcd">EAST INDEX</text>
+      <text x="234" y="61" class="map-match">Patient/42</text>
+      <text x="234" y="82" class="map-owner">https://east.example/Patient/42</text>
+      <text x="234" y="166" fill="#ffc990">WEST INDEX</text>
+      <text x="234" y="192" class="map-match">Patient/42</text>
+      <text x="234" y="213" class="map-owner">https://west.example/Patient/42</text>
+    </g>
+  </svg>
+  <figcaption><span>Same local ID.</span> Two distinct fullUrls.</figcaption>
+</figure>

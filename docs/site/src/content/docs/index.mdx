@@ -1,0 +1,46 @@
+---
+title: Ignixa Federation
+description: Search independently indexed FHIR R4 servers through one read-only gateway, without losing the owner of a match.
+template: splash
+editUrl: false
+---
+
+import RoutePlate from '../../components/RoutePlate.astro';
+
+<div class="field-guide" id="ignixa-federation">
+  <section class="guide-lead" aria-labelledby="_top">
+    <div class="lead-copy">
+      <p class="guide-kicker">FHIR R4 <span>/</span> Read-only gateway</p>
+      <h1 id="_top" tabindex="-1">One search.<br /> <em>Distinct owners.</em></h1>
+      <p class="lead-deck">Search independently indexed FHIR servers through one endpoint. Each match keeps the URL of the server that owns it.</p>
+      <a class="guide-action" href="./architecture/">Follow a search <span aria-hidden="true">→</span></a>
+    </div>
+    <RoutePlate />
+  </section>
+
+  <section class="guide-paths" aria-labelledby="guide-paths-title">
+    <h2 id="guide-paths-title">Choose your path</h2>
+    <div class="reader-routes">
+      <a href="./operator/" class="reader-route operator-route">
+        <span class="route-index">01 <i>/</i> Operator</span>
+        <strong>Run a gateway</strong>
+        <span>Register shards, check readiness and find out which searches the host can serve.</span>
+        <span class="route-arrow" aria-hidden="true">↗</span>
+      </a>
+      <a href="./client-developer-guide/" class="reader-route client-route">
+        <span class="route-index">02 <i>/</i> Client developer</span>
+        <strong>Build a client</strong>
+        <span>Send a search, interpret its Bundle and follow a match back to its owner.</span>
+        <span class="route-arrow" aria-hidden="true">↗</span>
+      </a>
+    </div>
+  </section>
+
+  <nav class="reference-shelf" aria-label="Reference">
+    <h2>Reference</h2>
+    <a href="./status/">Search support <span aria-hidden="true">→</span></a>
+    <a href="./configuration/">Configuration <span aria-hidden="true">→</span></a>
+    <a href="./contracts/">Shard API <span aria-hidden="true">→</span></a>
+  </nav>
+  <p class="guide-note">These guides describe the <a href={`https://github.com/brendankowitz/fhir-federation-service/commit/${import.meta.env.PUBLIC_DOCS_REVISION}`}>source revision used for this build</a>, not a versioned release.</p>
+</div>
