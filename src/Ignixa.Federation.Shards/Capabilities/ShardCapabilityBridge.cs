@@ -32,7 +32,7 @@ public static class ShardCapabilityBridge
     }
 
     // Keep common and resource declarations even when their codes collide; Core owns admission.
-    private static SearchParameterSupport MapParameter(SearchParameterEvidence parameter) => new(
+    internal static SearchParameterSupport MapParameter(SearchParameterEvidence parameter) => new(
         parameter.Code,
         parameter.Type switch
         {

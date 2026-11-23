@@ -1,7 +1,9 @@
 using System.Collections.Immutable;
 using System.Diagnostics.CodeAnalysis;
+using Ignixa.Federation.Core.Identity;
 using Ignixa.Federation.Core.Search;
 using Ignixa.Federation.Core.Shards;
+using Ignixa.Specification.ValueSets.Normative;
 
 namespace Ignixa.Federation.Shards.Capabilities.Refresh;
 
@@ -12,6 +14,11 @@ namespace Ignixa.Federation.Shards.Capabilities.Refresh;
 /// </remarks>
 public sealed class ShardCapabilitySnapshot
 {
+    private static readonly ResourceType PatientType = ResourceType.Parse("Patient");
+
+    // Deliberately empty, whatever the caller's proofs say: the narrow projection certifies nothing beyond ordinary search.
+    private static readonly SearchCertification NoProof = new(new Dictionary<SearchParamType, IReadOnlyCollection<string>>(), [], [], [], []);
+
     private readonly ShardRegistry _registry;
     private readonly ImmutableDictionary<ShardId, ShardCapabilityEntry> _shards;
 
@@ -57,6 +64,104 @@ public sealed class ShardCapabilitySnapshot
     public bool TryCreateSearchCapabilities(ImmutableArray<ShardCapabilityProof> proofs, [NotNullWhen(true)] out SearchCapabilities? capabilities)
     {
         capabilities = null;
+        if (!TryBindProofs(proofs, out List<ShardCapabilityProof>? bound))
+        {
+            return false;
+        }
+
+        capabilities = new SearchCapabilities(
+            _registry,
+            bound.Select(proof => ShardCapabilityBridge.Create(proof.Shard, proof.Evidence, proof.Certification)));
+        return true;
+    }
+
+    /// <summary>
+    /// Captures planner input for <c>Patient</c> alone and only the ordinary search parameters a trusted caller has measured.
+    /// </summary>
+    /// <param name="proofs">
+    /// Materialized proofs bound exactly as for <see cref="TryCreateSearchCapabilities"/>. Only the binding is used: the
+    /// optional modifiers, repetition, alternatives, exact counts and reference paths each proof certifies are ignored, and
+    /// every shard is treated as if it had supplied an empty <see cref="SearchCertification"/>.
+    /// </param>
+    /// <param name="requiredParameterCodes">
+    /// The mandatory Patient search codes, such as <c>_id</c> and <c>given</c>; compared ordinally, never case-folded, and
+    /// each repeated code counts once. Every one must end up in the published Patient parameters.
+    /// </param>
+    /// <param name="capabilities">
+    /// The view citing this snapshot's registry, over Patient alone with no includes or revincludes; <see langword="null"/>
+    /// when there is none. It never changes, whatever the refresher publishes later.
+    /// </param>
+    /// <returns>
+    /// <see langword="false"/> when a shard has never supplied evidence, has no proof for its current evidence instance,
+    /// advertises no searchable Patient, or when Core does not publish every required code: a code missing on any shard, or
+    /// one whose declarations disagree with the R4 meaning. Never a narrower, partially populated view. This does not
+    /// indicate readiness.
+    /// </returns>
+    /// <remarks>
+    /// <para>Synchronous and pure, like <see cref="TryCreateSearchCapabilities"/>. Every declaration of a required code, on
+    /// the common list and on Patient, is kept in advertised order and duplicates are not merged, so Core resolves any
+    /// disagreement.</para>
+    /// <para>The registry is reused unchanged. <see cref="SearchCapabilities.SupportsLastUpdatedSort"/> is a registry
+    /// profile fact, not an optional search certification; an unsorted-only caller must use profiles that do not
+    /// certify stable <c>_lastUpdated</c> order across the registry.</para>
+    /// </remarks>
+    /// <exception cref="ArgumentException">
+    /// <paramref name="requiredParameterCodes"/> is default, empty, or contains a blank or <see langword="null"/> value.
+    /// Also as for <see cref="TryCreateSearchCapabilities"/>, for the proofs and for a selected declaration the planner
+    /// cannot represent.
+    /// </exception>
+    public bool TryCreatePatientSearchCapabilities(
+        ImmutableArray<ShardCapabilityProof> proofs,
+        ImmutableArray<string> requiredParameterCodes,
+        [NotNullWhen(true)] out SearchCapabilities? capabilities)
+    {
+        capabilities = null;
+        if (requiredParameterCodes.IsDefaultOrEmpty || requiredParameterCodes.Any(string.IsNullOrWhiteSpace))
+        {
+            throw new ArgumentException("The required Patient search codes are a non-empty array of search codes.", nameof(requiredParameterCodes));
+        }
+
+        if (!TryBindProofs(proofs, out List<ShardCapabilityProof>? bound))
+        {
+            return false;
+        }
+
+        var required = requiredParameterCodes.ToHashSet(StringComparer.Ordinal);
+        var shards = new List<ShardSearchCapability>(bound.Count);
+        foreach (ShardCapabilityProof proof in bound)
+        {
+            if (!proof.Evidence.SearchableResources.TryGetValue(PatientType, out ResourceSearchEvidence? patient))
+            {
+                return false;
+            }
+
+            shards.Add(new ShardSearchCapability(
+                proof.Shard.Id,
+                [new ResourceSearchSupport(
+                    PatientType,
+                    proof.Evidence.CommonSearchParameters.Concat(patient.SearchParameters)
+                        .Where(parameter => required.Contains(parameter.Code))
+                        .Select(ShardCapabilityBridge.MapParameter),
+                    [],
+                    [])],
+                NoProof));
+        }
+
+        var view = new SearchCapabilities(_registry, shards);
+        if (view.Resources.SingleOrDefault(resource => resource.Type == PatientType) is not { } published
+            || !required.All(code => published.Parameters.Any(parameter => parameter.Code == code)))
+        {
+            return false;
+        }
+
+        capabilities = view;
+        return true;
+    }
+
+    // The one binding both projections share: argument checks, then one proof per shard for its current evidence instance.
+    private bool TryBindProofs(ImmutableArray<ShardCapabilityProof> proofs, [NotNullWhen(true)] out List<ShardCapabilityProof>? bound)
+    {
+        bound = null;
         if (proofs.IsDefault || proofs.Any(proof => proof is null))
         {
             throw new ArgumentException("Proofs are a materialized array of proofs.", nameof(proofs));
@@ -69,7 +174,7 @@ public sealed class ShardCapabilitySnapshot
             throw new ArgumentException("A shard descriptor and evidence pair has one proof.", nameof(proofs));
         }
 
-        var bound = new List<ShardCapabilityProof>(_registry.Shards.Count);
+        var matched = new List<ShardCapabilityProof>(_registry.Shards.Count);
         foreach (ShardDescriptor shard in _registry.Shards)
         {
             if (_shards[shard.Id].Evidence is not { } evidence
@@ -78,12 +183,10 @@ public sealed class ShardCapabilitySnapshot
                 return false;
             }
 
-            bound.Add(proof);
+            matched.Add(proof);
         }
 
-        capabilities = new SearchCapabilities(
-            _registry,
-            bound.Select(proof => ShardCapabilityBridge.Create(proof.Shard, proof.Evidence, proof.Certification)));
+        bound = matched;
         return true;
     }
 
