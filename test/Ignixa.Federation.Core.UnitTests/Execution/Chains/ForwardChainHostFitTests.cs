@@ -44,12 +44,14 @@ public sealed class ForwardChainHostFitTests
         ShouldBe(seen[2].Request, East, Observation, [raw, new("subject", "Patient%2Forchid")], 20, ShardSearchMethod.Get);
         ShouldBe(seen[3].Request, West, Observation, [raw, new("subject", EastOrchidCanonical)], 10, ShardSearchMethod.PostSearch);
 
-        // The witness requests measured are the ones sent.
-        backend.Client.Calls.Count.ShouldBe(2);
+        // The witness requests measured are the ones sent, regardless of which shard starts first.
+        var calls = backend.Client.Calls;
+        calls.Count.ShouldBe(2);
         for (int i = 0; i < 2; i++)
         {
             ShardSearchRequest measured = seen[i].Request;
-            ShouldBe(backend.Client.Calls[i].Search.ShouldNotBeNull(), measured.Shard, measured.Type, measured.Parameters, measured.PageSize, measured.Method);
+            ShardSearchRequest sent = calls.Single(call => call.Shard == measured.Shard).Search.ShouldNotBeNull();
+            ShouldBe(sent, measured.Shard, measured.Type, measured.Parameters, measured.PageSize, measured.Method);
         }
 
         // The templates keep the federation page size; only the measured first send is clamped.
