@@ -27,8 +27,10 @@ deployment, and it makes **no statement about any container image**.
     `2a67597a015b957066822b0d54f2ccc46971c14e`, SDK 11.0.100 (its `global.json`),
     `dotnet build src/Microsoft.Health.Fhir.R4.Web -c Release`
     → `…/bin/Release/net11.0/Microsoft.Health.Fhir.R4.Web.dll`.
-  - Neither build command was replayed or captured verbatim for this task; they are the standard commands for
-    those commits and are unverified here.
+  - Both build commands above were replayed independently by the coordinator, not by this launcher or its tests,
+    in fresh detached checkouts at those pinned commits: Ignixa with SDK 10.0.404 (325 warnings, 0 errors) and
+    Microsoft with SDK 11.0.100 (0 warnings, 0 errors). That is source-build evidence only, not acceptance of
+    the launcher.
 
 Before it creates anything the launcher checks: Windows, `dotnet.exe`, `sqlcmd`, `SqlLocalDB`, `curl.exe`,
 the committed corpus files, that both `.dll`s are built hosts whose runtimes are installed, and (read-only)

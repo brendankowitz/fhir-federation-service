@@ -279,7 +279,14 @@ def private_localdb(workdir: Path):
 
 
 def localdb_names() -> set[str]:
-    return set(run_tool(["SqlLocalDB", "info"], timeout=30).stdout.decode().split())
+    """The LocalDB instance names; an unsuccessful or unreadable listing is an error, never an empty inventory."""
+    done = run_tool(["SqlLocalDB", "info"], timeout=30)
+    if done.returncode:
+        raise LaunchError(f"SqlLocalDB info failed with exit code {done.returncode}")
+    try:
+        return set(done.stdout.decode().split())
+    except UnicodeDecodeError:
+        raise LaunchError("SqlLocalDB info produced output that could not be read") from None
 
 
 def discard_localdb(name: str) -> None:

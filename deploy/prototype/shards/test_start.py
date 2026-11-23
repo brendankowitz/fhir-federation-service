@@ -403,7 +403,7 @@ class FlowTests(unittest.TestCase):
                 raise self.start.CleanupError(cleanup_error)
         return manager
 
-    def run_main(self, *flags, west_cleanup_error=None, sleep=None):
+    def run_main(self, *flags, west_cleanup_error=None, sleep=None, east=None):
         start, events = self.start, self.events
 
         class Stdout(io.StringIO):
@@ -423,7 +423,7 @@ class FlowTests(unittest.TestCase):
         with preserved_signals(), contextlib.ExitStack() as patches:
             for target, replacement in (
                     ("check_prerequisites", mock.Mock(return_value=prerequisites)),
-                    ("private_localdb", self.resource("east", r"(localdb)\FedProtoabc")),
+                    ("private_localdb", east or self.resource("east", r"(localdb)\FedProtoabc")),
                     ("west_catalog", self.resource("west", "FedProtoWest_x", west_cleanup_error)),
                     ("ignixa_command", mock.Mock(return_value=([], {}))),
                     ("microsoft_command", mock.Mock(return_value=([], {}))),
@@ -465,6 +465,24 @@ class FlowTests(unittest.TestCase):
         self.assertEqual({"east": "https://localhost:1/tenant/1", "west": "https://localhost:2"}, json.loads(out))
         self.assertEqual(1, len(out.splitlines()))
         self.assertLess(self.events.index(next(e for e in self.events if e.startswith("stdout "))), self.events.index("remove east"))
+        self.assertIn("remove workdir", self.events)
+
+    def test_an_unreadable_localdb_listing_at_teardown_means_no_verified_line(self):
+        start, calls, real_private_localdb = self.start, [], self.start.private_localdb
+
+        def run(argv, **kwargs):
+            verb = argv[1] if argv[0] == "SqlLocalDB" else "sqlcmd"
+            calls.append(verb)
+            listing = (calls.count("info"), verb) == (2, "info")  # the teardown listing fails
+            return subprocess.CompletedProcess(argv, 1 if listing else 0, b"", b"")
+        with mock.patch.object(start.subprocess, "run", run):
+            status, out, err = self.run_main("--verify", east=lambda workdir: real_private_localdb(workdir))
+        self.assertEqual(["info", "create", "sqlcmd", "info"], calls, "nothing is stopped or deleted on an unknown inventory")
+        self.assertEqual(3, status)
+        self.assertEqual("", out)
+        self.assertRegex(err, r"FedProto[0-9a-f]{12}")
+        self.assertNotIn("verified", err)
+        self.assertIn("remove west", self.events, "the other cleanup still runs")
         self.assertIn("remove workdir", self.events)
 
     def test_interrupts_are_ignored_only_while_cleanup_runs(self):
@@ -601,6 +619,71 @@ open(result, "w").write(outcome)
         survived, outcome = self.broadcast_break_in_private_console(scoped=True)
         self.assertTrue(survived, "the cleanup tool was killed by the console event: " + outcome)
         self.assertEqual("completed", outcome)
+
+
+class LocalDbInventoryTests(unittest.TestCase):
+    """A failed or unreadable ``SqlLocalDB info`` listing is never read as "no instances".
+
+    Every process response here is a stub; no SqlLocalDB, sqlcmd or other real tool is started.
+    """
+
+    def setUp(self):
+        import start
+        self.start = start
+        self.calls = []
+
+    def stub_tools(self, *, listings):
+        """subprocess.run stand-in. ``listings`` answers successive ``info`` calls as (returncode, stdout) pairs;
+        the instance the launcher creates is appended to a listing given as a callable of the created names."""
+        created, pending = [], list(listings)
+
+        def run(argv, **kwargs):
+            self.assertIn(argv[0], ("SqlLocalDB", "sqlcmd"))
+            verb = argv[1] if argv[0] == "SqlLocalDB" else "sqlcmd"
+            self.calls.append(verb)
+            if verb == "create":
+                created.append(argv[2])
+            if verb == "info":
+                code, out = pending.pop(0) if pending else (0, b"")
+                return subprocess.CompletedProcess(argv, code, out(created) if callable(out) else out, b"")
+            return subprocess.CompletedProcess(argv, 0, b"", b"")
+        return mock.patch.object(self.start.subprocess, "run", run)
+
+    FAILED = (1, b"")
+    UNREADABLE = (0, b"\xff\xfe\x00 not text")
+    LISTS_CREATED = (0, lambda created: " ".join(created).encode())
+
+    def enter_and_leave(self):
+        with tempfile.TemporaryDirectory() as workdir, self.start.private_localdb(Path(workdir)):
+            pass
+
+    def test_a_failed_listing_before_creation_creates_nothing_and_fails_visibly(self):
+        for label, bad in (("non-zero exit", self.FAILED), ("undecodable output", self.UNREADABLE)):
+            with self.subTest(label), self.stub_tools(listings=[bad]):
+                self.calls.clear()
+                with self.assertRaises(self.start.LaunchError):
+                    self.enter_and_leave()
+                self.assertEqual(["info"], self.calls, "no instance may be created on an unknown inventory")
+
+    def test_a_failed_listing_at_teardown_names_the_instance_and_guesses_nothing(self):
+        for label, bad in (("non-zero exit", self.FAILED), ("undecodable output", self.UNREADABLE)):
+            with self.subTest(label), self.stub_tools(listings=[(0, b""), bad]):
+                self.calls.clear()
+                with self.assertRaises(self.start.CleanupError) as raised:
+                    self.enter_and_leave()
+                self.assertRegex(str(raised.exception), r"FedProto[0-9a-f]{12}")
+                self.assertEqual(["info", "create", "sqlcmd", "info"], self.calls, "no stop or delete on an unknown inventory")
+
+    def test_a_genuinely_empty_listing_still_means_nothing_to_discard(self):
+        with self.stub_tools(listings=[(0, b"")]):
+            self.start.discard_localdb("FedProtoabcdef123456")
+        self.assertEqual(["info"], self.calls)
+
+    def test_successful_listings_still_create_and_then_stop_and_delete_the_instance(self):
+        with self.stub_tools(listings=[(0, b""), self.LISTS_CREATED]):
+            self.enter_and_leave()
+        self.assertEqual(["info", "create", "sqlcmd", "info", "stop", "delete"], self.calls)
+
 
 
 class SeedingTests(unittest.TestCase):
