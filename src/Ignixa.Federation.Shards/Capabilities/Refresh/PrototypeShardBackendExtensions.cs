@@ -110,6 +110,7 @@ public static class PrototypeShardBackendExtensions
     /// <remarks>
     /// Secret values are not read here; credential resolution stays deferred to the first call. Numeric collection keys
     /// are treated as indexes, so gaps in a configured list are tolerated and failures name the configured key.
+    /// Omit <c>LinkBaseAliases</c> or use an empty JSON array when a shard has no additional bases.
     /// Omit <c>Timeouts:BackendCall</c>, <c>Timeouts:Request</c> or <c>Limits:MaxResponseBytes</c> to use its default;
     /// an explicit null is refused.
     /// </remarks>

@@ -158,7 +158,10 @@ internal sealed partial class PrototypeShardBackendSettings
 
             var aliasKeys = new List<string>();
             string aliasesPath = $"{path}:LinkBaseAliases";
-            foreach ((string aliasKey, IConfigurationSection alias) in Entries(row.GetSection("LinkBaseAliases"), aliasesPath))
+            IConfigurationSection aliases = row.GetSection("LinkBaseAliases");
+            // The JSON provider represents [] as an empty string. Only this optional list accepts that marker.
+            foreach ((string aliasKey, IConfigurationSection alias) in
+                     aliases.Value is "" && !aliases.GetChildren().Any() ? [] : Entries(aliases, aliasesPath))
             {
                 string aliasPath = $"{aliasesPath}:{aliasKey}";
                 if (!TryScalar(alias, aliasPath, out string? value))

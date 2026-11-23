@@ -742,7 +742,29 @@ public sealed class PrototypeShardBackendConfigurationTests
         host.Services.GetRequiredService<MultiShardHttpClient>().ShouldNotBeNull();
     }
 
-    private static IConfigurationSection JsonSection(string transport)
+    [Fact]
+    public void AnEmptyJsonAliasArrayRegistersWithNoAliases()
+    {
+        IConfigurationSection section = JsonSection("", """
+            "LinkBaseAliases": [],
+            """);
+        var services = new ServiceCollection();
+
+        services.AddPrototypeShardBackend(section);
+
+        using IHost host = Build(services);
+        host.Services.GetRequiredService<ShardRegistry>().Shards[0].CanonicalLinkBaseAliases.ShouldBeEmpty();
+    }
+
+    [Theory]
+    [InlineData("\"LinkBaseAliases\": \"" + Sentinel + "\",")]
+    [InlineData("\"LinkBaseAliases\": [], \"LinkBaseAliases:0\": \"https://alias.synthetic.example/fhir\",")]
+    public void AScalarOrMixedJsonAliasShapeIsStillRefused(string shardSettings)
+    {
+        AssertRefused(Refuse(JsonSection("", shardSettings)), "Federation:Shards:0:LinkBaseAliases");
+    }
+
+    private static IConfigurationSection JsonSection(string transport, string shardSettings = "")
     {
         using var stream = new MemoryStream(Encoding.UTF8.GetBytes($$"""
             {
@@ -755,6 +777,7 @@ public sealed class PrototypeShardBackendConfigurationTests
                             "BaseUrl": "https://east.synthetic.example/fhir",
                             "Profile": "{{IgnixaProfile}}",
                             "Auth": { "Type": "ManagedIdentity", "Resource": "api://{{Sentinel}}", "ClientId": null },
+                            {{shardSettings}}
                             "WireLimits": { "MaxGetTargetBytes": 1024, "MaxPostBodyBytes": 1024 }
                         }
                     ]
