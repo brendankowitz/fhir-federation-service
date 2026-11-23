@@ -9,13 +9,16 @@ namespace Ignixa.Federation.Api.Search;
 /// Also the <c>search-capabilities</c> readiness check: unhealthy while there is no view.
 /// </summary>
 /// <remarks>
-/// A host with no registered <see cref="SearchCapabilities"/> is up but cold: nothing is resolved beyond the settings, and
-/// every route that needs the view refuses before doing any work. A registered view is built eagerly, so a missing
-/// transport, invalid options or a registry mismatch still fail startup. The search and the capability statement are built
-/// from that one view, so they cannot describe different views. A request reads <see cref="Current"/> once and uses only
-/// that bundle. Thread-safe: immutable after construction.
+/// A host with no <see cref="SearchCapabilities"/> is up but cold: every route that needs the view refuses before doing any
+/// work. The view is the one registered at startup, built eagerly so a missing transport, invalid options or a registry
+/// mismatch still fail startup, and afterwards whatever a trusted component publishes through
+/// <see cref="IFederationCapabilityPublisher"/>; the latest publication is the only source, and a withdrawal does not fall
+/// back to the registered view. The search and the capability statement are built from that one view, as a pair, before
+/// they are installed, so they cannot describe different views and a failed build installs nothing. A request reads
+/// <see cref="Current"/> once and uses only that bundle, so a publication never changes a request in flight.
+/// Thread-safe: publications, which include the build, are serialized by a lock that readers never take.
 /// </remarks>
-internal sealed class PrimarySearchState : IHealthCheck
+internal sealed class PrimarySearchState : IHealthCheck, IFederationCapabilityPublisher
 {
     /// <summary>The name of the readiness check.</summary>
     public const string HealthCheckName = "search-capabilities";
@@ -23,27 +26,48 @@ internal sealed class PrimarySearchState : IHealthCheck
     /// <summary>The fixed diagnostics every cold refusal carries.</summary>
     public const string NotReady = "Federation capabilities are not ready.";
 
-    private PrimarySearchState(Ready? current) => Current = current;
+    private readonly IServiceProvider _services;
+    private readonly SearchHostSettings _settings;
+    private readonly Lock _writer = new();
+    private Ready? _current;
 
-    /// <summary>Gets the bundle built from the view, or <see langword="null"/> while the host has no view.</summary>
-    public Ready? Current { get; }
+    private PrimarySearchState(IServiceProvider services, SearchHostSettings settings)
+    {
+        _services = services;
+        _settings = settings;
+    }
 
-    /// <summary>Builds the state from the registered view, if any.</summary>
+    /// <summary>Gets the bundle built from the latest published view, or <see langword="null"/> while the host has none.</summary>
+    public Ready? Current => Volatile.Read(ref _current);
+
+    /// <summary>Builds the state, seeded from the registered view if there is one.</summary>
     /// <param name="services">The application services.</param>
     /// <param name="settings">The validated host settings.</param>
     /// <returns>The state, cold when no view is registered.</returns>
     /// <exception cref="InvalidOperationException">A view is registered but search cannot be built (see <see cref="PrimarySearch.Create"/>).</exception>
     public static PrimarySearchState Create(IServiceProvider services, SearchHostSettings settings)
     {
-        if (services.GetService<SearchCapabilities>() is not { } capabilities)
-        {
-            return new PrimarySearchState(null);
-        }
+        var state = new PrimarySearchState(services, settings);
+        state.Publish(services.GetService<SearchCapabilities>());
+        return state;
+    }
 
-        PrimarySearch search = PrimarySearch.Create(services, settings, capabilities);
-        DateTimeOffset publishedAt = services.GetRequiredService<TimeProvider>().GetUtcNow();
-        byte[] statement = MetadataEndpoints.WriteStatement(settings.PublicBase, publishedAt, capabilities.Resources, search.Reads.Enabled);
-        return new PrimarySearchState(new Ready(search, statement));
+    /// <inheritdoc />
+    public void Publish(SearchCapabilities? capabilities)
+    {
+        // The build stays inside the lock: a later publication must not be overwritten by an earlier one that finishes late.
+        lock (_writer)
+        {
+            Volatile.Write(ref _current, capabilities is null ? null : Build(capabilities));
+        }
+    }
+
+    private Ready Build(SearchCapabilities capabilities)
+    {
+        PrimarySearch search = PrimarySearch.Create(_services, _settings, capabilities);
+        DateTimeOffset publishedAt = _services.GetRequiredService<TimeProvider>().GetUtcNow();
+        byte[] statement = MetadataEndpoints.WriteStatement(_settings.PublicBase, publishedAt, capabilities.Resources, search.Reads.Enabled);
+        return new Ready(search, statement);
     }
 
     /// <inheritdoc />

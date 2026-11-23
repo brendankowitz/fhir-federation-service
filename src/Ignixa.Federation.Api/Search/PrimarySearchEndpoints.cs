@@ -15,7 +15,8 @@ namespace Ignixa.Federation.Api.Search;
 /// not a search service while its health endpoints keep working. With the section but no registered capabilities view the
 /// host stays up and not ready: the routes that need the view answer 503 before any other work (see
 /// <see cref="PrimarySearchState"/>). A registered view is resolved at startup and any gap fails the host rather than the
-/// first request.
+/// first request. A trusted component can publish, replace or withdraw the view later through
+/// <see cref="IFederationCapabilityPublisher"/>, which exists only on a configured host.
 /// </remarks>
 internal static class PrimarySearchEndpoints
 {
@@ -57,6 +58,7 @@ internal static class PrimarySearchEndpoints
         builder.Logging.AddFilter(typeof(JwtBearerHandler).FullName, LogLevel.None);
         builder.Services.AddSingleton(settings);
         builder.Services.AddSingleton(services => PrimarySearchState.Create(services, settings));
+        builder.Services.AddSingleton<IFederationCapabilityPublisher>(services => services.GetRequiredService<PrimarySearchState>());
         builder.Services.AddHealthChecks().AddCheck<PrimarySearchState>(PrimarySearchState.HealthCheckName, tags: ["ready"]);
         return builder;
     }
