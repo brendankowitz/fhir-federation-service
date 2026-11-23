@@ -1,4 +1,5 @@
 using Ignixa.Federation.Api.Metadata;
+using Ignixa.Federation.Core.Configuration;
 using Ignixa.Federation.Core.Search;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
 
@@ -16,7 +17,16 @@ namespace Ignixa.Federation.Api.Search;
 /// back to the registered view. The search and the capability statement are built from that one view, as a pair, before
 /// they are installed, so they cannot describe different views and a failed build installs nothing. A request reads
 /// <see cref="Current"/> once and uses only that bundle, so a publication never changes a request in flight.
-/// Thread-safe: publications, which include the build, are serialized by a lock that readers never take.
+/// <para>
+/// Publishing a view is not reconfiguring the application. The raw <c>Federation</c> section keys and values are copied once,
+/// when this state is created right after the host is built, and every build binds and validates the search options from that
+/// copy against the view's profiles; the live configuration is never read again, so a later change to it, or a reload, reaches
+/// neither a publication nor the role grants, authority, signing and public base the host fixed at startup. Nothing is parsed
+/// at capture, so a malformed or invalid startup value does not stop a cold host from listening: it fails each publication
+/// until the host is restarted, and a runtime edit does not rescue it.
+/// </para>
+/// Thread-safe: publications, which include the build, are serialized by a lock that readers never take. Concurrent callers
+/// are not queued first-in first-out: the lock is not fair, so the order they install in is the order they acquire it.
 /// </remarks>
 internal sealed class PrimarySearchState : IHealthCheck, IFederationCapabilityPublisher
 {
@@ -28,6 +38,7 @@ internal sealed class PrimarySearchState : IHealthCheck, IFederationCapabilityPu
 
     private readonly IServiceProvider _services;
     private readonly SearchHostSettings _settings;
+    private readonly KeyValuePair<string, string?>[] _federation;
     private readonly Lock _writer = new();
     private Ready? _current;
 
@@ -35,6 +46,10 @@ internal sealed class PrimarySearchState : IHealthCheck, IFederationCapabilityPu
     {
         _services = services;
         _settings = settings;
+        _federation = [.. services.GetRequiredService<IConfiguration>()
+            .GetSection(FederationOptions.SectionName)
+            .AsEnumerable(makePathsRelative: true)
+            .Where(entry => entry.Value is not null)];
     }
 
     /// <summary>Gets the bundle built from the latest published view, or <see langword="null"/> while the host has none.</summary>
@@ -64,7 +79,15 @@ internal sealed class PrimarySearchState : IHealthCheck, IFederationCapabilityPu
 
     private Ready Build(SearchCapabilities capabilities)
     {
-        PrimarySearch search = PrimarySearch.Create(_services, _settings, capabilities);
+        // Bound per build from the startup copy, so a malformed value fails here rather than when the host starts.
+        var options = new FederationOptions();
+        using (var snapshot = new ConfigurationManager())
+        {
+            snapshot.AddInMemoryCollection(_federation);
+            snapshot.Bind(options);
+        }
+
+        PrimarySearch search = PrimarySearch.Create(_services, _settings, options, capabilities);
         DateTimeOffset publishedAt = _services.GetRequiredService<TimeProvider>().GetUtcNow();
         byte[] statement = MetadataEndpoints.WriteStatement(_settings.PublicBase, publishedAt, capabilities.Resources, search.Reads.Enabled);
         return new Ready(search, statement);

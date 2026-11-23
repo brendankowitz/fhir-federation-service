@@ -137,7 +137,7 @@ internal sealed class PrimarySearch
     public RequestBudget StartBudget(CancellationToken caller) =>
         new(_limits, _timeouts, _registry.Shards.Count, _time, caller);
 
-    /// <summary>Builds the search from a capabilities view, the registered transport and the <c>Federation</c> configuration.</summary>
+    /// <summary>Builds the search from a capabilities view, the registered transport and the startup <c>Federation</c> options.</summary>
     /// <remarks>
     /// To enable count-only searches, register an <see cref="IReadOnlyDictionary{TKey,TValue}"/> from <see cref="ShardId"/>
     /// to <see cref="CountDialect"/> for that view. A missing or invalid map disables count execution, including distributed
@@ -148,19 +148,18 @@ internal sealed class PrimarySearch
     /// </remarks>
     /// <param name="services">The application services.</param>
     /// <param name="settings">The validated host settings.</param>
+    /// <param name="options">The <c>Federation</c> options bound from the startup snapshot; checked here against the view's profiles.</param>
     /// <param name="capabilities">The view this search plans against; the same instance the capability statement describes.</param>
     /// <returns>The search.</returns>
     /// <exception cref="InvalidOperationException">
     /// No transport is registered, the <c>Federation</c> options are invalid, or its shards do not describe
     /// exactly the view's registry. Messages carry only configuration paths.
     /// </exception>
-    public static PrimarySearch Create(IServiceProvider services, SearchHostSettings settings, SearchCapabilities capabilities)
+    public static PrimarySearch Create(IServiceProvider services, SearchHostSettings settings, FederationOptions options, SearchCapabilities capabilities)
     {
         IShardClientFactory clients = services.GetService<IShardClientFactory>()
             ?? throw new InvalidOperationException("Search is configured but no shard transport (IShardClientFactory) is registered.");
 
-        var options = new FederationOptions();
-        services.GetRequiredService<IConfiguration>().GetSection(FederationOptions.SectionName).Bind(options);
         BackendProfile[] profiles = [.. capabilities.Registry.Shards.Select(s => s.Profile).DistinctBy(p => p.Name)];
         ValidateOptionsResult validation = new FederationOptionsValidator(profiles).Validate(null, options);
         if (validation.Failed)

@@ -5,6 +5,7 @@ using Ignixa.Federation.Api.Search;
 using Ignixa.Federation.Core.Search;
 using Ignixa.Federation.Tests.Integration.Authentication;
 using Ignixa.Federation.Tests.Integration.Reads;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Shouldly;
@@ -267,6 +268,43 @@ public sealed class PrimarySearchCapabilityPublicationTests
     }
 
     [Fact]
+    public async Task FederationSettingsChangedAfterStartup_DoNotReachTheSearchBuiltByALaterPublication()
+    {
+        var binding = new ScriptedReadBinding();
+        using SearchHost host = StartCold(setup =>
+        {
+            setup.Settings["Federation:ProxyReads"] = "false";
+            setup.ConfigureServices = services => services.AddSingleton<IShardReadBinding>(binding);
+        });
+        IFederationCapabilityPublisher publisher = host.Services.GetRequiredService<IFederationCapabilityPublisher>();
+        publisher.Publish(ViewA());
+        await host.WaitForReadinessAsync();
+        await AssertProxiedReadsOffAsync(host);
+
+        EditLiveConfiguration(host, "Federation:ProxyReads", "true");
+        publisher.Publish(ViewB());
+
+        await AssertProxiedReadsOffAsync(host);
+        binding.Calls.ShouldBeEmpty();
+    }
+
+    [Theory]
+    [InlineData("many")]
+    [InlineData("101")]
+    public async Task FederationSettingThatIsMalformedOrInvalidAtStartup_StartsColdAndIsRefusedOnEveryPublication(string maxPageSize)
+    {
+        using SearchHost host = StartCold(setup => setup.Settings["Federation:Limits:MaxPageSize"] = maxPageSize);
+        IFederationCapabilityPublisher publisher = host.Services.GetRequiredService<IFederationCapabilityPublisher>();
+        await AssertColdAsync(host);
+
+        Should.Throw<InvalidOperationException>(() => publisher.Publish(ViewA()));
+
+        EditLiveConfiguration(host, "Federation:Limits:MaxPageSize", "50");
+        Should.Throw<InvalidOperationException>(() => publisher.Publish(ViewA()));
+        await AssertColdAsync(host);
+    }
+
+    [Fact]
     public void RegisteredViewThatCannotBeBuilt_StillFailsStartup()
     {
         Should.Throw<Exception>(() =>
@@ -304,6 +342,23 @@ public sealed class PrimarySearchCapabilityPublicationTests
             setup.WaitForReadiness = false;
             configure?.Invoke(setup);
         });
+
+    /// <summary>Edits the application's own configuration, then reloads it, and checks the edit is what the app now reads.</summary>
+    private static void EditLiveConfiguration(SearchHost host, string key, string value)
+    {
+        var configuration = (IConfigurationRoot)host.Services.GetRequiredService<IConfiguration>();
+        configuration[key] = value;
+        configuration.Reload();
+        configuration[key].ShouldBe(value);
+    }
+
+    /// <summary>With <c>Federation:ProxyReads</c> false at startup: no read in the statement, no alternate link, no read route.</summary>
+    private static async Task AssertProxiedReadsOffAsync(SearchHost host)
+    {
+        (await ReadResponse.GetAsync(host, "/metadata", token: null)).Body.ShouldNotContain("\"read\"");
+        (await host.GetAsync("/Patient?name=Orchid")).Body.ShouldNotContain("alternate");
+        (await ReadResponse.GetAsync(host, "/shards/k7q2/Patient/dup", host.Token())).Status.ShouldBe(404);
+    }
 
     private static string HeldToken(SearchHost host) =>
         host.Token(new SyntheticTokenRequest { Subject = HeldSubject, Roles = [SearchWorld.ReaderRole], ObjectId = SearchWorld.CallerObjectId });
