@@ -27,6 +27,10 @@ Large datasets outgrow a single FHIR server and its single write primary. Splitt
 
 The v1 service is designed to be read-only: it will never write to a shard, and a request it cannot answer completely will fail rather than return a partial Bundle. These are design guarantees, not yet end-to-end behavior of the current host.
 
+![Conceptual federated search: a client queries a gateway that fans out to independent FHIR servers and merges their results](assets/architecture/fhir-federated-querying-at-scale.svg)
+
+This diagram illustrates the target search design. An entry's `fullUrl` identifies its owning shard; a direct read requires authorization at that shard. `Bundle.link[relation=next]` points to the gateway. The capacity arithmetic is illustrative, not a measured storage, latency, or throughput claim.
+
 ## ✨ Key Features
 
 The components below describe what is implemented in Core and what remains in review or planned. Core tests use scripted shard clients; they do not prove that the current API runs these behaviors end to end. See the [status table](#project-status-by-capability).
@@ -105,6 +109,12 @@ sequenceDiagram
   F-->>C: searchset Bundle with a next link carrying an opaque cursor
   C->>F: GET /Observation?ct=cursor
 ```
+
+## Proposed vNext
+
+![Proposed data coordination: a query broker and bulk workers share a placement catalog and coordinate independent FHIR servers and object storage](assets/architecture/fhir-federation-coordination.svg)
+
+This is a proposed architecture, not current write, import, or export support. The [vNext roadmap](docs/vnext/README.md) describes the placement, bulk-job, and rebalancing proposals. The capacity arithmetic is illustrative; it does not establish usable capacity or performance.
 
 ## Quickstart
 
