@@ -168,8 +168,9 @@ public sealed class ForwardIncludeFailureTests
         var client = new FakeShardClient();
         ShardRegistry registry = Registry();
 
-        Should.Throw<ArgumentNullException>(() => new ForwardIncludeResolver(null!, registry, 1));
-        Should.Throw<ArgumentNullException>(() => new ForwardIncludeResolver(client, null!, 1));
-        Should.Throw<ArgumentOutOfRangeException>(() => new ForwardIncludeResolver(client, registry, 0));
+        Should.Throw<ArgumentNullException>(() => new ForwardIncludeResolver(null!, registry, 1, TestSearch.R4Specification));
+        Should.Throw<ArgumentNullException>(() => new ForwardIncludeResolver(client, null!, 1, TestSearch.R4Specification));
+        Should.Throw<ArgumentNullException>(() => new ForwardIncludeResolver(client, registry, 1, null!));
+        Should.Throw<ArgumentOutOfRangeException>(() => new ForwardIncludeResolver(client, registry, 0, TestSearch.R4Specification));
     }
 }

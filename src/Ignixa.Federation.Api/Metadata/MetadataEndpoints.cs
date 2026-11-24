@@ -49,13 +49,15 @@ internal static class MetadataEndpoints
     /// <param name="resources">The resources the view supports.</param>
     /// <param name="proxiedReads">The shared eligibility; a resource is given the <c>read</c> interaction exactly when it serves the type.</param>
     /// <param name="executesReverseIncludes">Whether the prepared search executes the view's admitted reverse includes.</param>
+    /// <param name="specification">The view's search specification.</param>
     /// <returns>The serialized statement.</returns>
     internal static byte[] WriteStatement(
         string publicBase,
         DateTimeOffset publishedAt,
         IReadOnlyList<ResourceSearchSupport> resources,
         ProxiedReads proxiedReads,
-        bool executesReverseIncludes)
+        bool executesReverseIncludes,
+        IFederationSearchSpecification specification)
     {
         using var buffer = new MemoryStream();
         using (var json = new Utf8JsonWriter(buffer))
@@ -69,7 +71,7 @@ internal static class MetadataEndpoints
             json.WriteString("description", "Ignixa Federation");
             json.WriteString("url", publicBase);
             json.WriteEndObject();
-            json.WriteString("fhirVersion", "4.0.1");
+            json.WriteString("fhirVersion", specification.PublishedVersion);
             json.WriteStartArray("format");
             json.WriteStringValue("json");
             json.WriteEndArray();
@@ -154,6 +156,6 @@ internal static class MetadataEndpoints
         SearchParamType.Quantity => "quantity",
         SearchParamType.Uri => "uri",
         SearchParamType.Special => "special",
-        _ => throw new InvalidOperationException("The published search parameter has no R4 type code."),
+        _ => throw new InvalidOperationException("The published search parameter has no type code."),
     };
 }

@@ -22,8 +22,8 @@ public enum SearchFailureCode
     EmptyKey,
 
     /// <summary>
-    /// A value is empty or malformed for its parameter, or names something R4 does not define for it. A reference value
-    /// is malformed unless it is an id, <c>Type/id</c> (optionally <c>/_history/version</c>) for an R4 type, or an
+    /// A value is empty or malformed for its parameter, or names something the selected release does not define for it. A reference value
+    /// is malformed unless it is an id, <c>Type/id</c> (optionally <c>/_history/version</c>) for a selected-release type, or an
     /// absolute URI (optionally <c>|version</c>), even where the compiler accepts it; contrast
     /// <see cref="UnsupportedReferenceFilter"/>.
     /// </summary>
@@ -35,13 +35,13 @@ public enum SearchFailureCode
     /// <summary>A <c>ct</c> continuation token appears with other parameters.</summary>
     ContinuationNotAlone,
 
-    /// <summary>An untyped chain hop crosses a reference R4 allows to point at more than one resource type.</summary>
+    /// <summary>An untyped chain hop crosses a reference allowed to point at more than one resource type.</summary>
     ChainTargetAmbiguous,
 
     /// <summary>Not every shard searches the resource type.</summary>
     UnsupportedResourceType,
 
-    /// <summary>The parameter is unknown to R4, not understood, or not advertised by every shard.</summary>
+    /// <summary>The parameter is unknown to the selected release, not understood, or not advertised by every shard.</summary>
     UnsupportedParameter,
 
     /// <summary>Not every shard certifies the modifier for the parameter's type.</summary>

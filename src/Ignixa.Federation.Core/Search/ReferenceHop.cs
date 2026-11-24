@@ -26,10 +26,10 @@ public sealed class ReferenceHop
     /// <summary>Gets the typed path.</summary>
     public ReferencePath Path { get; }
 
-    /// <summary>Gets the R4 definition canonical of the reference parameter.</summary>
+    /// <summary>Gets the selected-release definition canonical of the reference parameter.</summary>
     public Uri Definition { get; }
 
-    /// <summary>Gets the R4 FHIRPath expression that extracts the reference from a <see cref="ReferencePath.Source"/> resource. Not evaluated here.</summary>
+    /// <summary>Gets the selected-release FHIRPath expression that extracts the reference from a <see cref="ReferencePath.Source"/> resource. Not evaluated here.</summary>
     public string Expression { get; }
 
     /// <summary>Gets where a chain is joined, or <see langword="null"/> for an include or reverse include.</summary>

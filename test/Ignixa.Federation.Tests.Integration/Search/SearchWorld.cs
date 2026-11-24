@@ -267,7 +267,8 @@ internal static class SearchWorld
         return new SearchCapabilities(
             registry,
             registry.Shards.Select(s => new ShardSearchCapability(s.Id, resources,
-                Certify(s.Id.Value == withoutExactCountProof ? [] : exactCountShapes ?? ["Patient?"]))));
+                Certify(s.Id.Value == withoutExactCountProof ? [] : exactCountShapes ?? ["Patient?"]), "4.0.1")),
+            TestSpecifications.R4);
     }
 
     public static ShardRegistry ReverseRegistry(bool extraWitnessShard, BackendProfile? east = null) =>

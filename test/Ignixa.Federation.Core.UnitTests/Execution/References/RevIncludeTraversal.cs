@@ -84,19 +84,19 @@ internal static class RevIncludeTraversal
                     Resources,
                     TestSearch.Certification(
                         exactCountShapes: CountShapes,
-                        paths: Certified(ReferenceSearchForms.Relative | ReferenceSearchForms.CanonicalAbsolute, ReferenceSearchForms.CanonicalAbsolute))),
+                        paths: Certified(ReferenceSearchForms.Relative | ReferenceSearchForms.CanonicalAbsolute, ReferenceSearchForms.CanonicalAbsolute)), "4.0.1"),
                 new ShardSearchCapability(
                     West,
                     Resources,
                     TestSearch.Certification(
                         exactCountShapes: CountShapes,
-                        paths: Certified(ReferenceSearchForms.CanonicalAbsolute, ReferenceSearchForms.CanonicalAbsolute | ReferenceSearchForms.LinkBaseAliases))),
-            ]);
+                        paths: Certified(ReferenceSearchForms.CanonicalAbsolute, ReferenceSearchForms.CanonicalAbsolute | ReferenceSearchForms.LinkBaseAliases)), "4.0.1"),
+            ], TestSearch.R4Specification);
         return TestSearch.PlanOk(type, encoded, TestSearch.Planner(capabilities));
     }
 
     public static RevIncludePageExecutor Executor(IShardClient client, ShardRegistry registry, int maxParallelFetches = 1, Func<ShardSearchRequest, bool>? fits = null) =>
-        new(client, registry, maxParallelFetches, fits ?? (_ => true));
+        new(client, registry, TestSearch.R4Specification, maxParallelFetches, fits ?? (_ => true));
 
     public static IReadOnlySet<ResourceType> Readable(params ResourceType[] types) => types.ToHashSet();
 

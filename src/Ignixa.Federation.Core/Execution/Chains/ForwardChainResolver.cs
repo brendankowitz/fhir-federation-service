@@ -33,6 +33,7 @@ public sealed class ForwardChainResolver
 
     private readonly IShardClient _client;
     private readonly ShardRegistry _registry;
+    private readonly IFederationSearchSpecification _specification;
     private readonly Func<ShardSearchRequest, bool> _fits;
     private readonly int _maxChainKeys;
     private readonly int _maxParallelBackendCalls;
@@ -44,6 +45,7 @@ public sealed class ForwardChainResolver
     /// </summary>
     /// <param name="client">The client every witness search is sent through.</param>
     /// <param name="registry">The registry this resolver serves; a plan must have been made against this very instance.</param>
+    /// <param name="specification">The search specification for this view.</param>
     /// <param name="requestBounds">
     /// One operator-trusted bound per registry shard, and no other; copied. A request fits when its complete initial form
     /// body (POST) or verbatim request-target (GET), with <c>_count</c>, is within the bound for its method.
@@ -65,10 +67,11 @@ public sealed class ForwardChainResolver
     public ForwardChainResolver(
         IShardClient client,
         ShardRegistry registry,
+        IFederationSearchSpecification specification,
         IReadOnlyDictionary<ShardId, ShardRequestBound> requestBounds,
         LimitOptions limits,
         TimeoutOptions timeouts)
-        : this(client, registry, limits, timeouts, BoundsFit(registry, requestBounds))
+        : this(client, registry, specification, limits, timeouts, BoundsFit(registry, requestBounds))
     {
     }
 
@@ -78,6 +81,7 @@ public sealed class ForwardChainResolver
     /// </summary>
     /// <param name="client">The client every witness search is sent through.</param>
     /// <param name="registry">The registry this resolver serves; a plan must have been made against this very instance.</param>
+    /// <param name="specification">The search specification for this view.</param>
     /// <param name="limits">
     /// The limits; <see cref="LimitOptions.MaxChainKeys"/> and <see cref="LimitOptions.MaxParallelBackendCalls"/> are read
     /// once and must be positive.
@@ -98,12 +102,14 @@ public sealed class ForwardChainResolver
     public ForwardChainResolver(
         IShardClient client,
         ShardRegistry registry,
+        IFederationSearchSpecification specification,
         LimitOptions limits,
         TimeoutOptions timeouts,
         Func<ShardSearchRequest, bool> fitsRequest)
     {
         ArgumentNullException.ThrowIfNull(client);
         ArgumentNullException.ThrowIfNull(registry);
+        ArgumentNullException.ThrowIfNull(specification);
         ArgumentNullException.ThrowIfNull(limits);
         ArgumentNullException.ThrowIfNull(timeouts);
         ArgumentNullException.ThrowIfNull(fitsRequest);
@@ -119,6 +125,7 @@ public sealed class ForwardChainResolver
         _fits = fitsRequest;
         _client = new DeadlineShardClient(client, backendCall);
         _registry = registry;
+        _specification = specification;
     }
 
     /// <summary>Resolves <paramref name="plan"/>'s distributed forward chains.</summary>
@@ -152,9 +159,9 @@ public sealed class ForwardChainResolver
         ArgumentNullException.ThrowIfNull(readableTypes);
         ArgumentOutOfRangeException.ThrowIfNegative(fetchBudget);
         ArgumentOutOfRangeException.ThrowIfNegative(payloadByteBudget);
-        if (!ReferenceEquals(plan.Registry, _registry))
+        if (!ReferenceEquals(plan.Registry, _registry) || !ReferenceEquals(plan.Specification, _specification))
         {
-            throw new ArgumentException("The plan was made against another registry instance.", nameof(plan));
+            throw new ArgumentException("The plan was made against another federation view.", nameof(plan));
         }
 
         cancellationToken.ThrowIfCancellationRequested();

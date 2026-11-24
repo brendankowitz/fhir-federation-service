@@ -34,6 +34,7 @@ internal sealed class PrimarySearchState : IHealthCheck, IFederationCapabilityPu
     public const string NotReady = "Federation capabilities are not ready.";
 
     private readonly IServiceProvider _services;
+    private readonly IFederationSearchSpecification _specification;
     private readonly SearchHostSettings _settings;
     private readonly KeyValuePair<string, string?>[] _federation;
     private readonly Lock _writer = new();
@@ -42,6 +43,7 @@ internal sealed class PrimarySearchState : IHealthCheck, IFederationCapabilityPu
     private PrimarySearchState(IServiceProvider services, SearchHostSettings settings)
     {
         _services = services;
+        _specification = services.GetRequiredService<IFederationSearchSpecification>();
         _settings = settings;
         _federation = [.. services.GetRequiredService<IConfiguration>()
             .GetSection(FederationOptions.SectionName)
@@ -74,6 +76,11 @@ internal sealed class PrimarySearchState : IHealthCheck, IFederationCapabilityPu
     /// <exception cref="InvalidOperationException">Search cannot be built (see <see cref="PrimarySearch.Create"/>); nothing is installed.</exception>
     internal Ready Prepare(SearchCapabilities capabilities, Func<bool> isCurrent, IReadOnlySet<ResourceType>? readableTypes = null)
     {
+        if (!ReferenceEquals(capabilities.Specification, _specification))
+        {
+            throw new InvalidOperationException("The capabilities must use the host's federation search specification.");
+        }
+
         // Bound per build from the startup copy, so a malformed value fails here rather than when the host starts.
         var options = new FederationOptions();
         using (var snapshot = new ConfigurationManager())
@@ -85,7 +92,7 @@ internal sealed class PrimarySearchState : IHealthCheck, IFederationCapabilityPu
         PrimarySearch search = PrimarySearch.Create(_services, _settings, options, capabilities, readableTypes);
         DateTimeOffset publishedAt = _services.GetRequiredService<TimeProvider>().GetUtcNow();
         byte[] statement = MetadataEndpoints.WriteStatement(
-            _settings.PublicBase, publishedAt, capabilities.Resources, search.Reads, search.ExecutesReverseIncludes);
+            _settings.PublicBase, publishedAt, capabilities.Resources, search.Reads, search.ExecutesReverseIncludes, _specification);
         return new Ready(search, statement, isCurrent);
     }
 

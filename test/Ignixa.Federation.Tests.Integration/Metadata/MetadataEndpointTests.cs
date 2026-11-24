@@ -108,9 +108,9 @@ public sealed class MetadataEndpointTests
         var certification = new SearchCertification(new Dictionary<SearchParamType, IReadOnlyCollection<string>>(), [], [], [], []);
         var capabilities = new SearchCapabilities(SearchWorld.Registry,
         [
-            new(ShardId.Parse("east"), [new(ResourceType.Parse("Observation"), [], [], [])], certification),
-            new(ShardId.Parse("west"), [new(ResourceType.Parse("Encounter"), [], [], [])], certification),
-        ]);
+            new(ShardId.Parse("east"), [new(ResourceType.Parse("Observation"), [], [], [])], certification, "4.0.1"),
+            new(ShardId.Parse("west"), [new(ResourceType.Parse("Encounter"), [], [], [])], certification, "4.0.1"),
+        ], TestSpecifications.R4);
         using var host = SearchHost.Start(setup => setup.Capabilities = capabilities);
         using HttpResponseMessage response = await GetAsync(host, "/metadata?_format=application%2Ffhir%2Bjson");
 
@@ -167,9 +167,9 @@ public sealed class MetadataEndpointTests
         var westPatient = new ResourceSearchSupport(patient, [name, subject], ["*", "Patient:organization"], []);
         return new SearchCapabilities(SearchWorld.Registry,
         [
-            new(ShardId.Parse("east"), [eastPatient, commonOrganization, new(ResourceType.Parse("Observation"), [], [], [])], certification),
-            new(ShardId.Parse("west"), [westPatient, commonOrganization, new(ResourceType.Parse("Encounter"), [], [], [])], certification),
-        ]);
+            new(ShardId.Parse("east"), [eastPatient, commonOrganization, new(ResourceType.Parse("Observation"), [], [], [])], certification, "4.0.1"),
+            new(ShardId.Parse("west"), [westPatient, commonOrganization, new(ResourceType.Parse("Encounter"), [], [], [])], certification, "4.0.1"),
+        ], TestSpecifications.R4);
     }
 
     private static Task<HttpResponseMessage> GetAsync(SearchHost host, string path) =>

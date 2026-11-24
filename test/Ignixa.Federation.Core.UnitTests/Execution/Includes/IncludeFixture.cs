@@ -77,7 +77,8 @@ internal static class IncludeFixture
         SearchCertification certification = TestSearch.Certification(paths: [.. TestSearch.AllPaths, TestSearch.FullPath(path)]);
         var capabilities = new SearchCapabilities(
             TestSearch.Registry(),
-            [new ShardSearchCapability(East, resources, certification), new ShardSearchCapability(West, resources, certification)]);
+            [new ShardSearchCapability(East, resources, certification, "4.0.1"), new ShardSearchCapability(West, resources, certification, "4.0.1")],
+            TestSearch.R4Specification);
         return TestSearch.PlanOk("Observation", "_include=" + include, TestSearch.Planner(capabilities))
             .Occurrences.Single(o => o.Kind == OccurrenceKind.Include);
     }
@@ -100,7 +101,7 @@ internal static class IncludeFixture
         [TestShards.MicrosoftFhirServer, profile]);
 
     public static ForwardIncludeResolver Resolver(IShardClient client, ShardRegistry? registry = null, int maxIncludesPerPage = 1000) =>
-        new(client, registry ?? Registry(), maxIncludesPerPage);
+        new(client, registry ?? Registry(), maxIncludesPerPage, TestSearch.R4Specification);
 
     /// <summary>Resolves with every test type authorized and a budget of 100 calls.</summary>
     public static Task<IncludeResult> ResolveAsync(

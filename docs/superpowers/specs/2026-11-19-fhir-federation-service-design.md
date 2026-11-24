@@ -11,7 +11,7 @@ Items marked **[call]** are author decisions informed by the reviews, for the ow
 
 ## 1. Intent
 
-Present **N FHIR servers as shards behind one read-only FHIR search endpoint**. Clients issue ordinary FHIR R4 searches against the federation; it fans out to the shards, resolves `_include`/`_revinclude` and chained / reverse-chained (`_has`) search across shards, merges the results, and returns one `searchset` Bundle. Every entry's `fullUrl` is the resource's real URL on its shard, so entries from different shards are always distinguishable and a client can follow `fullUrl` to fetch the resource from its server.
+Present **N FHIR servers as shards behind one read-only FHIR search endpoint**. Clients issue ordinary searches in the federation's selected FHIR release; it fans out to the shards, resolves `_include`/`_revinclude` and chained / reverse-chained (`_has`) search across shards, merges the results, and returns one `searchset` Bundle. R4 is the only certified release initially. Every entry's `fullUrl` is the resource's real URL on its shard, so entries from different shards are always distinguishable and a client can follow `fullUrl` to fetch the resource from its server.
 
 Long term this layer is one half of the petabyte-scale story: per-server storage work (search-parameter filtering, defrag, schema optimisation, raw-resource split) raises how much each shard holds; the federation multiplies shards and removes the single-write-primary ceiling. Write placement is the v2 bridge (§13).
 
@@ -23,7 +23,7 @@ The 2025 prototype (≈14.5K LOC) proved the execution patterns but was coupled 
 
 ### Goals (v1)
 
-1. Type-level FHIR R4 search (`GET [base]/[type]?…`, `POST [base]/[type]/_search`) across N shards.
+1. Type-level FHIR search (`GET [base]/[type]?…`, `POST [base]/[type]/_search`) across N shards in one selected, certified release (initially R4).
 2. Cross-shard `_include` / `_revinclude` with explicit parameters; forward chains and `_has` at depth 1, resolved distributed (default) or passthrough (operator-asserted).
 3. Global `_sort=_lastUpdated` (asc/desc) with retryable paging; unsorted search as the default.
 4. `fullUrl` = the resource's URL on its shard; optional federation-proxied read for clients that cannot reach the shards.
@@ -41,7 +41,7 @@ The 2025 prototype (≈14.5K LOC) proved the execution patterns but was coupled 
 - Multi-level chains, `_include:iterate`, wildcard includes, include-overflow paging, canonical-reference includes/chains, chains through contained resources.
 - SMART on FHIR authorisation of any kind (§10.1); partial-results opt-in.
 - Custom SearchParameter reconciliation across shards (base-spec parameters only).
-- Mixed FHIR versions (all shards R4).
+- Mixed FHIR releases or conversion between releases; every shard must use an accepted version of the selected release.
 
 ### Anti-goals
 
@@ -54,7 +54,7 @@ The 2025 prototype (≈14.5K LOC) proved the execution patterns but was coupled 
 
 - .NET 11, ASP.NET Core Minimal APIs, central package management, warnings-as-errors, nullable, xUnit + Shouldly + NSubstitute — Ignixa conventions (`brendankowitz/ignixa-fhir` `AGENTS.md`).
 - Ignixa consumed **only via published NuGet** (`0.6.82` at time of writing): `Ignixa.Abstractions`, `Ignixa.Specification`, `Ignixa.Serialization`, `Ignixa.Search`, `Ignixa.FhirPath`. `Ignixa.Api`, `.Application`, `.Domain`, `.DataLayer.*` are not published and must not be depended on. (`Ignixa.Search` references `Microsoft.AspNetCore.Http.Abstractions`; acceptable.)
-- Shards are standard FHIR R4 REST servers over HTTPS. **v1 certified backends: Microsoft FHIR Server / Azure Health Data Services (primary), then Ignixa** (D3). Each certified backend has a verified `BackendProfile` (§9.2) and a compatibility run.
+- Shards are standard FHIR REST servers over HTTPS using the federation's selected release. `Federation:Version` (`Federation__Version` in environment variables) selects it at startup; omission defaults to R4. Invalid or uncertified releases fail startup, without fallback. The explicit certified-release allowlist initially contains R4 only; adding a release requires review and tests, not merely an available schema. **v1 certified backends: Microsoft FHIR Server / Azure Health Data Services (primary), then Ignixa** (D3). Each certified backend has a verified `BackendProfile` (§9.2) and a compatibility run.
 - **Size envelope (D6):** 16 shards is the soft, configurable design limit, not a hard cap. The load-test targets are 16 and 50 shards (§15); they are not measured results. As the shard count grows, all-shard queries need more backend calls and are more likely to encounter an unavailable shard. At 99.9% availability per shard, assuming independent failures, modeled all-shard availability is about 98.4% at 16 shards and 95.1% at 50. Four 128 TB shards provide 512 TB of raw storage; sixteen provide 2.048 PB (decimal), or about 1.82 PiB, before allowing for indexes, headroom and replicas. Reaching 1 PiB of raw storage takes at least nine 128 TB shards or eight 128 TiB shards. These figures describe physical storage, not usable FHIR payload capacity or query throughput. One federation per deployment; no multi-tenancy.
 
 ## 4. Identity and references
@@ -73,6 +73,7 @@ The 2025 prototype (≈14.5K LOC) proved the execution patterns but was coupled 
 
 ```jsonc
 "Federation": {
+  "Version": "R4",
   "ProxyReads": true,
   "ChainResolution": {
     "Default": "Distributed",
@@ -243,7 +244,7 @@ Examples, with Sarah as `Patient/p1` on shard A and `Patient/p2` on shard B:
 
 ### 7.7 Reference classifier (shared)
 
-Used by chains, includes and revincludes. Classifies each `Reference.reference` literal (kept verbatim) relative to the shard the containing resource came from: relative `type/id` (→ same shard), relative versioned (→ same shard, version retained), absolute matching a shard `BaseUrl`/`LinkBaseAliases` (→ that shard), foreign absolute (ignored), contained `#id` (ignored), identifier-only (ignored). Ids are case-sensitive. Extraction evaluates the search parameter's FHIRPath expression over `ResourceJsonNode.Parse(…).ToElement(r4Schema)` (`Ignixa.Serialization` / `Ignixa.FhirPath`).
+Used by chains, includes and revincludes. Classifies each `Reference.reference` literal (kept verbatim) relative to the shard the containing resource came from: relative `type/id` (→ same shard), relative versioned (→ same shard, version retained), absolute matching a shard `BaseUrl`/`LinkBaseAliases` (→ that shard), foreign absolute (ignored), contained `#id` (ignored), identifier-only (ignored). Ids are case-sensitive. Extraction evaluates the search parameter's FHIRPath expression over `ResourceJsonNode.Parse(…).ToElement(schema)`, using the same selected schema as search planning (`Ignixa.Serialization` / `Ignixa.FhirPath`).
 
 ### 7.8 Runtime budget
 
@@ -268,7 +269,8 @@ Deadlines: request 30 s; backend call 10 s; chain sub-query 15 s — all within 
 
 - Fetched from each shard at startup and every 10 min; a failed refresh keeps the last-known-good statement and raises a health signal; a shard never fetched makes the service not-ready.
 - Resource types: those every shard supports `search-type` for.
-- Search parameters: base-spec R4 parameters every shard advertises (by `definition` canonical, or code + type), intersected with the federation's support matrix, exposed through a wrapping `ISearchParameterDefinitionManager` over Ignixa's R4 manager **[call]**.
+- Search parameters: base-spec parameters for the selected release that every shard advertises (by `definition` canonical, or code + type), intersected with the federation's support matrix. Each immutable capabilities snapshot is bound to the same search specification used by the planner. The specification wraps Ignixa's selected-release base definitions; parser and builder instances are created per compilation.
+- The published FHIR version comes from the selected schema. Each shard's reported version must match the specification's exact, ordinal accepted-version allowlist; R4 accepts `4.0.0` and `4.0.1`. A mismatch refuses the shard rather than converting or silently falling back.
 - `searchInclude` / `searchRevInclude`: intersection of explicit values; no wildcards.
 - `_sort`: `_lastUpdated` only. Interactions: `search-type`, and `read` only via the proxied route when `ProxyReads` is on.
 - Modifier support comes from the backend profile, not `/metadata`.
@@ -348,6 +350,8 @@ test/
 ```
 
 `IShardClient` is defined in Core (`Ignixa.Federation.Core.Shards`): it takes parameter occurrence lists and returns entries plus an opaque stream cursor. Shards implements it over HTTP. No mediator.
+
+The host composes one immutable `IFederationSearchSpecification` per federation view from the selected Ignixa schema and base search-parameter manager. The specification supplies release-specific resource and parameter definitions, compilation and reference classification; request lexing and trace alignment remain release-independent. Search capabilities, planning and reference extraction share that composition. This is a per-view choice, not a per-shard provider or a global version switch.
 
 ## 13. Extension path (v2+)
 
@@ -436,6 +440,7 @@ Config key names; token envelope wire format; exact default limits within the st
 | Rename (2026-11-20, Forge) | Rename-only: product Ignixa Federation, .NET 11, Ignixa.Federation.* projects, source-shard extension URL; no design change |
 | Registry and IShardClient contract placement (2026-11-20, Forge/Astra) | §12.1: the shard registry and IShardClient contract (Core.Shards), ParameterOccurrence (Core.Search) and options (Core.Configuration) are in Core; Shards holds the HTTP implementation and concrete profiles; v1 behaviour unchanged |
 | Next-link redemption by start method (2026-11-20, Forge, review R5/R5b) | §7.4: GET starts follow GET; POST starts follow GET or re-POST per the profile's `NextLinkRedemption`; re-POST requires POST `_search` support. Matches `BackendProfile.RedemptionFor` |
+| Version-neutral search specification (VP1) | §§2, 3, 7.7, 9.1 and 12.1: select one certified release per federation view, default R4, and share its schema and definitions across planning, publication and extraction. No mixed releases or conversion. |
 
 ## 20. Prior art
 

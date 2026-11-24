@@ -34,6 +34,12 @@ flowchart LR
 
 `Core` holds the logic these stages use: classification, rewriting, reference classification, merge and budget ([§12.1](../superpowers/specs/2026-11-19-fhir-federation-service-design.md#121-projects)). The `Api` host runs the stages and does authentication and role authorisation. Every call to a shard goes through the `IShardClient` contract in `Core.Shards`, which `Shards` implements over HTTP.
 
+## FHIR release selection
+
+The host selects one immutable search specification and schema for each federation view through `Federation:Version` (`Federation__Version` in the environment). The default is R4; the explicit certification allowlist currently permits only R4. Unknown or uncertified releases fail startup. Schema availability alone does not certify a release.
+
+Capabilities and planning use the same specification, and include and chain reference extraction uses its schema. The specification provides release-specific search definitions and accepted shard versions; it accepts R4 `4.0.0` and `4.0.1`. Shards must match the selected release: mixed releases and conversion are not supported. Metadata publication and shard capability validation must use this same specification ([§9.1](../superpowers/specs/2026-11-19-fhir-federation-service-design.md#91-federated-capabilitystatement)).
+
 ## Where the spec defines each part
 
 | Topic | Spec section |

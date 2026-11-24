@@ -68,9 +68,9 @@ internal static class RevIncludeScenario
         var capabilities = new SearchCapabilities(
             registry,
             [
-                new ShardSearchCapability(East, TestSearch.AllResources, Of(east)),
-                new ShardSearchCapability(West, TestSearch.AllResources, Of(west)),
-            ]);
+                new ShardSearchCapability(East, TestSearch.AllResources, Of(east), "4.0.1"),
+                new ShardSearchCapability(West, TestSearch.AllResources, Of(west), "4.0.1"),
+            ], TestSearch.R4Specification);
         return TestSearch.PlanOk("Patient", encoded, TestSearch.Planner(capabilities));
     }
 
@@ -100,7 +100,8 @@ internal static class RevIncludeScenario
             original.Occurrence,
             original.Kind,
             original.Action,
-            Construct<ReferenceHop>(hop.Path, hop.Definition, hop.Expression, hop.Mode, hop.Terminal, certifications.ToFrozenDictionary()));
+            Construct<ReferenceHop>(hop.Path, hop.Definition, hop.Expression, hop.Mode, hop.Terminal, certifications.ToFrozenDictionary()),
+            original.Specification);
         var recertified = Construct<QueryPlan>(
             plan.Type,
             plan.Query,
@@ -109,7 +110,8 @@ internal static class RevIncludeScenario
             plan.Sort,
             plan.IncludeTotal,
             plan.CountShape,
-            registry);
+            registry,
+            plan.Specification);
         return (recertified, replaced);
     }
 

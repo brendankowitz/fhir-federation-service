@@ -94,7 +94,7 @@ internal static class ChainScenario
                 [
                     Forward(TestSearch.ObservationSubjectPatient, registry, s.Id, westOwnSide),
                     Forward(TestSearch.ObservationPerformerPractitioner, registry, s.Id, westOwnSide),
-                ]))));
+                ]), "4.0.1")), TestSearch.R4Specification);
 
     public static QueryPlan Plan(ShardRegistry registry, string encoded, params string[] passthrough) =>
         TestSearch.PlanOk("Observation", encoded, Planner(registry, passthrough));
@@ -112,6 +112,7 @@ internal static class ChainScenario
         new(
             client,
             registry,
+            TestSearch.R4Specification,
             registry.Shards.ToDictionary(s => s.Id, s => bound?.Invoke(s) ?? ProfileBound(s)),
             limits ?? new LimitOptions(),
             timeouts ?? new TimeoutOptions());
@@ -121,7 +122,7 @@ internal static class ChainScenario
         IShardClient client,
         ShardRegistry registry,
         Func<ShardSearchRequest, bool> fitsRequest) =>
-        new(client, registry, new LimitOptions(), new TimeoutOptions(), fitsRequest);
+        new(client, registry, TestSearch.R4Specification, new LimitOptions(), new TimeoutOptions(), fitsRequest);
 
     public static Task<ForwardChainResolution> ResolveAsync(
         this ForwardChainResolver resolver,

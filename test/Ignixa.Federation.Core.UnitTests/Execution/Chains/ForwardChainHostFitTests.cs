@@ -1,5 +1,6 @@
 using System.Text;
 using Ignixa.Federation.Core.Configuration;
+using Ignixa.Federation.Core.UnitTests.Search;
 using Ignixa.Federation.Core.Execution;
 using Ignixa.Federation.Core.Execution.Chains;
 using Ignixa.Federation.Core.Identity;
@@ -148,13 +149,14 @@ public sealed class ForwardChainHostFitTests
         var client = new FakeShardClient();
         Func<ShardSearchRequest, bool> fits = _ => true;
 
-        Should.Throw<ArgumentNullException>(() => new ForwardChainResolver(null!, registry, new LimitOptions(), new TimeoutOptions(), fits)).ParamName.ShouldBe("client");
-        Should.Throw<ArgumentNullException>(() => new ForwardChainResolver(client, null!, new LimitOptions(), new TimeoutOptions(), fits)).ParamName.ShouldBe("registry");
-        Should.Throw<ArgumentNullException>(() => new ForwardChainResolver(client, registry, null!, new TimeoutOptions(), fits)).ParamName.ShouldBe("limits");
-        Should.Throw<ArgumentNullException>(() => new ForwardChainResolver(client, registry, new LimitOptions(), null!, fits)).ParamName.ShouldBe("timeouts");
-        Should.Throw<ArgumentNullException>(() => new ForwardChainResolver(client, registry, new LimitOptions(), new TimeoutOptions(), null!)).ParamName.ShouldBe("fitsRequest");
-        Should.Throw<ArgumentOutOfRangeException>(() => new ForwardChainResolver(client, registry, new LimitOptions { MaxChainKeys = 0 }, new TimeoutOptions(), fits));
-        Should.Throw<ArgumentOutOfRangeException>(() => new ForwardChainResolver(client, registry, new LimitOptions(), new TimeoutOptions { BackendCall = TimeSpan.Zero }, fits));
+        Should.Throw<ArgumentNullException>(() => new ForwardChainResolver(null!, registry, TestSearch.R4Specification, new LimitOptions(), new TimeoutOptions(), fits)).ParamName.ShouldBe("client");
+        Should.Throw<ArgumentNullException>(() => new ForwardChainResolver(client, null!, TestSearch.R4Specification, new LimitOptions(), new TimeoutOptions(), fits)).ParamName.ShouldBe("registry");
+        Should.Throw<ArgumentNullException>(() => new ForwardChainResolver(client, registry, null!, new LimitOptions(), new TimeoutOptions(), fits)).ParamName.ShouldBe("specification");
+        Should.Throw<ArgumentNullException>(() => new ForwardChainResolver(client, registry, TestSearch.R4Specification, null!, new TimeoutOptions(), fits)).ParamName.ShouldBe("limits");
+        Should.Throw<ArgumentNullException>(() => new ForwardChainResolver(client, registry, TestSearch.R4Specification, new LimitOptions(), null!, fits)).ParamName.ShouldBe("timeouts");
+        Should.Throw<ArgumentNullException>(() => new ForwardChainResolver(client, registry, TestSearch.R4Specification, new LimitOptions(), new TimeoutOptions(), null!)).ParamName.ShouldBe("fitsRequest");
+        Should.Throw<ArgumentOutOfRangeException>(() => new ForwardChainResolver(client, registry, TestSearch.R4Specification, new LimitOptions { MaxChainKeys = 0 }, new TimeoutOptions(), fits));
+        Should.Throw<ArgumentOutOfRangeException>(() => new ForwardChainResolver(client, registry, TestSearch.R4Specification, new LimitOptions(), new TimeoutOptions { BackendCall = TimeSpan.Zero }, fits));
     }
 
     private static void ShouldBe(

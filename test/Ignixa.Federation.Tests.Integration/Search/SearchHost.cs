@@ -53,6 +53,7 @@ internal sealed class SearchHost : IDisposable
             builder.ConfigureTestServices(services =>
             {
                 services.AddSingleton(protection);
+                services.AddSingleton(TestSpecifications.R4);
                 if (setup.Time is { } time)
                 {
                     services.AddSingleton(time);

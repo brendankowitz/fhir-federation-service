@@ -9,6 +9,29 @@ namespace Ignixa.Federation.Core.UnitTests.Configuration;
 
 public sealed class FederationOptionsBindingTests
 {
+    [Theory]
+    [InlineData("R5")]
+    [InlineData("R6")]
+    [InlineData("not-a-release")]
+    [InlineData("r4")]
+    [InlineData("4.0.1")]
+    [InlineData("")]
+    public void ConfiguredUncertifiedOrInvalidVersion_IsRejected(string version)
+    {
+        using var json = new MemoryStream(Encoding.UTF8.GetBytes(SpecExample));
+        IConfiguration configuration = new ConfigurationBuilder()
+            .AddJsonStream(json)
+            .AddInMemoryCollection(new Dictionary<string, string?> { ["Federation:Version"] = version })
+            .Build();
+        var options = new FederationOptions();
+        configuration.GetSection(FederationOptions.SectionName).Bind(options);
+
+        var result = new FederationOptionsValidator([MicrosoftFhirServer]).Validate(null, options);
+
+        result.Failed.ShouldBeTrue();
+        result.Failures.ShouldContain(f => f.StartsWith("Federation:Version:", StringComparison.Ordinal));
+    }
+
     // The design spec §4.2 example, verbatim, wrapped in braces to make it a document.
     private const string SpecExample = """
         {
@@ -39,6 +62,7 @@ public sealed class FederationOptionsBindingTests
         configuration.GetSection(FederationOptions.SectionName).Bind(options);
 
         options.ChainResolution.Passthrough.ShouldBe(["Observation.subject:Patient", "Encounter.subject:Patient", "Condition.subject:Patient"]);
+        options.Version.ShouldBe("R4");
         options.Limits.DefaultPageSize.ShouldBe(20);
         new FederationOptionsValidator([MicrosoftFhirServer]).Validate(null, options).Succeeded.ShouldBeTrue();
 

@@ -39,22 +39,26 @@ public sealed class ForwardIncludeResolver
     private readonly ShardRegistry _registry;
     private readonly ReferenceClassifier _classifier;
     private readonly int _maxIncludesPerPage;
+    private readonly IFederationSearchSpecification _specification;
 
     /// <summary>Initializes a new instance of the <see cref="ForwardIncludeResolver"/> class.</summary>
     /// <param name="client">The client that calls shards.</param>
     /// <param name="registry">The registry that routes references and holds each shard's backend profile.</param>
     /// <param name="maxIncludesPerPage">The most included resources one page holds.</param>
+    /// <param name="specification">The federation view's search specification and schema.</param>
     /// <exception cref="ArgumentNullException"><paramref name="client"/> or <paramref name="registry"/> is <see langword="null"/>.</exception>
     /// <exception cref="ArgumentOutOfRangeException"><paramref name="maxIncludesPerPage"/> is less than 1.</exception>
-    public ForwardIncludeResolver(IShardClient client, ShardRegistry registry, int maxIncludesPerPage)
+    public ForwardIncludeResolver(IShardClient client, ShardRegistry registry, int maxIncludesPerPage, IFederationSearchSpecification specification)
     {
         ArgumentNullException.ThrowIfNull(client);
         ArgumentNullException.ThrowIfNull(registry);
+        ArgumentNullException.ThrowIfNull(specification);
         ArgumentOutOfRangeException.ThrowIfLessThan(maxIncludesPerPage, 1);
         _client = client;
         _registry = registry;
         _classifier = new ReferenceClassifier(registry);
         _maxIncludesPerPage = maxIncludesPerPage;
+        _specification = specification;
     }
 
     /// <summary>Resolves the forward includes of one page.</summary>
@@ -75,7 +79,7 @@ public sealed class ForwardIncludeResolver
     /// </exception>
     /// <exception cref="ArgumentException">
     /// <paramref name="matches"/> holds <see langword="null"/>, or <paramref name="forwardIncludes"/> holds an occurrence that
-    /// is not a planned forward include. Thrown before any shard call.
+    /// is not a planned forward include from this view. Thrown before any shard call.
     /// </exception>
     /// <exception cref="ArgumentOutOfRangeException"><paramref name="fetchBudget"/> is negative.</exception>
     /// <exception cref="ShardFailureException">
@@ -148,15 +152,16 @@ public sealed class ForwardIncludeResolver
         return new IncludeResult(includes.AsReadOnly(), outcomes.AsReadOnly(), scheduler.Started);
     }
 
-    private static ReferenceHop[] HopsOf(IReadOnlyList<PlannedOccurrence> forwardIncludes)
+    private ReferenceHop[] HopsOf(IReadOnlyList<PlannedOccurrence> forwardIncludes)
     {
         ArgumentNullException.ThrowIfNull(forwardIncludes);
         var hops = new ReferenceHop[forwardIncludes.Count];
         for (int i = 0; i < hops.Length; i++)
         {
-            hops[i] = forwardIncludes[i] is { Kind: OccurrenceKind.Include, Hop: { } hop }
+            hops[i] = forwardIncludes[i] is { Kind: OccurrenceKind.Include, Hop: { } hop } occurrence
+                && ReferenceEquals(occurrence.Specification, _specification)
                 ? hop
-                : throw new ArgumentException("Every occurrence must be a planned forward include.", nameof(forwardIncludes));
+                : throw new ArgumentException("Every occurrence must be a planned forward include from this view.", nameof(forwardIncludes));
         }
 
         return hops;
@@ -201,7 +206,7 @@ public sealed class ForwardIncludeResolver
                 }
 
                 cancellationToken.ThrowIfCancellationRequested();
-                foreach (string literal in IncludeReferenceExtractor.Extract(match, expression))
+                foreach (string literal in IncludeReferenceExtractor.Extract(match, expression, _specification.Schema))
                 {
                     ReferenceClassification classification = _classifier.Classify(match.Key.Shard, literal);
                     if (classification is not { Kind: ReferenceKind.Relative or ReferenceKind.KnownAbsolute, Target: { } target }

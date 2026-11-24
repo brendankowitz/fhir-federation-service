@@ -284,6 +284,7 @@ public sealed class CatalogBackendHostTests
         WebApplicationBuilder builder = WebApplication.CreateBuilder();
         builder.WebHost.UseTestServer();
         builder.Configuration.AddInMemoryCollection(setup.Settings);
+        builder.Services.AddSingleton(TestSpecifications.R4);
         return builder.AddPrimarySearch();
     }
 

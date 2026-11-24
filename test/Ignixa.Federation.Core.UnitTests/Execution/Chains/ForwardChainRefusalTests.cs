@@ -277,8 +277,8 @@ public sealed class ForwardChainRefusalTests
         var missing = new Dictionary<ShardId, ShardRequestBound> { [East] = bound };
         var extra = new Dictionary<ShardId, ShardRequestBound> { [East] = bound, [West] = bound, [ShardId.Parse("north")] = bound };
 
-        Should.Throw<ArgumentException>(() => new ForwardChainResolver(new FakeShardClient(), registry, missing, new LimitOptions(), new TimeoutOptions()));
-        Should.Throw<ArgumentException>(() => new ForwardChainResolver(new FakeShardClient(), registry, extra, new LimitOptions(), new TimeoutOptions()));
+        Should.Throw<ArgumentException>(() => new ForwardChainResolver(new FakeShardClient(), registry, TestSearch.R4Specification, missing, new LimitOptions(), new TimeoutOptions()));
+        Should.Throw<ArgumentException>(() => new ForwardChainResolver(new FakeShardClient(), registry, TestSearch.R4Specification, extra, new LimitOptions(), new TimeoutOptions()));
     }
 
     [Theory]

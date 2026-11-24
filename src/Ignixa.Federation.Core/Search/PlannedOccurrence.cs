@@ -3,13 +3,16 @@ namespace Ignixa.Federation.Core.Search;
 /// <summary>One query occurrence and what the planner decided for it.</summary>
 public sealed class PlannedOccurrence
 {
-    internal PlannedOccurrence(QueryOccurrence occurrence, OccurrenceKind kind, OccurrenceAction action, ReferenceHop? hop)
+    internal PlannedOccurrence(QueryOccurrence occurrence, OccurrenceKind kind, OccurrenceAction action, ReferenceHop? hop, IFederationSearchSpecification specification)
     {
         Occurrence = occurrence;
         Kind = kind;
         Action = action;
         Hop = hop;
+        Specification = specification;
     }
+
+    internal IFederationSearchSpecification Specification { get; }
 
     /// <summary>Gets the occurrence: its ordinal, original wire text and decoded pair.</summary>
     public QueryOccurrence Occurrence { get; }

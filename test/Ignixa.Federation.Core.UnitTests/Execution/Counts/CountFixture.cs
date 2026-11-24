@@ -29,7 +29,7 @@ internal static class CountFixture
         SearchCertification certification = TestSearch.Certification(exactCountShapes: shapes);
         return new SearchCapabilities(
             registry,
-            registry.Shards.Select(s => new ShardSearchCapability(s.Id, TestSearch.AllResources, certification)));
+            registry.Shards.Select(s => new ShardSearchCapability(s.Id, TestSearch.AllResources, certification, "4.0.1")), TestSearch.R4Specification);
     }
 
     public static QueryPlan Plan(SearchCapabilities capabilities, string type, string query) =>

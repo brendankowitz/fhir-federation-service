@@ -17,7 +17,7 @@ public sealed record ReferencePath
     {
         ArgumentNullException.ThrowIfNull(source);
         ArgumentNullException.ThrowIfNull(target);
-        if (!R4Search.IsSearchCode(code))
+        if (!SearchSyntax.IsSearchCode(code))
         {
             throw new ArgumentException("A search code is a letter or '_' followed by letters, digits, '_' or '-'.", nameof(code));
         }

@@ -13,8 +13,8 @@ namespace Ignixa.Federation.Core.Search;
 /// intersection for <c>/metadata</c> and the proofs the planner checks (design spec §9).
 /// </summary>
 /// <remarks>
-/// A parameter is published only under its R4 meaning: the R4 definition with that exact code and type, and every
-/// occurrence every shard declares names either no definition or exactly the R4 canonical (ordinal; version and fragment
+/// A parameter is published only under the selected release's meaning: its definition with that exact code and type, and every
+/// occurrence every shard declares names either no definition or exactly the selected canonical (ordinal; version and fragment
 /// count; no URI normalization). A shard that binds a code to another meaning loses the code; meanings are never
 /// rebound. Immutable; safe to share across threads.
 /// </remarks>
@@ -26,10 +26,12 @@ public sealed class SearchCapabilities
     /// <summary>Initializes a new instance of the <see cref="SearchCapabilities"/> class.</summary>
     /// <param name="registry">The shard registry.</param>
     /// <param name="shards">Exactly one capability per registered shard.</param>
+    /// <param name="specification">The release-specific search semantics for this view.</param>
     /// <exception cref="ArgumentException">A registered shard has no capability, or a capability is unregistered or repeated.</exception>
-    public SearchCapabilities(ShardRegistry registry, IEnumerable<ShardSearchCapability> shards)
+    public SearchCapabilities(ShardRegistry registry, IEnumerable<ShardSearchCapability> shards, IFederationSearchSpecification specification)
     {
         ArgumentNullException.ThrowIfNull(registry);
+        ArgumentNullException.ThrowIfNull(specification);
         ShardSearchCapability[] supplied = [.. shards];
         if (supplied.DistinctBy(s => s.Shard).Count() != supplied.Length)
         {
@@ -41,13 +43,19 @@ public sealed class SearchCapabilities
             throw new ArgumentException("A search capability names a shard that is not registered.", nameof(shards));
         }
 
+        if (supplied.Any(s => !specification.AcceptedShardVersions.Contains(s.Version)))
+        {
+            throw new ArgumentException("A shard advertises a version outside this federation view.", nameof(shards));
+        }
+
         _shards = [.. registry.Shards.Select(d => supplied.SingleOrDefault(s => s.Shard == d.Id)
             ?? throw new ArgumentException($"Shard '{d.Id.Value}' has no search capability.", nameof(shards)))];
 
         Registry = registry;
+        Specification = specification;
         _resources = _shards[0].Resources
             .Select(r => r.Type)
-            .Where(t => R4Search.IsResourceType(t.Value) && _shards.All(s => s.Resources.Any(r => r.Type == t)))
+            .Where(t => Specification.IsResourceType(t.Value) && _shards.All(s => s.Resources.Any(r => r.Type == t)))
             .ToFrozenDictionary(t => t, t => Intersect(t, [.. _shards.Select(s => s.Resources.Single(r => r.Type == t))]));
         Resources = new ReadOnlyCollection<ResourceSearchSupport>(
             [.. _resources.OrderBy(p => p.Key.Value, StringComparer.Ordinal).Select(p => Project(p.Key, p.Value))]);
@@ -57,8 +65,11 @@ public sealed class SearchCapabilities
     /// <summary>Gets the shard registry the capabilities were admitted against.</summary>
     public ShardRegistry Registry { get; }
 
+    /// <summary>Gets the release-specific semantics used to admit this snapshot.</summary>
+    public IFederationSearchSpecification Specification { get; }
+
     /// <summary>
-    /// Gets the resource types every shard searches, ordered by name. A listed parameter has a common R4 definition
+    /// Gets the resource types every shard searches, ordered by name. A listed parameter has a common selected-release definition
     /// and a representative value that plans as one unmodified predicate on that type. This does not promise every
     /// value, modifier or combination. Composite and special parameters have no general witness and are not listed.
     /// </summary>
@@ -75,7 +86,7 @@ public sealed class SearchCapabilities
 
     internal bool Searches(ResourceType type) => _resources.ContainsKey(type);
 
-    /// <summary>Finds the R4 definition of <paramref name="code"/> on <paramref name="type"/> when every shard advertises it.</summary>
+    /// <summary>Finds the selected-release definition of <paramref name="code"/> on <paramref name="type"/> when every shard advertises it.</summary>
     internal SearchParameterInfo? FindParameter(ResourceType type, string code) =>
         _resources.TryGetValue(type, out Published? published) ? published.Parameters.GetValueOrDefault(code) : null;
 
@@ -100,7 +111,7 @@ public sealed class SearchCapabilities
     /// <param name="reverse">Whether the value is a revinclude.</param>
     /// <param name="hop">The certified hop when admitted.</param>
     /// <param name="failure">
-    /// When refused: <see cref="SearchFailureCode.InvalidValue"/> for a value that names no R4 reference from or to
+    /// When refused: <see cref="SearchFailureCode.InvalidValue"/> for a value that names no reference from or to
     /// <paramref name="searched"/>, otherwise <see cref="SearchFailureCode.UnsupportedInclude"/>.
     /// </param>
     /// <returns>Whether the value is admitted.</returns>
@@ -117,8 +128,8 @@ public sealed class SearchCapabilities
         ResourceType? typed = null;
         if (parts.Length is not (2 or 3)
             || !ResourceType.TryParse(parts[0], out ResourceType? source)
-            || !R4Search.IsSearchCode(parts[1])
-            || R4Search.FindDefinition(source, parts[1]) is not { Type: SearchParamType.Reference } definition
+            || !SearchSyntax.IsSearchCode(parts[1])
+            || Specification.FindDefinition(source, parts[1]) is not { Type: SearchParamType.Reference } definition
             || (parts.Length == 3 && !ResourceType.TryParse(parts[2], out typed)))
         {
             failure = SearchFailureCode.InvalidValue;
@@ -161,7 +172,7 @@ public sealed class SearchCapabilities
         Func<ResourceType, string, bool> advertises = reverse ? AdvertisesRevInclude : AdvertisesInclude;
         var path = new ReferencePath(source, code, target);
         if (!(advertises(searched, value) || advertises(searched, $"{source.Value}:{code}"))
-            || !R4Search.IsPlainReference(definition, source)
+            || !Specification.IsPlainReference(definition, source)
             || CertifiedPath(path, reverse ? ReferencePathOperations.RevIncludeSearch : ReferencePathOperations.IncludeExtraction) is not { } certifications
             || (reverse && certifications.Values.Any(c => c.RevIncludeSearchShape is null))
             || !ProvesAlternatives(reverse ? SearchParamType.Reference : SearchParamType.Token)
@@ -199,13 +210,13 @@ public sealed class SearchCapabilities
         return certified.ToFrozenDictionary();
     }
 
-    private static Published Intersect(ResourceType type, ResourceSearchSupport[] perShard)
+    private Published Intersect(ResourceType type, ResourceSearchSupport[] perShard)
     {
         IEnumerable<string> codes = perShard[0].Parameters.Select(p => p.Code).Distinct(StringComparer.Ordinal);
         var parameters = new SortedDictionary<string, SearchParameterInfo>(StringComparer.Ordinal);
         foreach (string code in codes)
         {
-            if (R4Search.FindDefinition(type, code) is { } definition
+            if (Specification.FindDefinition(type, code) is { } definition
                 && perShard.All(r => r.Parameters.Any(p => p.Code == code)
                     && r.Parameters.Where(p => p.Code == code).All(p =>
                         p.Type == definition.Type
@@ -231,7 +242,7 @@ public sealed class SearchCapabilities
     private ResourceSearchSupport Project(ResourceType type, Published published) => new(
         type,
         published.Parameters.Values
-            .Where(d => SearchPlanner.CanPublishParameter(type, d))
+            .Where(d => SearchPlanner.CanPublishParameter(Specification, type, d))
             .OrderBy(d => d.Code, StringComparer.Ordinal)
             .Select(d => new SearchParameterSupport(d.Code, d.Type, d.Url.OriginalString)),
         Admitted(type, published.Includes, reverse: false),

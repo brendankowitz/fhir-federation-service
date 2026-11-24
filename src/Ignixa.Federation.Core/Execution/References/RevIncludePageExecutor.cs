@@ -10,12 +10,14 @@ public sealed class RevIncludePageExecutor
 {
     private readonly IShardClient _client;
     private readonly ShardRegistry _registry;
+    private readonly IFederationSearchSpecification _specification;
     private readonly int _maxParallelFetches;
     private readonly Func<ShardSearchRequest, bool> _fits;
 
     /// <summary>Initializes a new instance of the <see cref="RevIncludePageExecutor"/> class.</summary>
     /// <param name="client">The client that calls shards.</param>
     /// <param name="registry">The registry every executed plan must have been planned against.</param>
+    /// <param name="specification">The search specification for this view.</param>
     /// <param name="maxParallelFetches">The most shard calls one execution runs at once.</param>
     /// <param name="fits">
     /// Trusted, synchronous and free of side effects: whether a completed request, measured exactly as the transport sends it
@@ -23,14 +25,16 @@ public sealed class RevIncludePageExecutor
     /// </param>
     /// <exception cref="ArgumentNullException"><paramref name="client"/>, <paramref name="registry"/> or <paramref name="fits"/> is <see langword="null"/>.</exception>
     /// <exception cref="ArgumentOutOfRangeException"><paramref name="maxParallelFetches"/> is less than 1.</exception>
-    public RevIncludePageExecutor(IShardClient client, ShardRegistry registry, int maxParallelFetches, Func<ShardSearchRequest, bool> fits)
+    public RevIncludePageExecutor(IShardClient client, ShardRegistry registry, IFederationSearchSpecification specification, int maxParallelFetches, Func<ShardSearchRequest, bool> fits)
     {
         ArgumentNullException.ThrowIfNull(client);
         ArgumentNullException.ThrowIfNull(registry);
+        ArgumentNullException.ThrowIfNull(specification);
         ArgumentNullException.ThrowIfNull(fits);
         ArgumentOutOfRangeException.ThrowIfLessThan(maxParallelFetches, 1);
         _client = client;
         _registry = registry;
+        _specification = specification;
         _maxParallelFetches = maxParallelFetches;
         _fits = fits;
     }
@@ -76,9 +80,9 @@ public sealed class RevIncludePageExecutor
         ArgumentNullException.ThrowIfNull(plan);
         ArgumentNullException.ThrowIfNull(emittedMatches);
         ArgumentNullException.ThrowIfNull(readableTypes);
-        if (!ReferenceEquals(plan.Registry, _registry))
+        if (!ReferenceEquals(plan.Registry, _registry) || !ReferenceEquals(plan.Specification, _specification))
         {
-            throw new ArgumentException("The plan was not planned against this executor's registry.", nameof(plan));
+            throw new ArgumentException("The plan was not planned against this executor's federation view.", nameof(plan));
         }
 
         foreach (ShardEntry? match in emittedMatches)

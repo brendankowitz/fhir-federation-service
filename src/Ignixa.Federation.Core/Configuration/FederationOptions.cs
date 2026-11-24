@@ -9,6 +9,9 @@ public sealed class FederationOptions
     /// <summary>The configuration section name.</summary>
     public const string SectionName = "Federation";
 
+    /// <summary>Gets or sets the certified release used by this federation view.</summary>
+    public string Version { get; set; } = "R4";
+
     /// <summary>Gets the shards, in registry order; position is the shard ordinal (design spec §4.2).</summary>
     public IList<ShardOptions> Shards { get; } = new List<ShardOptions>();
 
