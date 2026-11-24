@@ -2,8 +2,22 @@
 
   <PropertyGroup>
     <IsPackable>true</IsPackable>
-    <Description>Shard backend call instrumentation for Ignixa Federation, a read-only FHIR R4 search federation gateway.</Description>
+    <Description>The HTTPS shard search client and its instrumentation for Ignixa Federation, a read-only FHIR R4 search federation gateway.</Description>
   </PropertyGroup>
+
+  <ItemGroup>
+    <!-- The tests reach two internal seams: trusting only a generated loopback leaf certificate, and the
+         credential construction the Azure provider delegates to (so no real identity is ever contacted). -->
+    <InternalsVisibleTo Include="Ignixa.Federation.Shards.UnitTests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Azure.Identity" />
+    <!-- Generic Host and health check abstractions only; no ASP.NET Core framework reference. The hosting
+         abstractions (BackgroundService, IHostedService) ship with the shared runtime and need no reference. -->
+    <PackageReference Include="Microsoft.Extensions.Diagnostics.HealthChecks" />
+    <PackageReference Include="Microsoft.Extensions.Http.Resilience" />
+  </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\Ignixa.Federation.Core\Ignixa.Federation.Core.csproj" />

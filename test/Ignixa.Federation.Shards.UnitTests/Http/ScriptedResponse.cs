@@ -1,0 +1,101 @@
+using System.Text;
+
+namespace Ignixa.Federation.Shards.UnitTests.Http;
+
+/// <summary>One scripted answer from <see cref="LoopbackFhirServer"/>, written as raw HTTP/1.1 with <c>Connection: close</c> unless kept alive.</summary>
+internal sealed class ScriptedResponse
+{
+    private ScriptedResponse(int status, byte[] body, string? contentType)
+    {
+        StatusCode = status;
+        Body = body;
+        ContentType = contentType;
+    }
+
+    public int StatusCode { get; }
+
+    public byte[] Body { get; }
+
+    public string? ContentType { get; }
+
+    /// <summary>Gets whether the head declares <c>Content-Length</c>; without it the body ends when the connection closes.</summary>
+    public bool DeclaresLength { get; private init; } = true;
+
+    public string? Location { get; private init; }
+
+    /// <summary>Gets a <c>Content-Location</c> header to send, which a client must never take as the resource's location.</summary>
+    public string? ContentLocation { get; private init; }
+
+    /// <summary>Runs after the request is recorded but before the server sends any response bytes.</summary>
+    public Func<CancellationToken, Task>? BeforeHead { get; private init; }
+
+    /// <summary>Gets whether the server never answers, so only the client's deadline or cancellation ends the call.</summary>
+    public bool StallsBeforeHead { get; private init; }
+
+    /// <summary>Gets whether the server sends the head and the body bytes, then stalls without closing.</summary>
+    public bool StallsAfterBody { get; private init; }
+
+    /// <summary>Gets whether the server keeps the connection open for another request after this response.</summary>
+    public bool KeepsAlive { get; private init; }
+
+    /// <summary>Gets whether the server closes the connection without sending any response bytes.</summary>
+    public bool HangsUp { get; private init; }
+
+    /// <summary>Gets whether the head declares one byte more than the body sent, and the server then closes the connection.</summary>
+    public bool TruncatesBody { get; private init; }
+
+    public static ScriptedResponse Json(string json, Func<CancellationToken, Task>? beforeHead = null, string? contentLocation = null) =>
+        new(200, Encoding.UTF8.GetBytes(json), "application/fhir+json") { BeforeHead = beforeHead, ContentLocation = contentLocation };
+
+    /// <summary>A 200 answer with exactly these body bytes, which need not be valid UTF-8.</summary>
+    public static ScriptedResponse Bytes(byte[] body) => new(200, body, "application/fhir+json");
+
+    public static ScriptedResponse Status(int status, string body = "", Func<CancellationToken, Task>? beforeHead = null) =>
+        new(status, Encoding.UTF8.GetBytes(body), "text/plain") { BeforeHead = beforeHead };
+
+    public static ScriptedResponse Redirect(string location) => new(302, [], null) { Location = location };
+
+    public static ScriptedResponse Stall() => new(200, [], null) { StallsBeforeHead = true };
+
+    /// <summary>The server records the request, then closes the connection without answering.</summary>
+    public static ScriptedResponse Hangup() => new(200, [], null) { HangsUp = true };
+
+    /// <summary>Declares a length one byte longer than the body sent, then closes, so the body ends prematurely.</summary>
+    public ScriptedResponse TruncatingBody() => new(StatusCode, Body, ContentType) { TruncatesBody = true };
+
+    public ScriptedResponse WithoutContentLength() => new(StatusCode, Body, ContentType) { DeclaresLength = false, Location = Location };
+
+    /// <summary>Declares a length one byte longer than the body sent, then stalls, so the client waits inside the body read.</summary>
+    public ScriptedResponse StallingInBody() => new(StatusCode, Body, ContentType) { StallsAfterBody = true };
+
+    /// <summary>Keeps the connection open after this response, so a client that drains the body can reuse it.</summary>
+    public ScriptedResponse KeepingAlive() => new(StatusCode, Body, ContentType) { DeclaresLength = DeclaresLength, Location = Location, KeepsAlive = true };
+
+    public byte[] Head()
+    {
+        var head = new StringBuilder();
+        head.Append("HTTP/1.1 ").Append(StatusCode).Append(" Scripted\r\n");
+        if (ContentType is not null)
+        {
+            head.Append("Content-Type: ").Append(ContentType).Append("\r\n");
+        }
+
+        if (Location is not null)
+        {
+            head.Append("Location: ").Append(Location).Append("\r\n");
+        }
+
+        if (ContentLocation is not null)
+        {
+            head.Append("Content-Location: ").Append(ContentLocation).Append("\r\n");
+        }
+
+        if (DeclaresLength)
+        {
+            head.Append("Content-Length: ").Append(Body.Length + (StallsAfterBody || TruncatesBody ? 1 : 0)).Append("\r\n");
+        }
+
+        head.Append(KeepsAlive ? "\r\n" : "Connection: close\r\n\r\n");
+        return Encoding.ASCII.GetBytes(head.ToString());
+    }
+}

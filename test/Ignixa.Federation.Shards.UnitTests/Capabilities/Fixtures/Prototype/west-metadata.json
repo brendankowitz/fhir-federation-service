@@ -1,0 +1,33 @@
+{
+  "resourceType": "CapabilityStatement",
+  "kind": "capability",
+  "fhirVersion": "4.0.1",
+  "software": {
+    "name": "FHIR Server for Azure",
+    "version": "1.0.0"
+  },
+  "rest": [
+    {
+      "mode": "server",
+      "resource": [
+        {
+          "type": "Patient",
+          "interaction": [{ "code": "search-type" }, { "code": "read" }],
+          "searchParam": [
+            { "name": "_id", "type": "token", "definition": "http://hl7.org/fhir/SearchParameter/Resource-id" },
+            { "name": "given", "type": "string", "definition": "http://hl7.org/fhir/SearchParameter/individual-given" },
+            { "name": "name", "type": "string", "definition": "http://hl7.org/fhir/SearchParameter/Patient-name" },
+            { "name": "family", "type": "string", "definition": "http://hl7.org/fhir/SearchParameter/individual-family" }
+          ]
+        },
+        {
+          "type": "Observation",
+          "interaction": [{ "code": "search-type" }, { "code": "read" }],
+          "searchParam": [
+            { "name": "_id", "type": "token", "definition": "http://hl7.org/fhir/SearchParameter/Resource-id" }
+          ]
+        }
+      ]
+    }
+  ]
+}

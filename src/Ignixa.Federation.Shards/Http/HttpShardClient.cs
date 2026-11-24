@@ -1,0 +1,1072 @@
+using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
+using System.Globalization;
+using System.Net;
+using System.Net.Http.Headers;
+using System.Net.Security;
+using System.Net.Sockets;
+using System.Runtime.ExceptionServices;
+using System.Security.Cryptography.X509Certificates;
+using System.Text;
+using System.Text.Json;
+using System.Text.Unicode;
+using Ignixa.Federation.Core.Identity;
+using Ignixa.Federation.Core.Search;
+using Ignixa.Federation.Core.Shards;
+using Ignixa.Federation.Shards.Capabilities;
+using Ignixa.Federation.Shards.Credentials;
+using Ignixa.Federation.Shards.Diagnostics;
+using Microsoft.Extensions.Http.Resilience;
+using Polly;
+
+namespace Ignixa.Federation.Shards.Http;
+
+/// <summary>Searches, reads and fetches capabilities from one shard over HTTPS (design spec §5.1, §7 and §9).</summary>
+/// <remarks>
+/// <para><b>Wire.</b> Search parameters are sent verbatim in planner order, then one <c>_count</c>: as the query of
+/// <c>GET {base}/{type}</c>, or as the <c>application/x-www-form-urlencoded</c> body of <c>POST {base}/{type}/_search</c>.
+/// Every exchange carries <c>Prefer: handling=strict</c>, <c>Accept: application/fhir+json</c> and the bearer token, and
+/// data calls on a bound view may carry its explicit opaque <c>X-Federation-Caller</c> correlation value.
+/// Redirects, cookies and compression are off.</para>
+/// <para><b>Self check.</b> A first page must have exactly one <c>self</c> link whose query decodes to the same pairs as
+/// the query sent, duplicates counted, in any order; otherwise the backend answered a different search and the call fails
+/// with <see cref="ShardCallFailure.SelfLinkMismatch"/>. No backend-owned parameter is exempt, because none is documented.</para>
+/// <para><b>Continuation.</b> A <c>next</c> link is accepted only as a continuation of this shard's own typed search (the
+/// configured base or a configured link base alias), is kept verbatim in the <see cref="ShardCursor"/>, and is redeemed
+/// by sending only its query to the configured base, by GET or by POST to <c>_search</c> as the cursor says. A link that
+/// would immediately repeat the query just sent is refused; detecting a longer cycle across pages is the caller's
+/// responsibility (design spec §7.8).</para>
+/// <para><b>Request limits.</b> The <see cref="ShardRequestLimits"/> the client is built with are explicit and have no
+/// default. A GET search or redemption is measured as the origin-form target it would send (the configured base path,
+/// type and query as written, <c>_count</c> included) and a POST as its form body; equality is allowed. One byte over is
+/// refused before the span, the credential, the breaker or the meter, so nothing is sent or retried, and the call is never
+/// moved to the other method or trimmed. A generated search that does not fit fails as <see cref="ShardCallFailure.RequestTooLarge"/>.
+/// A redemption fails as <see cref="ShardCallFailure.InvalidNextLink"/>: the backend's <c>next</c> link is accepted into
+/// its cursor when the page arrives and is measured only when the cursor is redeemed.</para>
+/// <para><b>Self link.</b> The first page's <c>self</c> must be a usable URI reference (RFC 3986) without a fragment. Its
+/// path is not checked, because it is never requested; links are normalized to the configured base (design spec §4.2).</para>
+/// <para><b>Limits.</b> One deadline covers credential acquisition, attempts and validation. The caller stops waiting at
+/// that deadline or on cancellation, even when the credential provider blocks or ignores cancellation. At most four
+/// acquisitions per client run at once, including abandoned ones. Each response is read to at most one byte
+/// past its configured size limit.
+/// The optional <see cref="IShardTransferMeter"/> sees each send, including a retry, and every body byte consumed,
+/// so a caller can enforce an aggregate budget. A rejected response's body is
+/// never drained to reuse its connection; the connection is closed instead.</para>
+/// <para><b>Tracing.</b> The ambient W3C trace context is propagated, but never baggage (<c>baggage</c> or
+/// <c>Correlation-Context</c>): baggage is arbitrary application data and a shard is a separate trust domain.</para>
+/// <para><b>Failures.</b> A call either returns a page that represents the backend's answer exactly or throws: a
+/// classified <see cref="ShardCallException"/>, an <see cref="OperationCanceledException"/> when the caller cancels, or
+/// the credential provider's or meter's own exception. Only metadata and startup probes classify a
+/// <see cref="ShardCredentialException"/> from credential acquisition as <see cref="ShardCallFailure.CredentialUnavailable"/>.
+/// It never returns an empty page for a failure.</para>
+/// <para><b>Resilience.</b> A search, continuation or read that fails with a transient status (408, 429 or 5xx) or a
+/// connection fault is retried once if its wire method is GET, within the same deadline; a POST, a timeout, a permanent
+/// status and a malformed or oversized body are never retried. Each such call also runs through the shard's circuit breaker
+/// (<see cref="ShardResilience"/>), and fails with <see cref="ShardCallFailure.CircuitOpen"/> without sending while it is
+/// open. The credential is acquired by the first attempt, inside the breaker, so an open circuit requests none, and a
+/// retry reuses it; a credential that is slow or fails is not the backend's fault. A GET is sent with an explicit empty body
+/// so the runtime cannot silently re-send it (see the message construction). Metadata fetches bypass both.</para>
+/// <para><b>Read.</b> <see cref="ReadAsync"/> is the same bounded exchange for one resource, <c>GET {base}/{type}/{id}</c>,
+/// with its own <c>read</c> span. Only there are HTTP 404 and 410 classified as the resource's absence.</para>
+/// <para><b>Capabilities.</b> <see cref="GetCapabilitiesAsync"/> is the same bounded exchange for <c>GET {base}/metadata</c>,
+/// with its own <c>metadata</c> span; there 404 and 410 indicate a failed metadata exchange, not a missing resource read.</para>
+/// <para>Thread-safe: concurrent calls are independent.</para>
+/// </remarks>
+public sealed class HttpShardClient : IShardClient, IDisposable
+{
+    private const int ChunkBytes = 16 * 1024;
+    private const string Stage = "search";
+    private const string ReadStage = "read";
+    private const string MetadataStage = "metadata";
+
+    // What one exchange asks of the backend; it decides how a status is read and what a failure says. ProbeSearch is a
+    // Search for the startup probes: same wire, status reading and resilience, and differs only in reporting a credential
+    // outage at acquisition as a classified failure, because a probe records it as a negative result instead of faulting.
+    private enum Operation
+    {
+        Search,
+        ProbeSearch,
+        Read,
+        Metadata,
+    }
+
+    // A CancellationTokenSource delay is at most uint.MaxValue - 1 milliseconds. Shared with the prototype composition so
+    // its settings check cannot drift from what a client accepts.
+    internal static readonly TimeSpan MaxCallTimeout = TimeSpan.FromMilliseconds(uint.MaxValue - 1);
+
+    // The most credential acquisitions one client runs at once, counting those whose caller has already given up.
+    internal const int MaxPendingAcquisitions = 4;
+
+    private static readonly UriCreationOptions Verbatim = new() { DangerousDisablePathAndQueryCanonicalization = true };
+
+    private static readonly JsonDocumentOptions StrictJson = new() { AllowDuplicateProperties = false };
+
+    private readonly ShardDescriptor _shard;
+    private readonly IShardCredentialProvider _credentials;
+    private readonly TimeSpan _callTimeout;
+    private readonly long _maxResponseBytes;
+    private readonly ShardRequestLimits _limits;
+    private readonly IShardTransferMeter? _meter;
+    private readonly LinkResolver _links;
+    private readonly HttpMessageInvoker _invoker;
+    private readonly ShardResilience _resilience;
+    private readonly TimeProvider _deadlineClock;
+
+    // Bounds MaxPendingAcquisitions. Released by the acquisition itself, never by its caller, so a provider call the caller
+    // abandoned keeps its slot until it actually returns. Not disposed: an abandoned acquisition may release it after Dispose.
+    [SuppressMessage("Usage", "CA2213:Disposable fields should be disposed",
+        Justification = "An abandoned acquisition may still release a slot after Dispose; the semaphore holds no wait handle unless AvailableWaitHandle is used, and it is not.")]
+    private readonly SemaphoreSlim _acquisitionSlots = new(MaxPendingAcquisitions, MaxPendingAcquisitions);
+
+    /// <summary>Creates a client for one shard, trusting the platform's certificate store.</summary>
+    /// <param name="shard">The shard every call goes to.</param>
+    /// <param name="credentials">Acquires the bearer token for <see cref="ShardDescriptor.Auth"/>, once per call.</param>
+    /// <param name="callTimeout">The deadline for one whole call, from credential acquisition to the last body byte.</param>
+    /// <param name="maxResponseBytes">The largest response body one call reads.</param>
+    /// <param name="limits">The largest search request this shard's backend accepts, enforced on every search and continuation.</param>
+    /// <param name="meter">Observes actual sends and response bytes, or <see langword="null"/>.</param>
+    /// <remarks>The client keeps its own <see cref="ShardResilience"/>, shared by its calls but by no other client.</remarks>
+    /// <exception cref="ArgumentNullException"><paramref name="shard"/>, <paramref name="credentials"/> or <paramref name="limits"/> is <see langword="null"/>.</exception>
+    /// <exception cref="ArgumentOutOfRangeException">
+    /// <paramref name="callTimeout"/> is not positive or too long for a deadline, or <paramref name="maxResponseBytes"/> is
+    /// not positive or exceeds <see cref="Array.MaxLength"/>.
+    /// </exception>
+    public HttpShardClient(
+        ShardDescriptor shard,
+        IShardCredentialProvider credentials,
+        TimeSpan callTimeout,
+        long maxResponseBytes,
+        ShardRequestLimits limits,
+        IShardTransferMeter? meter = null)
+        : this(shard, credentials, callTimeout, maxResponseBytes, limits, meter, resilience: null, trustedTestCertificate: null)
+    {
+    }
+
+    /// <summary>Creates a client for one shard that shares its retry and circuit breaker state, trusting the platform's certificate store.</summary>
+    /// <param name="shard">The shard every call goes to.</param>
+    /// <param name="credentials">Acquires the bearer token for <see cref="ShardDescriptor.Auth"/>, once per call.</param>
+    /// <param name="callTimeout">The deadline for one whole call, from credential acquisition to the last body byte.</param>
+    /// <param name="maxResponseBytes">The largest response body one call reads.</param>
+    /// <param name="limits">The largest search request this shard's backend accepts, enforced on every search and continuation.</param>
+    /// <param name="meter">Observes actual sends and response bytes, or <see langword="null"/>.</param>
+    /// <param name="resilience">The shard's breaker state, shared with every other client for the same shard.</param>
+    /// <exception cref="ArgumentNullException"><paramref name="shard"/>, <paramref name="credentials"/>, <paramref name="limits"/> or <paramref name="resilience"/> is <see langword="null"/>.</exception>
+    /// <exception cref="ArgumentException"><paramref name="resilience"/> is for another shard.</exception>
+    /// <exception cref="ArgumentOutOfRangeException">
+    /// <paramref name="callTimeout"/> is not positive or too long for a deadline, or <paramref name="maxResponseBytes"/> is
+    /// not positive or exceeds <see cref="Array.MaxLength"/>.
+    /// </exception>
+    public HttpShardClient(
+        ShardDescriptor shard,
+        IShardCredentialProvider credentials,
+        TimeSpan callTimeout,
+        long maxResponseBytes,
+        ShardRequestLimits limits,
+        IShardTransferMeter? meter,
+        ShardResilience resilience)
+        : this(shard, credentials, callTimeout, maxResponseBytes, limits, meter, resilience ?? throw new ArgumentNullException(nameof(resilience)), trustedTestCertificate: null)
+    {
+    }
+
+    internal HttpShardClient(
+        ShardDescriptor shard,
+        IShardCredentialProvider credentials,
+        TimeSpan callTimeout,
+        long maxResponseBytes,
+        ShardRequestLimits limits,
+        IShardTransferMeter? meter,
+        X509Certificate2? trustedTestCertificate)
+        : this(shard, credentials, callTimeout, maxResponseBytes, limits, meter, resilience: null, trustedTestCertificate)
+    {
+    }
+
+    /// <param name="shard">The shard every call goes to.</param>
+    /// <param name="credentials">Acquires the bearer token, once per call.</param>
+    /// <param name="callTimeout">The deadline for one whole call.</param>
+    /// <param name="maxResponseBytes">The largest response body one call reads.</param>
+    /// <param name="limits">The largest search request this shard's backend accepts.</param>
+    /// <param name="meter">Observes actual sends and response bytes, or <see langword="null"/>.</param>
+    /// <param name="resilience">The shard's breaker state, or <see langword="null"/> for a new one owned by this client.</param>
+    /// <param name="trustedTestCertificate">
+    /// When set, the only certificate trusted for the TLS server, in place of the platform store; tests use it for a
+    /// loopback server. Revocation is not checked for it.
+    /// </param>
+    /// <param name="deadlineClock">
+    /// The clock that times each call's deadline, or <see langword="null"/> for the system clock; tests use it to expire a
+    /// deadline at a chosen point. It is separate from the resilience clock, which times only the break and the backoff.
+    /// </param>
+    internal HttpShardClient(
+        ShardDescriptor shard,
+        IShardCredentialProvider credentials,
+        TimeSpan callTimeout,
+        long maxResponseBytes,
+        ShardRequestLimits limits,
+        IShardTransferMeter? meter,
+        ShardResilience? resilience,
+        X509Certificate2? trustedTestCertificate,
+        TimeProvider? deadlineClock = null)
+    {
+        ArgumentNullException.ThrowIfNull(shard);
+        ArgumentNullException.ThrowIfNull(credentials);
+        ArgumentNullException.ThrowIfNull(limits);
+        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(callTimeout, TimeSpan.Zero);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(callTimeout, MaxCallTimeout);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxResponseBytes);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(maxResponseBytes, Array.MaxLength);
+        if (resilience is not null && !resilience.IsFor(shard))
+        {
+            throw new ArgumentException("The resilience state is for another shard.", nameof(resilience));
+        }
+
+        _shard = shard;
+        _credentials = credentials;
+        _callTimeout = callTimeout;
+        _maxResponseBytes = maxResponseBytes;
+        _limits = limits;
+        _meter = meter;
+        _resilience = resilience ?? new ShardResilience(shard);
+        _deadlineClock = deadlineClock ?? TimeProvider.System;
+        _links = new LinkResolver(shard);
+        _invoker = CreateInvoker(trustedTestCertificate);
+    }
+
+    /// <inheritdoc/>
+    /// <exception cref="ArgumentNullException"><paramref name="request"/> is <see langword="null"/>.</exception>
+    /// <exception cref="ArgumentException">
+    /// The request is for another shard, asks for POST search on a backend without it, or has a parameter that cannot be
+    /// sent verbatim (not visible ASCII, a <c>#</c>, or a <c>%</c> that does not start an escape). Nothing is sent.
+    /// </exception>
+    /// <exception cref="ArgumentOutOfRangeException">The page size exceeds the backend's maximum <c>_count</c>. Nothing is sent.</exception>
+    /// <exception cref="ShardCallException">The exchange failed or the response was not an exact answer to the request.</exception>
+    public Task<ShardPage> SearchAsync(ShardSearchRequest request, CancellationToken cancellationToken) =>
+        SearchWithContextAsync(request, context: default, cancellationToken);
+
+    internal Task<ShardPage> SearchWithContextAsync(ShardSearchRequest request, ShardRequestContext context, CancellationToken cancellationToken) =>
+        SearchCoreAsync(request, context, witness: null, Operation.Search, cancellationToken);
+
+    // The startup probes' search: the ordinary search exchange, except that a credential outage while acquiring the token
+    // is reported as CredentialUnavailable, as for a metadata fetch, so a probe can record it. The witness, when given,
+    // sees the wire of this exchange.
+    internal Task<ShardPage> SearchForProbeAsync(ShardSearchRequest request, WireWitness? witness, CancellationToken cancellationToken) =>
+        SearchCoreAsync(request, context: default, witness, Operation.ProbeSearch, cancellationToken);
+
+    private Task<ShardPage> SearchCoreAsync(
+        ShardSearchRequest request, ShardRequestContext context, WireWitness? witness, Operation operation, CancellationToken cancellationToken)
+    {
+        (string query, bool post) = PrepareSearch(request);
+        return CallAsync(request.Type, query, post, ShardCallFailure.RequestTooLarge, page => FirstPage(request, query, page), context, witness, operation, cancellationToken);
+    }
+
+    // Whether the wire form this search would send fits the configured ceiling for its own method, by the same rules a
+    // send applies. It validates exactly as a send does, then measures; it acquires nothing and touches no network, breaker
+    // or meter. Fitting is size admission only: it says nothing about the backend's own limits.
+    internal bool FitsSearch(ShardSearchRequest request)
+    {
+        (string query, bool post) = PrepareSearch(request);
+        return FitsLimits(request.Type, query, post, out _);
+    }
+
+    // The checks a first search makes before anything is measured or sent, and the query it sends.
+    private (string Query, bool Post) PrepareSearch(ShardSearchRequest request)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        if (request.Shard != _shard.Id)
+        {
+            throw new ArgumentException("The request is for another shard.", nameof(request));
+        }
+
+        bool post = request.Method == ShardSearchMethod.PostSearch;
+        if (post && !_shard.Profile.SupportsPostSearch)
+        {
+            throw new ArgumentException("The shard's backend does not support POST search.", nameof(request));
+        }
+
+        if (request.PageSize > _shard.Profile.MaxCount)
+        {
+            throw new ArgumentOutOfRangeException(nameof(request), request.PageSize, "The page size exceeds the backend's maximum _count.");
+        }
+
+        return (BuildQuery(request), post);
+    }
+
+    /// <inheritdoc/>
+    /// <exception cref="ArgumentNullException"><paramref name="cursor"/> is <see langword="null"/>.</exception>
+    /// <exception cref="ArgumentException">
+    /// The cursor is for another shard, its target is not a continuation of this shard's search, or it reposts to a
+    /// backend without POST search. Nothing is sent.
+    /// </exception>
+    /// <exception cref="ShardCallException">The exchange failed or the response was not a readable page.</exception>
+    public Task<ShardPage> ContinueAsync(ShardCursor cursor, CancellationToken cancellationToken) =>
+        ContinueWithContextAsync(cursor, context: default, cancellationToken);
+
+    internal Task<ShardPage> ContinueWithContextAsync(ShardCursor cursor, ShardRequestContext context, CancellationToken cancellationToken) =>
+        ContinueCoreAsync(cursor, context, Operation.Search, cancellationToken);
+
+    // The startup probes' redemption; see SearchForProbeAsync.
+    internal Task<ShardPage> ContinueForProbeAsync(ShardCursor cursor, CancellationToken cancellationToken) =>
+        ContinueCoreAsync(cursor, context: default, Operation.ProbeSearch, cancellationToken);
+
+    private Task<ShardPage> ContinueCoreAsync(ShardCursor cursor, ShardRequestContext context, Operation operation, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(cursor);
+        if (cursor.Shard != _shard.Id)
+        {
+            throw new ArgumentException("The cursor is for another shard.", nameof(cursor));
+        }
+
+        string query = _links.QueryOf(cursor.Type, cursor.Target)
+            ?? throw new ArgumentException("The cursor target is not a continuation of this shard's search.", nameof(cursor));
+        bool post = cursor.Redemption == NextLinkRedemption.RepostToSearch;
+        if (post && !_shard.Profile.SupportsPostSearch)
+        {
+            throw new ArgumentException("The shard's backend does not support POST search.", nameof(cursor));
+        }
+
+        return CallAsync(
+            cursor.Type,
+            query,
+            post,
+            ShardCallFailure.InvalidNextLink,
+            page => new ShardPage(
+                page.Entries,
+                NextCursor(page, cursor.Type, query, link => new ShardCursor(cursor.Shard, cursor.Type, link, cursor.Redemption)),
+                page.Total),
+            context,
+            witness: null,
+            operation,
+            cancellationToken);
+    }
+
+    /// <summary>Releases the connection pool. The client must not be used afterwards.</summary>
+    public void Dispose() => _invoker.Dispose();
+
+    // Whether this client was built for this very descriptor; the refresh registration uses it so that a client composed
+    // for another shard can never publish evidence under this one. It has no effect on any exchange.
+    internal bool IsFor(ShardDescriptor shard) => ReferenceEquals(_shard, shard);
+
+    /// <summary>
+    /// Fetches this shard's advertisement: a single <c>GET {base}/metadata</c> with the same credential, deadline, size
+    /// limit, metering and no-redirect rules as a search, with its own <c>metadata</c> span.
+    /// </summary>
+    /// <param name="cancellationToken">Cancels the call.</param>
+    /// <returns>
+    /// What the shard's R4 CapabilityStatement advertises, as read by <see cref="CapabilityStatementReader"/>. Advertised
+    /// is not certified: nothing is compared with the shard's profile or any other shard.
+    /// </returns>
+    /// <exception cref="ShardCallException">
+    /// The exchange failed, or the body is not valid UTF-8 or not an R4 CapabilityStatement the reader accepts
+    /// (<see cref="ShardCallFailure.MalformedResponse"/>). Any status other than 200, including 404 and 410, is a failure
+    /// of the advertisement, not the absence of a resource; no error body is read, and nothing is retried. A
+    /// <see cref="ShardCredentialException"/> from the credential provider is
+    /// <see cref="ShardCallFailure.CredentialUnavailable"/> here, with no inner exception: nothing was sent.
+    /// </exception>
+    public async Task<ShardCapabilityEvidence> GetCapabilitiesAsync(CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        using Activity? activity = ShardActivity.StartBackendCall(_shard.Alias.Value, MetadataStage);
+        try
+        {
+            // The reader runs inside the exchange, so it is under the same deadline and caller cancellation.
+            return await ExchangeAsync(
+                HttpMethod.Get,
+                new Uri($"{_shard.CanonicalBaseUrl}/metadata", in Verbatim),
+                formBody: null,
+                Operation.Metadata,
+                ReadCapabilities,
+                context: default,
+                witness: null,
+                cancellationToken).ConfigureAwait(false);
+        }
+        catch (ShardCallException e)
+        {
+            activity?.SetStatus(ActivityStatusCode.Error, e.Failure.ToString());
+            throw;
+        }
+    }
+
+    private ShardCapabilityEvidence ReadCapabilities(ReadOnlyMemory<byte> body)
+    {
+        // The reader trusts the JSON parser's view of the bytes; an ignored property must not hide invalid text.
+        if (!Utf8.IsValid(body.Span))
+        {
+            throw Failure(ShardCallFailure.MalformedResponse, "The body is not valid UTF-8.");
+        }
+
+        try
+        {
+            return CapabilityStatementReader.Read(body).FetchedFrom(_shard);
+        }
+        catch (FormatException)
+        {
+            // The reader's message is safe to log, but a fixed diagnostic keeps every failure of this kind identical.
+            throw Failure(ShardCallFailure.MalformedResponse, "The body is not an R4 CapabilityStatement that advertises.");
+        }
+    }
+
+    /// <summary>
+    /// Reads the current version of one resource: a single <c>GET {base}/{type}/{id}</c> at the key's own shard, with the
+    /// same credential, deadline, size limit, metering and no-redirect rules as a search.
+    /// </summary>
+    /// <param name="key">The resource to read; its shard must be this client's.</param>
+    /// <param name="cancellationToken">Cancels the call.</param>
+    /// <returns>
+    /// The response body exactly as received, and the URL it was read from, built from the registered base and the key
+    /// alone. The body is only returned when it is one JSON object whose <c>resourceType</c> and <c>id</c> are the key's;
+    /// that is identity framing, not FHIR schema validation.
+    /// </returns>
+    /// <exception cref="ArgumentNullException"><paramref name="key"/> is <see langword="null"/>.</exception>
+    /// <exception cref="ArgumentException">
+    /// The key is for another shard, or its id is <c>.</c> or <c>..</c>, which as a URL path segment would address
+    /// something other than the resource. Nothing is sent and no credential is acquired.
+    /// </exception>
+    /// <exception cref="ShardCallException">
+        /// The exchange failed, after at most one retry of a transient failure, or the shard's circuit is open.
+        /// HTTP 404 and 410 are <see cref="ShardCallFailure.ResourceNotFound"/> and
+        /// <see cref="ShardCallFailure.ResourceGone"/> here only; no error body is read, and nothing is fallen back to.
+    /// </exception>
+    public Task<ShardReadResult> ReadAsync(ResourceKey key, CancellationToken cancellationToken) =>
+        ReadWithContextAsync(key, context: default, cancellationToken);
+
+    internal Task<ShardReadResult> ReadWithContextAsync(ResourceKey key, ShardRequestContext context, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(key);
+        if (key.Shard != _shard.Id)
+        {
+            throw new ArgumentException("The key is for another shard.", nameof(key));
+        }
+
+        // A lexical R4 id, but as a path segment it is a dot segment that a URL resolver may fold into the parent path.
+        if (key.Id.Value is "." or "..")
+        {
+            throw new ArgumentException("The id cannot be addressed as a URL path segment.", nameof(key));
+        }
+
+        return ReadCoreAsync(key, context, cancellationToken);
+    }
+
+    private async Task<ShardReadResult> ReadCoreAsync(ResourceKey key, ShardRequestContext context, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        using Activity? activity = ShardActivity.StartBackendCall(_shard.Alias.Value, ReadStage);
+        try
+        {
+            var location = new Uri($"{_shard.CanonicalBaseUrl}/{key.Type.Value}/{key.Id.Value}", in Verbatim);
+
+            // The identity check runs inside the exchange, so it is under the same deadline and caller cancellation.
+            return await ExchangeAsync(
+                HttpMethod.Get,
+                location,
+                formBody: null,
+                Operation.Read,
+                body => ReadResource(body, location, key),
+                context,
+                witness: null,
+                cancellationToken).ConfigureAwait(false);
+        }
+        catch (ShardCallException e)
+        {
+            activity?.SetStatus(ActivityStatusCode.Error, e.Failure.ToString());
+            throw;
+        }
+    }
+
+    private ShardReadResult ReadResource(ReadOnlyMemory<byte> body, Uri location, ResourceKey key)
+    {
+        // The read keeps the bytes as received, so they must be text a downstream consumer decodes the same way.
+        if (!Utf8.IsValid(body.Span))
+        {
+            throw Failure(ShardCallFailure.MalformedResponse, "The body is not valid UTF-8.");
+        }
+
+        try
+        {
+            using JsonDocument document = JsonDocument.Parse(body, StrictJson);
+            JsonElement root = document.RootElement;
+            if (root.ValueKind != JsonValueKind.Object
+                || !Searchset.IsString(root, "resourceType", key.Type.Value)
+                || !Searchset.IsString(root, "id", key.Id.Value))
+            {
+                throw Failure(ShardCallFailure.MalformedResponse, "The body is not the requested resource.");
+            }
+        }
+        catch (JsonException)
+        {
+            throw Failure(ShardCallFailure.MalformedResponse, "The body is not valid JSON.");
+        }
+
+        return new ShardReadResult(location, body);
+    }
+
+    // Redirects, cookies, decompression and ambient credentials are off: the client sends exactly what it builds and
+    // reads exactly what the backend returns. A response left unread (a failed status, an oversized body) is never
+    // drained for connection reuse, because those bytes would be neither metered nor bounded by the call; the connection
+    // is closed instead. Baggage is withheld from the propagated trace context.
+    private static HttpMessageInvoker CreateInvoker(X509Certificate2? trustedTestCertificate)
+    {
+        SocketsHttpHandler? handler = null;
+        try
+        {
+            handler = new SocketsHttpHandler
+            {
+                AllowAutoRedirect = false,
+                UseCookies = false,
+                AutomaticDecompression = DecompressionMethods.None,
+                PreAuthenticate = false,
+                Credentials = null,
+                PooledConnectionLifetime = TimeSpan.FromMinutes(5),
+                MaxResponseDrainSize = 0,
+                ActivityHeadersPropagator = new TraceContextOnlyPropagator(DistributedContextPropagator.Current),
+            };
+            if (trustedTestCertificate is not null)
+            {
+                handler.SslOptions = new SslClientAuthenticationOptions { CertificateChainPolicy = TrustOnly(trustedTestCertificate) };
+            }
+
+            var invoker = new HttpMessageInvoker(handler, disposeHandler: true);
+            handler = null;
+            return invoker;
+        }
+        finally
+        {
+            handler?.Dispose();
+        }
+    }
+
+    private static X509ChainPolicy TrustOnly(X509Certificate2 certificate)
+    {
+        var chain = new X509ChainPolicy
+        {
+            TrustMode = X509ChainTrustMode.CustomRootTrust,
+            RevocationMode = X509RevocationMode.NoCheck,
+        };
+        chain.CustomTrustStore.Add(certificate);
+        return chain;
+    }
+
+    private static string BuildQuery(ShardSearchRequest request)
+    {
+        var query = new StringBuilder();
+        foreach (ParameterOccurrence parameter in request.Parameters)
+        {
+            if (!QueryText.IsWireSafe(parameter.Key) || !QueryText.IsWireSafe(parameter.Value))
+            {
+                // The text is deliberately not quoted: search values may be PHI.
+                throw new ArgumentException(
+                    "A search parameter cannot be sent verbatim: it must be visible ASCII other than '#', with every '%' starting an escape.",
+                    nameof(request));
+            }
+
+            query.Append(parameter.Key).Append('=').Append(parameter.Value).Append('&');
+        }
+
+        return query.Append("_count=").Append(request.PageSize.ToString(CultureInfo.InvariantCulture)).ToString();
+    }
+
+    // RFC 6750 b64token: the only text a bearer credential may be.
+    private static bool IsBearerToken(string? token)
+    {
+        if (string.IsNullOrEmpty(token))
+        {
+            return false;
+        }
+
+        ReadOnlySpan<char> body = token.AsSpan().TrimEnd('=');
+        if (body.IsEmpty)
+        {
+            return false;
+        }
+
+        foreach (char c in body)
+        {
+            if (!char.IsAsciiLetterOrDigit(c) && c is not ('-' or '.' or '_' or '~' or '+' or '/'))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private ShardPage FirstPage(ShardSearchRequest request, string sent, Searchset page)
+    {
+        string self = page.Self ?? throw Failure(ShardCallFailure.MalformedResponse, "The first page has no self link.");
+        int questionMark = self.IndexOf('?', StringComparison.Ordinal);
+        if (!IsUriReference(self, questionMark < 0 ? self.Length : questionMark))
+        {
+            throw Failure(ShardCallFailure.MalformedResponse, "The self link is not a URI reference without a fragment.");
+        }
+
+        if (questionMark < 0)
+        {
+            throw Failure(ShardCallFailure.SelfLinkMismatch, "The self link does not report the search that was sent.");
+        }
+
+        if (!QueryText.TryDecodePairs(self.AsSpan(questionMark + 1), out List<(string Key, string Value)> reported))
+        {
+            throw Failure(ShardCallFailure.MalformedResponse, "The self link query cannot be decoded.");
+        }
+
+        if (!QueryText.TryDecodePairs(sent, out List<(string Key, string Value)> sentPairs) || !QueryText.SameMultiset(reported, sentPairs))
+        {
+            // The parameter is deliberately not named: search values may be PHI.
+            throw Failure(ShardCallFailure.SelfLinkMismatch, "The self link does not report the search that was sent.");
+        }
+
+        if (request.PageSize == 0 && (page.Total is null || page.Entries.Count > 0 || page.Next is not null))
+        {
+            throw Failure(ShardCallFailure.MalformedResponse, "A count-only page must have a total and no entries or next link.");
+        }
+
+        return new ShardPage(page.Entries, NextCursor(page, request.Type, sent, link => ShardCursor.Next(request, _shard.Profile, link)), page.Total);
+    }
+
+    // RFC 3986 URI-reference, checked syntactically: the whole text is visible ASCII with valid escapes and no fragment,
+    // the part before the query holds only URI characters, a leading scheme is well formed, and the platform can resolve
+    // it against the configured base, which validates any authority and port. The query is compared separately and stays
+    // permissive, because backends echo characters such as '|' unescaped.
+    private bool IsUriReference(string self, int queryStart)
+    {
+        if (!QueryText.IsWireSafe(self))
+        {
+            return false;
+        }
+
+        ReadOnlySpan<char> beforeQuery = self.AsSpan(0, queryStart);
+        foreach (char c in beforeQuery)
+        {
+            if (!char.IsAsciiLetterOrDigit(c) && !"-._~!$&'()*+,;=:@/%[]".Contains(c, StringComparison.Ordinal))
+            {
+                return false;
+            }
+        }
+
+        int colon = beforeQuery.IndexOf(':');
+        int slash = beforeQuery.IndexOf('/');
+        if (colon >= 0 && (slash < 0 || colon < slash) && !IsScheme(beforeQuery[..colon]))
+        {
+            return false;
+        }
+
+        return Uri.TryCreate(_shard.BaseUrl, self, out _);
+    }
+
+    private static bool IsScheme(ReadOnlySpan<char> scheme)
+    {
+        if (scheme.IsEmpty || !char.IsAsciiLetter(scheme[0]))
+        {
+            return false;
+        }
+
+        foreach (char c in scheme[1..])
+        {
+            if (!char.IsAsciiLetterOrDigit(c) && c is not ('+' or '-' or '.'))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private ShardCursor? NextCursor(Searchset page, ResourceType type, string sent, Func<string, ShardCursor> cursor)
+    {
+        if (page.Next is not { } link)
+        {
+            return null;
+        }
+
+        string? query = _links.QueryOf(type, link);
+        if (query is null)
+        {
+            throw Failure(ShardCallFailure.InvalidNextLink, "The next link is not a continuation of this shard's search.");
+        }
+
+        if (QueryText.SamePairs(query, sent))
+        {
+            throw Failure(ShardCallFailure.InvalidNextLink, "The next link repeats the page just fetched.");
+        }
+
+        return cursor(link);
+    }
+
+    // The one place the request URI and the size admission are decided, for a send and for a preflight alike. The escaped
+    // canonical path and the validated query are ASCII, so these lengths are the actual wire byte counts: the whole
+    // origin-form target for a GET, the form body for a POST. Equality fits.
+    private bool FitsLimits(ResourceType type, string query, bool post, out Uri uri)
+    {
+        uri = new Uri(post ? $"{_shard.CanonicalBaseUrl}/{type.Value}/_search" : $"{_shard.CanonicalBaseUrl}/{type.Value}?{query}", in Verbatim);
+        return post ? query.Length <= _limits.MaxPostBodyBytes : uri.PathAndQuery.Length <= _limits.MaxGetTargetBytes;
+    }
+
+    private async Task<ShardPage> CallAsync(
+        ResourceType type,
+        string query,
+        bool post,
+        ShardCallFailure tooLarge,
+        Func<Searchset, ShardPage> interpret,
+        ShardRequestContext context,
+        WireWitness? witness,
+        Operation operation,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (!FitsLimits(type, query, post, out Uri uri))
+        {
+            throw Failure(
+                tooLarge,
+                post ? "The POST search form exceeds the shard's configured size limit." : "The GET search target exceeds the shard's configured size limit.",
+                fault: ShardFault.None);
+        }
+
+        using Activity? activity = ShardActivity.StartBackendCall(_shard.Alias.Value, Stage);
+        try
+        {
+            // The page is read and checked inside the exchange, so validation is under the same deadline and caller cancellation.
+            return await ExchangeAsync(
+                post ? HttpMethod.Post : HttpMethod.Get,
+                uri,
+                post ? query : null,
+                operation,
+                body => interpret(Searchset.Read(body, _shard, type)),
+                context,
+                witness,
+                cancellationToken).ConfigureAwait(false);
+        }
+        catch (ShardCallException e)
+        {
+            activity?.SetStatus(ActivityStatusCode.Error, e.Failure.ToString());
+            throw;
+        }
+    }
+
+    private static ByteArrayContent FormBody(string query)
+    {
+        var content = new ByteArrayContent(Encoding.ASCII.GetBytes(query));
+        content.Headers.ContentType = new MediaTypeHeaderValue("application/x-www-form-urlencoded");
+        return content;
+    }
+
+    // Runs one bounded call and hands the whole body to interpret, still under the deadline and the caller's token. The
+    // deadline and the credential belong to the call: a retry shares them, so no retry extends the call or fetches a second
+    // token. The wire method decides how the call is run: a GET gets one retry of a transient fault; a GET or POST runs
+    // through the breaker; the metadata fetch is one bare exchange (design spec §8: refresh must see the shard as it is, so
+    // it is neither retried nor stopped by the breaker, and does not count). A message is built per attempt, because a sent
+    // message cannot be sent again. formBody is the POST's form, and null for a GET.
+    private async Task<T> ExchangeAsync<T>(
+        HttpMethod method,
+        Uri uri,
+        string? formBody,
+        Operation operation,
+        Func<ReadOnlyMemory<byte>, T> interpret,
+        ShardRequestContext context,
+        WireWitness? witness,
+        CancellationToken cancellationToken)
+    {
+        using var expiry = new CancellationTokenSource(_callTimeout, _deadlineClock);
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, expiry.Token);
+        IShardTransferMeter? callMeter = context.Meter ?? _meter;
+        string? token = null;
+        try
+        {
+            async ValueTask<T> AttemptAsync(CancellationToken _)
+            {
+                // The credential is acquired by the first attempt that runs, so a call the circuit rejects acquires none, and
+                // a slow provider is the breaker's attempt to wait for, not a way past it. A timeout or failure here is the
+                // credential's, not the backend's, so it carries no fault tag; the provider runs off this thread within a
+                // bounded number of slots, and an abandoned acquisition is left to finish on its own.
+                token ??= await AcquireAsync(operation, deadline.Token, cancellationToken).ConfigureAwait(false);
+                using HttpRequestMessage message = CreateMessage(method, uri, formBody);
+                if (context.CallerId is { } callerId)
+                {
+                    message.Headers.Add(ShardRequestContext.CallerHeader, callerId);
+                }
+
+                try
+                {
+                    return await SendAsync(message, token, operation, interpret, callMeter, deadline, witness, cancellationToken).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (deadline.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+                {
+                    // The breaker sees this one as the backend's slowness; the same outcome without a tag is not counted.
+                    throw Failure(ShardCallFailure.Timeout, "The call did not complete within its deadline.", fault: ShardFault.TimedOut);
+                }
+            }
+
+            return operation == Operation.Metadata
+                ? await AttemptAsync(deadline.Token).ConfigureAwait(false)
+                : await _resilience.ExecuteAsync(method == HttpMethod.Get, AttemptAsync, deadline.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            // Rethrown for the caller's token, whichever token the canceled operation observed.
+            cancellationToken.ThrowIfCancellationRequested();
+            throw;
+        }
+        catch (OperationCanceledException) when (deadline.IsCancellationRequested)
+        {
+            throw Failure(ShardCallFailure.Timeout, "The call did not complete within its deadline.");
+        }
+        catch (ExternalShardFailure e)
+        {
+            ExceptionDispatchInfo.Throw(e.Original);
+            throw;
+        }
+    }
+
+    private async Task<string> AcquireAsync(Operation operation, CancellationToken deadline, CancellationToken cancellationToken)
+    {
+        string token;
+        try
+        {
+            token = await RunAcquisitionAsync(deadline).ConfigureAwait(false);
+        }
+        catch (ShardCallException e) when (e.Fault != ShardFault.None)
+        {
+            throw new ExternalShardFailure(e);
+        }
+        catch (ShardCredentialException) when (operation is Operation.Metadata or Operation.ProbeSearch)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            throw Failure(
+                ShardCallFailure.CredentialUnavailable, "The shard credential could not be acquired.", fault: ShardFault.None);
+        }
+
+        // A token that arrived as the deadline passed, or after the caller gave up, is not used. Checked here, outside the
+        // send, so the timeout is the credential's and the breaker does not count it.
+        deadline.ThrowIfCancellationRequested();
+        if (!IsBearerToken(token))
+        {
+            // The token is deliberately not quoted.
+            throw new InvalidOperationException("The credential provider returned text that is not a bearer token.");
+        }
+
+        return token;
+    }
+
+    // Reserve capacity before queueing work: a provider stalled in synchronous I/O keeps its slot even when the caller
+    // gives up. Other callers wait asynchronously within their own deadlines.
+    private async Task<string> RunAcquisitionAsync(CancellationToken deadline)
+    {
+        await _acquisitionSlots.WaitAsync(deadline).ConfigureAwait(false);
+
+        // Not canceled by the deadline: a work item canceled before it starts would never release its slot.
+        Task<string> acquisition = Task.Run(() => AcquireInSlotAsync(deadline), CancellationToken.None);
+        try
+        {
+            return await acquisition.WaitAsync(deadline).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            // Abandoned: a late token is dropped with the task, and a late fault is observed here so it reaches no
+            // unobserved-exception handler, which might log the provider's message.
+            _ = acquisition.ContinueWith(
+                static abandoned => _ = abandoned.Exception,
+                CancellationToken.None,
+                TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
+            throw;
+        }
+    }
+
+    private async Task<string> AcquireInSlotAsync(CancellationToken deadline)
+    {
+        try
+        {
+            // A work item that starts only after its caller gave up (a starved pool, say) does not call the provider.
+            deadline.ThrowIfCancellationRequested();
+            return await _credentials.GetAccessTokenAsync(_shard.Auth, deadline).ConfigureAwait(false);
+        }
+        finally
+        {
+            _acquisitionSlots.Release();
+        }
+    }
+
+    // The single place a request's method is chosen. A GET carries an explicit zero-length body, so it is framed
+    // "Content-Length: 0" on the wire, with no payload bytes and no Expect: 100-continue. The only reason is the .NET 11
+    // SocketsHttpHandler: on a connection closed before any response header it re-sends a request whose Content is null (or
+    // that expects 100-continue), up to three times, inside one SendAsync. Those re-sends are not attempts the meter or
+    // breaker can see. A request with content is never replayed that way, so a hangup surfaces once and this client's own
+    // single, metered retry is the only retry. The HTTP version and the handler's configuration are deliberately untouched.
+    private static HttpRequestMessage CreateMessage(HttpMethod method, Uri uri, string? formBody) =>
+        new(method, uri) { Content = formBody is null ? new ByteArrayContent([]) : FormBody(formBody) };
+
+    // One actual send: the meter sees it, then the status and body are read and interpreted.
+    private async ValueTask<T> SendAsync<T>(
+        HttpRequestMessage message,
+        string token,
+        Operation operation,
+        Func<ReadOnlyMemory<byte>, T> interpret,
+        IShardTransferMeter? meter,
+        CancellationTokenSource deadline,
+        WireWitness? witness,
+        CancellationToken cancellationToken)
+    {
+        message.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+        message.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/fhir+json"));
+        message.Headers.TryAddWithoutValidation("Prefer", "handling=strict");
+
+        // A token that arrived after the deadline, or after the caller gave up, is not used.
+        deadline.Token.ThrowIfCancellationRequested();
+        try
+        {
+            meter?.RecordSend(_shard.Id);
+        }
+        catch (ShardCallException e) when (e.Fault != ShardFault.None)
+        {
+            throw new ExternalShardFailure(e);
+        }
+
+        witness?.Sending();
+        HttpResponseMessage response = await OnWireAsync(
+            () => new ValueTask<HttpResponseMessage>(_invoker.SendAsync(message, deadline.Token)), deadline, cancellationToken)
+            .ConfigureAwait(false);
+
+        using (response)
+        {
+            witness?.Answered((int)response.StatusCode);
+            CheckStatus(response, operation);
+            ReadOnlyMemory<byte> body = await ReadBodyAsync(response.Content, meter, deadline, cancellationToken).ConfigureAwait(false);
+            deadline.Token.ThrowIfCancellationRequested();
+            T result = interpret(body);
+            deadline.Token.ThrowIfCancellationRequested();
+            return result;
+        }
+    }
+
+    // Only a qualified read treats 404 and 410 as the resource's absence; a search or metadata fetch that gets them is
+    // still an unexpected status. Only 408, 429 and 5xx are transient: the backend may answer differently next time.
+    private void CheckStatus(HttpResponseMessage response, Operation operation)
+    {
+        bool qualifiedRead = operation == Operation.Read;
+        int status = (int)response.StatusCode;
+        ShardCallFailure? failure = status switch
+        {
+            200 => null,
+            404 when qualifiedRead => ShardCallFailure.ResourceNotFound,
+            410 when qualifiedRead => ShardCallFailure.ResourceGone,
+            >= 300 and < 400 => ShardCallFailure.Redirect,
+            401 or 403 => ShardCallFailure.Authentication,
+            _ => ShardCallFailure.UnexpectedStatus,
+        };
+
+        // The body of a failed exchange is never read: it may echo the query or hold backend detail.
+        if (failure is { } classified)
+        {
+            throw Failure(
+                classified,
+                operation switch
+                {
+                    Operation.Read => "The backend did not return the resource.",
+                    Operation.Metadata => "The backend did not return its capability statement.",
+                    _ => "The backend did not answer with a search page.",
+                },
+                status,
+                classified == ShardCallFailure.UnexpectedStatus && HttpClientResiliencePredicates.IsTransient(Outcome.FromResult(response))
+                    ? ShardFault.Transient
+                    : ShardFault.Answered);
+        }
+    }
+
+    private async Task<ReadOnlyMemory<byte>> ReadBodyAsync(HttpContent content, IShardTransferMeter? meter, CancellationTokenSource deadline, CancellationToken cancellationToken)
+    {
+        if (content.Headers.ContentLength > _maxResponseBytes)
+        {
+            throw Failure(ShardCallFailure.ResponseTooLarge, "The response body exceeds the size limit.");
+        }
+
+        Stream stream = await OnWireAsync(
+            () => new ValueTask<Stream>(content.ReadAsStreamAsync(deadline.Token)), deadline, cancellationToken).ConfigureAwait(false);
+        await using (stream.ConfigureAwait(false))
+        {
+            using var body = new MemoryStream((int)Math.Min(content.Headers.ContentLength ?? ChunkBytes, 64 * ChunkBytes));
+            byte[] chunk = new byte[ChunkBytes];
+            while (true)
+            {
+                // Never asks for more than one byte past the limit: that byte proves the body too large, and nothing
+                // after it is read.
+                int wanted = (int)Math.Min(ChunkBytes, _maxResponseBytes - body.Length + 1);
+                int read = await OnWireAsync(() => stream.ReadAsync(chunk.AsMemory(0, wanted), deadline.Token), deadline, cancellationToken)
+                    .ConfigureAwait(false);
+                if (read == 0)
+                {
+                    return new ReadOnlyMemory<byte>(body.GetBuffer(), 0, (int)body.Length);
+                }
+
+                // Outside the wire scope: the meter's own exceptions are the meter's, never a transport failure.
+                try
+                {
+                    meter?.RecordResponseBytes(_shard.Id, read);
+                }
+                catch (ShardCallException e) when (e.Fault != ShardFault.None)
+                {
+                    throw new ExternalShardFailure(e);
+                }
+
+                if (body.Length + read > _maxResponseBytes)
+                {
+                    throw Failure(ShardCallFailure.ResponseTooLarge, "The response body exceeds the size limit.");
+                }
+
+                await body.WriteAsync(chunk.AsMemory(0, read), deadline.Token).ConfigureAwait(false);
+            }
+        }
+    }
+
+    // Runs one wire operation; only its IO and HTTP errors are classified, as the token that fired or as a transport fault.
+    private async ValueTask<T> OnWireAsync<T>(Func<ValueTask<T>> operation, CancellationTokenSource deadline, CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await operation().ConfigureAwait(false);
+        }
+        catch (Exception e) when (e is IOException or HttpRequestException)
+        {
+            throw WireFailure(e, deadline, cancellationToken);
+        }
+    }
+
+    // A wire error raised because a token fired is that cancellation or timeout, not a transport fault.
+    private ShardCallException WireFailure(Exception wire, CancellationTokenSource deadline, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        return deadline.IsCancellationRequested
+            ? Failure(ShardCallFailure.Timeout, "The call did not complete within its deadline.", fault: ShardFault.TimedOut)
+            : Failure(
+                ShardCallFailure.Transport,
+                "The connection to the backend failed.",
+                fault: IsTransientWireFault(wire) ? ShardFault.Transient : ShardFault.Answered);
+    }
+
+    // A connection that could not be made, reset, or closed before the response was complete may not recur. A TLS,
+    // authentication or protocol error will, so it is never retried; nor is anything unrecognised. The wire exception is
+    // read here and then dropped, so none of its text or data is kept.
+    private static bool IsTransientWireFault(Exception wire)
+    {
+        for (Exception? current = wire; current is not null; current = current.InnerException)
+        {
+            switch (current)
+            {
+                case HttpRequestException { HttpRequestError: not HttpRequestError.Unknown } request:
+                    return request.HttpRequestError is HttpRequestError.ConnectionError or HttpRequestError.ResponseEnded;
+                case HttpIOException io:
+                    return io.HttpRequestError == HttpRequestError.ResponseEnded;
+                case SocketException socket:
+                    return socket.SocketErrorCode is SocketError.ConnectionReset or SocketError.ConnectionAborted;
+            }
+        }
+
+        return false;
+    }
+
+    private ShardCallException Failure(ShardCallFailure failure, string reason, int? statusCode = null, ShardFault fault = ShardFault.Answered) =>
+        new(_shard, failure, reason, statusCode, fault);
+
+    // A provider or meter may rethrow an earlier classified failure. The breaker must treat it as unobserved here.
+    [SuppressMessage("Design", "CA1032:Implement standard exception constructors", Justification = "This marker always preserves the original exception.")]
+    [SuppressMessage("Design", "CA1064:Exceptions should be public", Justification = "The exchange unwraps this marker before returning to the caller.")]
+    private sealed class ExternalShardFailure(ShardCallException failure) : Exception("The credential provider or meter failed.")
+    {
+        internal ShardCallException Original { get; } = failure;
+    }
+}
