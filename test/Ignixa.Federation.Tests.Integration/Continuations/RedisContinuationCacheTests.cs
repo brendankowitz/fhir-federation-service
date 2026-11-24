@@ -293,9 +293,9 @@ public sealed class RedisContinuationCacheTests
     {
         Exception fault = failure switch
         {
-            "connection" => new RedisConnectionException(ConnectionFailureType.SocketFailure, Detail),
-            "timeout" => new RedisTimeoutException(Detail, CommandStatus.Sent),
-            "server" => new RedisServerException("ERR " + Detail),
+            "connection" => new RedisConnectionException(ConnectionFailureType.SocketFailure, CommandFlags.CommandRetryNever, Detail),
+            "timeout" => new RedisTimeoutException(CommandFlags.CommandRetryNever, Detail, CommandStatus.Sent),
+            "server" => new RedisServerException(RedisErrorKind.Unknown, CommandFlags.CommandRetryNever, "ERR " + Detail),
             _ => new RedisCommandException(Detail),
         };
         (IDatabase database, _) = ScriptedRedisDatabase.Create(_ => thrownSynchronously ? throw fault : Task.FromException<RedisResult>(fault));
@@ -399,7 +399,7 @@ public sealed class RedisContinuationCacheTests
         await cts.CancelAsync();
         await Should.ThrowAsync<OperationCanceledException>(() => call.WaitAsync(TimeSpan.FromSeconds(10), Ct));
 
-        pending.SetException(new RedisConnectionException(ConnectionFailureType.SocketFailure, marker));
+        pending.SetException(new RedisConnectionException(ConnectionFailureType.SocketFailure, CommandFlags.CommandRetryNever, marker));
         await Task.Delay(50, Ct);
     }
 
