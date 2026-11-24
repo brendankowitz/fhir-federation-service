@@ -107,7 +107,7 @@ A real validation run reports 16 interop tests succeeded and 0 skipped. Never co
 
 ## Endpoint containment
 
-The client's seed list is not an allowlist. StackExchange.Redis 2.13.23 can learn further endpoints from server
+The client's seed list is not an allowlist. StackExchange.Redis 3.4.35 can learn further endpoints from server
 topology or redirects while connecting, before the fixture's identity checks run, and it reconnects on its own.
 Every fixture connection, inspector and adapter, RESP2 and RESP3, therefore carries a `Tunnel` guard.
 `PhysicalConnection.BeginConnectAsync` asks the tunnel which endpoint to dial before it creates any socket. The
@@ -134,10 +134,10 @@ The identity, version, empty-keyspace and protocol checks still run after connec
   - No connection ever completes a handshake, so a repeated dial is a connect retry, not an authenticated
     reconnect, and no topology is learned.
   - If IPv6 loopback cannot be bound, the IPv6 test is reported as skipped. Any other bind failure fails the test.
-- Inferred from the pinned client source, not tested: endpoints learned from cluster topology or `MOVED`/`ASK`
-  redirects, and reconnects after an authenticated connection drops, take the same per-bridge `BeginConnectAsync`
-  path as a seed's attempts. A refused endpoint is recorded as a connection failure rather than left pending. The
-  tests show that the decoy is attempted and never dialed, but not how the client reports the refusal.
+- Inferred from the pinned client source, not tested: when a bridge reconnects after an authenticated connection
+  drops, it creates a new `PhysicalConnection` and calls `BeginConnectAsync`, which asks the tunnel for the socket
+  endpoint before creating the socket. The tests show that the decoy is attempted and never dialed, but not how the
+  client reports the refusal.
 
 ## Topology limits
 
@@ -147,6 +147,8 @@ The identity, version, empty-keyspace and protocol checks still run after connec
 - Reconnect, backlog and retry behaviour depends on how the host configures the multiplexer.
 
 ## Evidence status
+
+The following historical evidence bullets were recorded with StackExchange.Redis 2.13.23:
 
 - The deterministic tests pass.
 - Disposable implementer run, through the coordinator's Redis 7.4.12 fixture: 16 interop tests succeeded,
@@ -161,3 +163,5 @@ The identity, version, empty-keyspace and protocol checks still run after connec
   `RedisInteropFixtureTests` failed 4 of 4: the two offline tests because the options had no guard, and both live
   tests because the decoy was dialed, over IPv4 and over IPv6. With the guard, it passed 4 of 4 in 6 consecutive
   runs, with the IPv6 decoy active and not skipped.
+- With StackExchange.Redis 3.4.35, a coordinator run against the same disposable, authenticated Redis 7.4.12
+  fixture passed the whole solution: 3,344 tests passed and 0 were skipped, including the live interop tests.
