@@ -163,5 +163,6 @@ The following historical evidence bullets were recorded with StackExchange.Redis
   `RedisInteropFixtureTests` failed 4 of 4: the two offline tests because the options had no guard, and both live
   tests because the decoy was dialed, over IPv4 and over IPv6. With the guard, it passed 4 of 4 in 6 consecutive
   runs, with the IPv6 decoy active and not skipped.
-- With StackExchange.Redis 3.4.35, a coordinator run against the same disposable, authenticated Redis 7.4.12
-  fixture passed the whole solution: 3,344 tests passed and 0 were skipped, including the live interop tests.
+
+With StackExchange.Redis 3.4.35, code head `2dd2993` passed the whole solution against the same disposable,
+authenticated Redis 7.4.12 fixture: 3,344 tests passed and 0 were skipped, including the live interop tests.
